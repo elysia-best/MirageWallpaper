@@ -1041,43 +1041,55 @@ void TextureCache::SetVideoDecodeOptions(VideoDecodeOptions options) {
 
 void TextureCache::Clear() {
     m_tex_map.clear();
-    m_query_texs.clear();
-    m_query_map.clear();
+    ClearTransientGraphResources();
     if (m_video_registry) m_video_registry->slots.clear();
+}
+
+void TextureCache::ClearTransientGraphResources() {
+    m_query_map.clear();
+    m_query_texs.clear();
 }
 
 std::optional<ImageParameters> TextureCache::Query(std::string_view key, TextureKey content_hash,
                                                    bool persist) {
-    if (exists(m_query_map, key)) {
-        auto& query = *(m_query_map.find(key)->second);
+    std::string query_key(key);
+    TexHash      tex_hash = TextureKey::HashValue(content_hash);
 
-        query.share_ready = false;
-        query.persist     = persist;
+    if (auto it = m_query_map.find(query_key); it != m_query_map.end()) {
+        auto& query = *(it->second);
 
-        return ToImageParameters(query.image);
-    };
+        if (query.content_hash != tex_hash) {
+            query.query_keys.erase(query_key);
+            query.share_ready = ! query.persist && query.query_keys.empty();
+            m_query_map.erase(it);
+        } else {
+            query.share_ready = false;
+            query.persist     = persist;
 
-    TexHash tex_hash = TextureKey::HashValue(content_hash);
+            return ToImageParameters(query.image);
+        }
+    }
+
     for (auto& query : m_query_texs) {
         if (! (query->share_ready)) continue;
         if (query->content_hash != tex_hash) continue;
 
         query->share_ready = false;
         query->persist     = persist;
-        query->query_keys.insert(std::string(key));
+        query->query_keys.insert(query_key);
 
-        m_query_map[std::string(key)] = &(*query);
+        m_query_map[query_key] = &(*query);
 
         return ToImageParameters(query->image);
     }
 
     m_query_texs.emplace_back(std::make_unique<QueryTex>());
-    auto& query                   = *m_query_texs.back();
-    m_query_map[std::string(key)] = &query;
+    auto& query            = *m_query_texs.back();
+    m_query_map[query_key] = &query;
 
     query.index        = (idx)m_query_texs.size() - 1;
     query.content_hash = tex_hash;
-    query.query_keys.insert(std::string(key));
+    query.query_keys.insert(std::move(query_key));
     query.persist = persist;
     if (auto opt = CreateTex(content_hash); opt.has_value()) {
         query.image = std::move(opt.value());

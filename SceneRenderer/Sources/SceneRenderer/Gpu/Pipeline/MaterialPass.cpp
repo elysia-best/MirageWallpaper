@@ -15,6 +15,19 @@ import sr.scene;
 
 using namespace sr::vulkan;
 
+// TODO(4b41483): the upstream CustomShaderPass refactor (~896 lines) replaces
+// this pass's inline GraphicsPipeline::create() path with a PipelineResourceSystem
+// + RenderProgram traversal that reuses cached pipelines/render-passes/
+// framebuffers and routes shader reflection through ShaderReflectionCache. That
+// integration depends on (a) GraphicsPipeline::create() taking a non-owning
+// VkRenderPass, (b) PipelineParameters::pass becoming std::shared_ptr, and
+// (c) the RenderSceneSnapshot / SceneResourceIndex model — none of which the
+// divergent port carries yet. The pass is intentionally left on its pre-4b41483
+// inline-pipeline path so the build stays green; the new resource/cache types
+// in RenderResources.cppm + BufferResolver + ShaderReflectionCache are wired for
+// lifecycle only (see VulkanFrameEngine.cpp). Port the full RenderProgram
+// traversal when the snapshot infrastructure lands.
+
 namespace
 {
 bool RenderDiagEnabled() {

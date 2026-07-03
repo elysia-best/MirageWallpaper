@@ -13,6 +13,11 @@ import :tex_node;
 export namespace sr::rg
 {
 
+// TODO(4b41483): upstream replaces the TexNode*-based builder/querier API with
+// a handle-based one (TextureNodeRef / TextureDesc / TextureNodeState /
+// PassNodeState) and drops the afterBuild template + public getTexNode/
+// getPassNode. See FrameGraph.cpp for the deferral rationale; the pre-4b41483
+// API is retained here.
 class RenderGraph;
 
 class RenderGraphBuilder {

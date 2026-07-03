@@ -9,15 +9,6 @@ using namespace sr::vulkan;
 
 namespace
 {
-TextureKey ToTexKeyNoMip(sr::SceneRenderTarget rt) {
-    return TextureKey {
-        .width  = rt.width,
-        .height = rt.height,
-        .usage  = {},
-        .format = sr::TextureFormat::RGBA8,
-        .sample = rt.sample,
-    };
-}
 
 std::optional<vvk::RenderPass> CreateMsaaClearPass(const vvk::Device&    device,
                                                    VkSampleCountFlagBits samples) {
@@ -74,16 +65,50 @@ std::optional<vvk::RenderPass> CreateMsaaClearPass(const vvk::Device&    device,
 }
 } // namespace
 
-PrePass::PrePass(const Desc&) {}
+PrePass::PrePass(const Desc& desc) {
+    m_desc.result              = desc.result;
+    m_desc.layout              = desc.layout;
+    m_desc.result_request      = desc.result_request;
+    m_desc.result_msaa_request = desc.result_msaa_request;
+}
 PrePass::~PrePass() {}
 
+bool PrePass::setResultRequest(std::optional<TextureRequest> request,
+                               std::optional<TextureRequest> msaa_request) {
+    bool changed = SetTextureRequestIfChanged(m_desc.result_request, std::move(request));
+    changed =
+        SetTextureRequestIfChanged(m_desc.result_msaa_request, std::move(msaa_request)) || changed;
+    return changed;
+}
+
+std::vector<PassTextureRequestDiagnostic> PrePass::textureRequestDiagnostics() const {
+    std::vector<PassTextureRequestDiagnostic> out {
+        PassTextureRequestDiagnostic {
+            .role    = "frame-result",
+            .name    = std::string(m_desc.result),
+            .request = m_desc.result_request,
+        },
+    };
+    if (m_desc.result_msaa_request.has_value()) {
+        out.push_back(PassTextureRequestDiagnostic {
+            .role    = "frame-result-msaa",
+            .name    = m_desc.result_msaa_request->name,
+            .request = m_desc.result_msaa_request,
+        });
+    }
+    return out;
+}
+
 void PrePass::prepare(Scene& scene, const Device& device, RenderingResources&) {
+    RenderResourceSystem resources(device);
+
     {
         auto tex_name = std::string(m_desc.result);
         if (scene.renderTargets.count(tex_name) == 0) return;
         auto& rt = scene.renderTargets.at(tex_name);
-        if (auto opt = device.tex_cache().Query(tex_name, ToTexKeyNoMip(rt), ! rt.allowReuse);
-            opt.has_value()) {
+        auto  request =
+            m_desc.result_request.value_or(MakeRenderTargetNoMipTextureRequest(tex_name, rt));
+        if (auto opt = resources.EnsureTexture(request); opt.has_value()) {
             m_desc.vk_result = opt.value();
         } else
             return;
@@ -91,11 +116,12 @@ void PrePass::prepare(Scene& scene, const Device& device, RenderingResources&) {
     {
         auto  tex_name = std::string(m_desc.result);
         auto& rt       = scene.renderTargets.at(tex_name);
-        m_desc.samples = ToVkSampleCount(rt.sample_count);
+        m_desc.samples = TextureSampleCount(rt.sample_count);
         if (m_desc.samples != VK_SAMPLE_COUNT_1_BIT) {
             auto twin_name = MsaaTwinName(tex_name, m_desc.samples);
-            auto tex_key   = ToTexKeyMsaa(rt, m_desc.samples);
-            auto opt       = device.tex_cache().Query(twin_name, tex_key, /*persist*/ true);
+            auto request   = m_desc.result_msaa_request.value_or(
+                MakeMsaaTextureRequest(twin_name, rt, m_desc.samples));
+            auto opt = resources.EnsureTexture(request);
             if (! opt.has_value()) return;
             m_desc.vk_result_msaa = opt.value();
 

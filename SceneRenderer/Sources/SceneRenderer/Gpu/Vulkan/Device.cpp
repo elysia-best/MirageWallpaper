@@ -45,10 +45,26 @@ bool Device::CheckGPU(vvk::PhysicalDevice gpu, std::span<const Extension> exts,
 
     Set<std::string> extensions;
     EnumateDeviceExts(gpu, extensions);
+    bool requires_timeline_semaphore { false };
     for (auto& ext : exts) {
         if (ext.required) {
             if (! exists(extensions, ext.name)) return false;
+            if (std::string_view(ext.name) == VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) {
+                requires_timeline_semaphore = true;
+            }
         }
+    }
+    if (requires_timeline_semaphore) {
+        VkPhysicalDeviceTimelineSemaphoreFeaturesKHR timeline_features {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR,
+            .pNext = nullptr,
+        };
+        VkPhysicalDeviceFeatures2KHR features2 {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR,
+            .pNext = &timeline_features,
+        };
+        gpu.GetFeatures2KHR(features2);
+        if (! timeline_features.timelineSemaphore) return false;
     }
     return true;
 }
@@ -131,18 +147,34 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
     // shaders drive the genericropeparticle spline subdivision; without
     // pEnabledFeatures.geometryShader=VK_TRUE, the driver rejects a
     // pipeline with a GS stage.
-    VkPhysicalDeviceFeatures2KHR supported2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR };
+    VkPhysicalDeviceTimelineSemaphoreFeaturesKHR supported_timeline {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR,
+        .pNext = nullptr,
+    };
+    VkPhysicalDeviceFeatures2KHR supported2 {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR,
+        .pNext = &supported_timeline,
+    };
     device.m_gpu.GetFeatures2KHR(supported2);
+    if (! supported_timeline.timelineSemaphore) {
+        rstd_error("required vulkan feature timelineSemaphore is not supported");
+        return false;
+    }
     VkPhysicalDeviceFeatures enabled {};
     enabled.geometryShader    = supported2.features.geometryShader;
     enabled.sampleRateShading = supported2.features.sampleRateShading;
     enabled.samplerAnisotropy = supported2.features.samplerAnisotropy;
+    VkPhysicalDeviceTimelineSemaphoreFeaturesKHR enabled_timeline {
+        .sType             = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR,
+        .pNext             = nullptr,
+        .timelineSemaphore = VK_TRUE,
+    };
 
     VVK_CHECK_BOOL_RE(vvk::Device::Create(device.m_device,
                                           *device.m_gpu,
                                           device.ChooseDeviceQueue(*inst.surface()),
                                           tested_exts_c,
-                                          nullptr,
+                                          &enabled_timeline,
                                           device.dld,
                                           &enabled));
 

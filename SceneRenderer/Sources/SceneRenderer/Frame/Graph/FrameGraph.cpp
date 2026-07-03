@@ -10,6 +10,14 @@ import rstd.cppstd;
 
 using namespace sr::rg;
 
+// TODO(4b41483): upstream refactors RenderGraph to a handle-based texture API
+// (TextureNodeRef / TextureDesc / TextureNodeState replacing raw TexNode*,
+// getLastReadTexs -> getLastReadTextures, dropping the afterBuild template,
+// making ToGraphviz out-of-line). That refactor is invasive across the
+// planner + VulkanFrameEngine + every pass, and is orthogonal to the
+// render-resource cache work. The pre-4b41483 TexNode*-based graph is retained
+// here; port the handle API together with the SceneRenderPlanner rewrite.
+
 RenderGraph::RenderGraph() {}
 
 PassNode* RenderGraph::getPassNode(NodeID id) const {

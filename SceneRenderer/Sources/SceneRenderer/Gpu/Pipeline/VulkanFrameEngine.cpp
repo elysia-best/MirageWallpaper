@@ -24,9 +24,7 @@ using namespace sr::vulkan;
 constexpr uint64_t vk_wait_time { 10u * 1000u * 1000000u };
 constexpr uint32_t vk_command_num { 2 };
 
-constexpr std::array base_inst_exts {
-    Extension { false, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME },
-};
+constexpr std::array<Extension, 0> base_inst_exts {};
 constexpr std::array base_device_exts {
     Extension { false, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME },
     Extension { true, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME },
@@ -36,6 +34,9 @@ constexpr std::array base_device_exts {
     // Lets SceneViewer export MoltenVK's underlying MTLTexture for a
     // GPU-only macOS display fallback. Optional so non-MoltenVK builds still run.
     Extension { false, "VK_EXT_metal_objects" },
+    // Timeline semaphores are required by the 4b41483 render infrastructure
+    // (upload/readback overlap). MoltenVK supports timelineSemaphore.
+    Extension { true, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME },
 };
 
 struct VulkanRender::Impl {
@@ -87,6 +88,14 @@ struct VulkanRender::Impl {
 
     std::unique_ptr<ExSwapchain> m_ex_swapchain;
     RenderingResources           m_rendering_resources;
+
+    // TODO(4b41483): upstream threads a RenderProgram / SceneResourceIndex
+    // through compileRenderGraph and routes per-pass shader reflection +
+    // buffer resolution through these caches. The port's render loop still
+    // builds pipelines inline inside each VulkanPass; the reflection cache
+    // is wired here only for lifecycle (create/clear) so it is ready to use
+    // without disturbing the existing per-pass prepare() path.
+    ShaderReflectionCache m_shader_reflection_cache;
 
     // for VUID-vkQueueSubmit-pSignalSemaphores-00067
     std::vector<vvk::Semaphore> m_sem_swap_finish_per_image;
@@ -422,6 +431,7 @@ bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr) {
     }
 
     rr.dyn_buf = m_dyn_buf.get();
+    rr.shader_reflection_cache = &m_shader_reflection_cache;
     return true;
 }
 
@@ -737,6 +747,7 @@ void VulkanRender::Impl::clearLastRenderGraph() {
     m_passes.clear();
     m_device->tex_cache().Clear();
     m_device->mesh_cache().onRenderGraphCleared();
+    m_shader_reflection_cache.Clear();
 
     m_dyn_buf->destroy();
     m_dyn_buf->allocate();

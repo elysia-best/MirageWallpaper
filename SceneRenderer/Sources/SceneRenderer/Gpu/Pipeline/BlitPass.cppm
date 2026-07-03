@@ -14,8 +14,10 @@ export namespace sr::vulkan
 class CopyPass : public VulkanPass {
 public:
     struct Desc {
-        std::string src;
-        std::string dst;
+        std::string                   src;
+        std::string                   dst;
+        std::optional<TextureRequest> src_request;
+        std::optional<TextureRequest> dst_request;
 
         ImageParameters vk_src;
         ImageParameters vk_dst;
@@ -23,6 +25,9 @@ public:
 
     CopyPass(const Desc&);
     virtual ~CopyPass();
+
+    PassInvalidationFlags                     finalizeResourceRequests(Scene&) override;
+    std::vector<PassTextureRequestDiagnostic> textureRequestDiagnostics() const override;
 
     void prepare(Scene&, const Device&, RenderingResources&) override;
     void execute(const Device&, RenderingResources&) override;

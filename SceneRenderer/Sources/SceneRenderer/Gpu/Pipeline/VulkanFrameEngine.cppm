@@ -15,6 +15,8 @@ export import :copy_pass;
 export import :custom_shader_pass;
 export import :fin_pass;
 export import :pre_pass;
+export import :buffer_resolver;
+export import :shader_reflection_cache;
 
 export namespace sr
 {

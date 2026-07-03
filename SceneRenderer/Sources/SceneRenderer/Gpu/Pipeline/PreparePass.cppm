@@ -16,8 +16,10 @@ class PrePass : public VulkanPass {
 public:
     struct Desc {
         // in
-        const std::string_view result { SpecTex_Default };
-        const VkImageLayout    layout { VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        std::string_view              result { SpecTex_Default };
+        VkImageLayout                 layout { VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        std::optional<TextureRequest> result_request;
+        std::optional<TextureRequest> result_msaa_request;
 
         // prepared
         ImageParameters       vk_result;
@@ -30,6 +32,10 @@ public:
 
     PrePass(const Desc&);
     virtual ~PrePass();
+
+    bool setResultRequest(std::optional<TextureRequest>,
+                          std::optional<TextureRequest> msaa_request = std::nullopt);
+    std::vector<PassTextureRequestDiagnostic> textureRequestDiagnostics() const override;
 
     void prepare(Scene&, const Device&, RenderingResources&) override;
     void execute(const Device&, RenderingResources&) override;

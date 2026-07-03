@@ -155,7 +155,9 @@ add_library(SceneRendererRenderer STATIC
   ../Gpu/Pipeline/BlitPass.cpp
   ../Gpu/Pipeline/MaterialPass.cpp
   ../Gpu/Pipeline/PresentPass.cpp
-  ../Gpu/Pipeline/PreparePass.cpp)
+  ../Gpu/Pipeline/PreparePass.cpp
+  ../Gpu/Pipeline/BufferResolver.cpp
+  ../Gpu/Pipeline/ShaderReflectionCache.cpp)
 target_sources(SceneRendererRenderer
   PUBLIC FILE_SET cxx_modules TYPE CXX_MODULES BASE_DIRS .. FILES
          ../AppRuntime/Controller/WallpaperEngineRuntime.cppm
@@ -171,7 +173,9 @@ target_sources(SceneRendererRenderer
          ../Gpu/Pipeline/BlitPass.cppm
          ../Gpu/Pipeline/MaterialPass.cppm
          ../Gpu/Pipeline/PresentPass.cppm
-         ../Gpu/Pipeline/PreparePass.cppm)
+         ../Gpu/Pipeline/PreparePass.cppm
+         ../Gpu/Pipeline/BufferResolver.cppm
+         ../Gpu/Pipeline/ShaderReflectionCache.cppm)
 target_link_libraries(SceneRendererRenderer
   PUBLIC SceneRendererVulkan SceneRendererImporter SceneRendererScript wavsen::audio)
 target_include_directories(SceneRendererRenderer

@@ -364,6 +364,7 @@ public:
     ~TextureCache();
 
     void Clear();
+    void ClearTransientGraphResources();
 
     void SetVideoDecodeOptions(VideoDecodeOptions);
 

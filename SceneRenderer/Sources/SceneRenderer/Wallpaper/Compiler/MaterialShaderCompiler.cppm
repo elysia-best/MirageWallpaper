@@ -127,5 +127,14 @@ public:
                                                              fs::VFS&              vfs,
                                                              std::string_view scene_id = "test",
                                                              const Combos&    combos_override = {});
+
+    // TODO(4b41483): upstream WPShaderParser adds a CompileSceneShaderVariant
+    // entry point plus UpdateSceneShaderVariantDescFromCompiledUnits, backed by
+    // a SceneShaderVariantDesc / SceneShaderTextureCompileInfo /
+    // SceneShaderDefaultTexture model that the divergent port does not yet
+    // carry (it lands across other commits alongside RenderSceneSnapshot).
+    // Declaring these here would fail to compile without that type surface, so
+    // the variant-compile API is deferred until SceneShaderVariantDesc is
+    // back-ported.
 };
 } // namespace sr
