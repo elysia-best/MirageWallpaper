@@ -209,13 +209,14 @@ struct InstanceDispatch {
     PFN_vkEnumerateDeviceExtensionProperties      vkEnumerateDeviceExtensionProperties {};
     PFN_vkEnumeratePhysicalDevices                vkEnumeratePhysicalDevices {};
     PFN_vkGetDeviceProcAddr                       vkGetDeviceProcAddr {};
-    PFN_vkGetPhysicalDeviceFeatures2KHR           vkGetPhysicalDeviceFeatures2KHR {};
+    PFN_vkGetPhysicalDeviceFeatures2              vkGetPhysicalDeviceFeatures2 {};
     PFN_vkGetPhysicalDeviceFormatProperties       vkGetPhysicalDeviceFormatProperties {};
     PFN_vkGetPhysicalDeviceMemoryProperties       vkGetPhysicalDeviceMemoryProperties {};
     PFN_vkGetPhysicalDeviceMemoryProperties2      vkGetPhysicalDeviceMemoryProperties2 {};
     PFN_vkGetPhysicalDeviceProperties             vkGetPhysicalDeviceProperties {};
-    PFN_vkGetPhysicalDeviceProperties2KHR         vkGetPhysicalDeviceProperties2KHR {};
+    PFN_vkGetPhysicalDeviceProperties2            vkGetPhysicalDeviceProperties2 {};
     PFN_vkGetPhysicalDeviceQueueFamilyProperties  vkGetPhysicalDeviceQueueFamilyProperties {};
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties2 vkGetPhysicalDeviceQueueFamilyProperties2 {};
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceCapabilitiesKHR {};
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR      vkGetPhysicalDeviceSurfaceFormatsKHR {};
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceSurfacePresentModesKHR {};

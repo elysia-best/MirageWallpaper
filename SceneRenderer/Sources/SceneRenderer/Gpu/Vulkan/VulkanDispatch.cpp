@@ -55,8 +55,9 @@ bool Load(VkInstance instance, InstanceDispatch& dld) noexcept {
     X(vkCreateDebugUtilsMessengerEXT);
     X(vkDestroyDebugUtilsMessengerEXT);
     X(vkDestroySurfaceKHR);
-    X(vkGetPhysicalDeviceFeatures2KHR);
-    X(vkGetPhysicalDeviceProperties2KHR);
+    X(vkGetPhysicalDeviceFeatures2);
+    X(vkGetPhysicalDeviceProperties2);
+    X(vkGetPhysicalDeviceQueueFamilyProperties2);
     X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR);
     X(vkGetPhysicalDeviceSurfaceFormatsKHR);
     X(vkGetPhysicalDeviceSurfacePresentModesKHR);
@@ -66,9 +67,12 @@ bool Load(VkInstance instance, InstanceDispatch& dld) noexcept {
 
     return X(vkDestroyInstance) && X(vkCreateDevice) && X(vkDestroyDevice) && X(vkDestroyDevice) &&
            X(vkEnumerateDeviceExtensionProperties) && X(vkEnumeratePhysicalDevices) &&
-           X(vkGetDeviceProcAddr) && X(vkGetPhysicalDeviceFormatProperties) &&
+           X(vkGetDeviceProcAddr) && X(vkGetPhysicalDeviceFeatures2) &&
+           X(vkGetPhysicalDeviceFormatProperties) &&
            X(vkGetPhysicalDeviceMemoryProperties) && X(vkGetPhysicalDeviceMemoryProperties2) &&
-           X(vkGetPhysicalDeviceProperties) && X(vkGetPhysicalDeviceQueueFamilyProperties);
+           X(vkGetPhysicalDeviceProperties) && X(vkGetPhysicalDeviceProperties2) &&
+           X(vkGetPhysicalDeviceQueueFamilyProperties) &&
+           X(vkGetPhysicalDeviceQueueFamilyProperties2);
 #undef X
 }
 
@@ -490,17 +494,20 @@ VkResult SwapchainKHR::GetImages(std::vector<VkImage>& images) const {
 }
 
 VkPhysicalDeviceProperties PhysicalDevice::GetProperties() const noexcept {
-    VkPhysicalDeviceProperties props;
-    dld->vkGetPhysicalDeviceProperties(handle, &props);
-    return props;
+    VkPhysicalDeviceProperties2 props {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = nullptr,
+    };
+    dld->vkGetPhysicalDeviceProperties2(handle, &props);
+    return props.properties;
 }
 
 void PhysicalDevice::GetProperties2KHR(VkPhysicalDeviceProperties2KHR& props) const noexcept {
-    dld->vkGetPhysicalDeviceProperties2KHR(handle, &props);
+    dld->vkGetPhysicalDeviceProperties2(handle, &props);
 }
 
 void PhysicalDevice::GetFeatures2KHR(VkPhysicalDeviceFeatures2KHR& feats) const noexcept {
-    dld->vkGetPhysicalDeviceFeatures2KHR(handle, &feats);
+    dld->vkGetPhysicalDeviceFeatures2(handle, &feats);
 }
 
 VkResult PhysicalDevice::EnumerateDeviceExtensionProperties(
@@ -561,9 +568,16 @@ PhysicalDevice::GetMemoryProperties(void* next_structures) const noexcept {
 
 std::vector<VkQueueFamilyProperties> PhysicalDevice::GetQueueFamilyProperties() const {
     uint32_t num;
-    dld->vkGetPhysicalDeviceQueueFamilyProperties(handle, &num, nullptr);
-    std::vector<VkQueueFamilyProperties> properties(num);
-    dld->vkGetPhysicalDeviceQueueFamilyProperties(handle, &num, properties.data());
+    dld->vkGetPhysicalDeviceQueueFamilyProperties2(handle, &num, nullptr);
+    std::vector<VkQueueFamilyProperties2> properties2(
+        num, VkQueueFamilyProperties2 { .sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2 });
+    dld->vkGetPhysicalDeviceQueueFamilyProperties2(handle, &num, properties2.data());
+
+    std::vector<VkQueueFamilyProperties> properties;
+    properties.reserve(num);
+    for (uint32_t i = 0; i < num; ++i) {
+        properties.push_back(properties2[i].queueFamilyProperties);
+    }
     return properties;
 }
 
