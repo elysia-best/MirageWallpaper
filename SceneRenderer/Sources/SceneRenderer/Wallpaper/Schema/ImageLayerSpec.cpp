@@ -175,6 +175,33 @@ bool ImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     return FromJson(json, vfs, kSceneVersionUnknown);
 }
 
+std::optional<ImageAssetInfo> sr::wpscene::LoadImageAssetInfo(fs::VFS&         vfs,
+                                                              std::string_view image) {
+    nlohmann::json j_image;
+    if (! sr::ParseJson(fs::GetFileContent(vfs, "/assets/" + std::string(image)), j_image))
+        return std::nullopt;
+
+    ImageAssetInfo info;
+    int32_t        w = 0;
+    int32_t        h = 0;
+    if (j_image.contains("width") && j_image.contains("height")) {
+        sr::GetJsonValue(j_image, "width", w, false);
+        sr::GetJsonValue(j_image, "height", h, false);
+        if (w > 0 && h > 0) {
+            info.size = std::array { static_cast<float>(w), static_cast<float>(h) };
+            return info;
+        }
+    }
+
+    std::string mat_path;
+    if (! sr::GetJsonValue(j_image, "material", mat_path, false)) return info;
+    nlohmann::json j_mat;
+    if (! sr::ParseJson(fs::GetFileContent(vfs, "/assets/" + mat_path), j_mat)) return info;
+    Material mat;
+    if (mat.FromJson(j_mat) && ! mat.textures.empty()) info.first_texture = mat.textures.front();
+    return info;
+}
+
 bool ImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs, SceneVersion /*v*/) {
     sr::GetJsonValue(json, "image", image);
     ReadVisibleProperty(json, visible, visible_user);

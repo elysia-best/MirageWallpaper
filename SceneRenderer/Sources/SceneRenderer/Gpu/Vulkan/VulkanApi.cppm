@@ -204,12 +204,15 @@ public:
 
     void Destroy();
 
-    static bool Create(Instance&, std::span<const Extension>, std::span<const InstanceLayer>);
+    static bool Create(Instance&, std::span<const Extension>, std::span<const InstanceLayer>,
+                       std::uint32_t api_version = SCENERENDERER_VULKAN_VERSION);
     bool ChoosePhysicalDevice(const CheckGpuOp& checkgpu, std::span<const std::uint8_t> uuid = {});
 
-    const vvk::Instance&       inst() const;
-    const vvk::PhysicalDevice& gpu() const;
-    const vvk::SurfaceKHR&     surface() const;
+    const vvk::Instance&         inst() const;
+    const vvk::PhysicalDevice&   gpu() const;
+    const vvk::SurfaceKHR&       surface() const;
+    std::uint32_t                api_version() const { return m_api_version; }
+    std::span<const std::string> enabled_extensions() const { return m_enabled_extensions; }
 
     bool offscreen() const;
     void setSurface(VkSurfaceKHR);
@@ -223,10 +226,12 @@ private:
 
     vvk::DebugUtilsMessenger m_debug_utils;
     vvk::PhysicalDevice      m_gpu {};
+    std::uint32_t            m_api_version { SCENERENDERER_VULKAN_VERSION };
 
-    vvk::SurfaceKHR  m_surface {};
-    Set<std::string> m_extensions;
-    Set<std::string> m_layers;
+    vvk::SurfaceKHR          m_surface {};
+    Set<std::string>         m_extensions;
+    std::vector<std::string> m_enabled_extensions;
+    Set<std::string>         m_layers;
 };
 
 // ShaderSpv / Uni_ShaderSpv now live in sr.shader_compile (re-exported above).
@@ -448,11 +453,19 @@ public:
 
     void Destroy();
 
-    const auto& graphics_queue() const { return m_graphics_queue; }
-    const auto& present_queue() const { return m_present_queue; }
-    const auto& device() const { return m_device; }
-    const auto& handle() const { return m_device; }
-    const auto& gpu() const { return m_gpu; }
+    const auto&                  graphics_queue() const { return m_graphics_queue; }
+    const auto&                  present_queue() const { return m_present_queue; }
+    const auto&                  device() const { return m_device; }
+    const auto&                  handle() const { return m_device; }
+    const auto&                  gpu() const { return m_gpu; }
+    VkInstance                   instance_handle() const { return m_instance; }
+    std::uint32_t                instance_api_version() const { return m_instance_api_version; }
+    std::span<const std::string> enabled_instance_extensions() const {
+        return m_enabled_instance_extensions;
+    }
+    std::span<const std::string> enabled_device_extensions() const {
+        return m_enabled_device_extensions;
+    }
     const auto& limits() const { return m_limits; }
     const auto& vma_allocator() const { return *m_allocator; }
     const auto& cmd_pool() const { return m_command_pool; }
@@ -471,12 +484,16 @@ private:
     std::vector<VkDeviceQueueCreateInfo> ChooseDeviceQueue(VkSurfaceKHR = {});
 
     vvk::DeviceDispatch     dld;
+    VkInstance              m_instance { VK_NULL_HANDLE };
+    std::uint32_t           m_instance_api_version { SCENERENDERER_VULKAN_VERSION };
     vvk::Device             m_device;
     vvk::PhysicalDevice     m_gpu;
     vvk::VmaAllocatorHandle m_allocator;
 
-    VkPhysicalDeviceLimits m_limits;
-    Set<std::string>       m_extensions;
+    VkPhysicalDeviceLimits   m_limits;
+    Set<std::string>         m_extensions;
+    std::vector<std::string> m_enabled_instance_extensions;
+    std::vector<std::string> m_enabled_device_extensions;
 
     Swapchain m_swapchain;
 

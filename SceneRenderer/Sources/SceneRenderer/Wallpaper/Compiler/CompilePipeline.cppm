@@ -83,6 +83,13 @@ struct ParseContext {
     // them right after the template node — keeping all bars at the template's
     // z-position instead of jumping to the front of the root child list.
     std::unordered_map<std::int32_t, std::vector<rstd::sync::Arc<SceneNode>>> layer_clones;
+    std::int32_t next_dynamic_layer_id { -100000 };
+    struct CreateLayerAssetRequest {
+        sr::script::FieldScript* script { nullptr };
+        std::int32_t             owner_id { 0 };
+        std::string              source;
+    };
+    std::vector<CreateLayerAssetRequest> create_layer_asset_requests;
 
     std::unordered_map<std::int32_t, std::string> image_texture_fallbacks;
     Set<std::int32_t>                             hidden_link_source_ids;

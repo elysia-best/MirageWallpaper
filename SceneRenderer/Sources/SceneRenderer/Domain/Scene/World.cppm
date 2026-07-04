@@ -195,7 +195,7 @@ private:
 
     usize m_render_size { std::numeric_limits<usize>::max() };
 
-    uint32_t m_id;
+    uint32_t m_id { std::numeric_limits<uint32_t>::max() };
     uint64_t m_generation { 0 };
 };
 
@@ -814,13 +814,14 @@ public:
     // shader's available runtime tint uniforms without touching baked values
     // until script writes occur.
     //
-    // visible folds into alpha: false → effective alpha 0, true → m_user_alpha.
+    // Visibility writes are runtime alpha updates too: hidden nodes force 0,
+    // and visible nodes restore the baked alpha after a prior hide.
     bool IsAlphaOverridden() const {
-        return m_alpha_overridden ||
+        return m_alpha_overridden || m_visible_overridden ||
                (m_alpha_source != nullptr && m_alpha_source->IsAlphaOverridden());
     }
     float EffectiveAlpha() const {
-        float alpha = m_visible ? m_user_alpha : 0.0f;
+        float alpha = m_visible ? (m_alpha_overridden ? m_user_alpha : m_base_alpha) : 0.0f;
         if (m_alpha_source != nullptr && m_alpha_source->IsAlphaOverridden())
             alpha *= m_alpha_source->EffectiveAlpha();
         return alpha;
@@ -828,13 +829,15 @@ public:
     bool  Visible() const { return m_visible; }
     float UserAlpha() const { return m_user_alpha; }
     void  SetVisible(bool v) {
-        m_visible          = v;
-        m_alpha_overridden = true;
+        m_visible            = v;
+        m_visible_overridden = true;
     }
     void SetUserAlpha(float v) {
         m_user_alpha       = v;
         m_alpha_overridden = true;
     }
+    void SetAlphaAnimation(SceneAnimationCurve curve) { m_alpha_curve = std::move(curve); }
+    void TickFieldAnimations(double runtime);
     void SetAlphaSource(SceneNode* node) { m_alpha_source = node; }
 
     const std::string& VisibleUserKey() const { return m_visible_user_binding.key; }
@@ -971,9 +974,11 @@ private:
 
     bool                               m_visible { true };
     SceneUserVisibilityBinding         m_visible_user_binding {};
+    bool                               m_visible_overridden { false };
     float                              m_user_alpha { 1.0f };
     bool                               m_alpha_overridden { false };
     SceneNode*                         m_alpha_source { nullptr };
+    std::optional<SceneAnimationCurve> m_alpha_curve;
     float                              m_brightness { 1.0f };
     bool                               m_brightness_overridden { false };
     Eigen::Vector3f                    m_color { 1.0f, 1.0f, 1.0f };
@@ -1005,6 +1010,7 @@ private:
 struct SceneImageEffectNode {
     std::string                output; // render target
     rstd::sync::Arc<SceneNode> sceneNode;
+    bool                       uses_quad_position_space { false };
 };
 
 struct SceneImageEffect {
@@ -1077,6 +1083,8 @@ public:
 
 private:
     SceneNode*  m_worldNode;
+    float       m_width { 1.0f };
+    float       m_height { 1.0f };
     std::string m_pingpong_a;
     std::string m_pingpong_b;
 
@@ -1778,6 +1786,7 @@ public:
         frameTime = t;
         elapsingTime += t;
     }
+    void                                     TickNodeFieldAnimations();
     std::vector<std::function<void(double)>> transform_updaters;
     void                                     TickTransformUpdaters();
 

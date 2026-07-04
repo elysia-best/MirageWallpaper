@@ -416,7 +416,9 @@ struct FieldScript::Impl {
     // Pre-spawned SceneNode clones available to thisScene.createLayer.
     // Populated by WireFieldScripts for audio-bar style scripts; popped
     // from the front each createLayer call.
-    std::vector<sr::SceneNode*> clone_queue;
+    std::vector<sr::SceneNode*>                                  clone_queue;
+    std::unordered_map<std::string, std::vector<sr::SceneNode*>> asset_clone_queues;
+    std::unordered_map<sr::SceneNode*, std::string>              clone_asset_keys;
 };
 
 FieldScript::FieldScript(): m_impl(std::make_unique<Impl>()) {}
@@ -425,6 +427,15 @@ FieldKind          FieldScript::field_kind() const noexcept { return m_impl->kin
 const ScriptValue& FieldScript::last_value() const noexcept { return m_impl->last_value; }
 bool               FieldScript::alive() const noexcept { return m_impl->alive; }
 std::string_view   FieldScript::script_sha() const noexcept { return m_impl->sha; }
+void FieldScript::AddAssetCloneQueue(std::string asset, std::vector<sr::SceneNode*> nodes) {
+    if (asset.empty() || nodes.empty()) return;
+    auto& queue = m_impl->asset_clone_queues[asset];
+    for (auto* node : nodes) {
+        if (! node) continue;
+        m_impl->clone_asset_keys[node] = asset;
+        queue.push_back(node);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // JsRuntime impl.
@@ -1243,6 +1254,7 @@ function __wwCreateNodeStub() {
             if (key === 'getTextureAnimation') return () => __wwCreateTexAnimStub();
             if (key === 'getAnimation')        return ()   => __wwCreateAnimationStub();
             if (key === 'getAnimationLayer')   return (_n) => __wwCreateAnimationStub();
+            if (key === 'destroyLayer')        return (_layer) => undefined;
             if (key in target) return target[key];
             return undefined;
         },
@@ -1940,24 +1952,57 @@ JSValue NodeSceneGetInitialLayerConfig(JSContext* ctx, JSValueConst, int, JSValu
     return JS_NewObject(ctx);
 }
 
-// thisScene.createLayer(model_path) — WE-style runtime layer spawn. The
-// model path is ignored: parser-side pre-spawned a queue of SceneNode clones
-// (one per expected createLayer call) when the script binding showed the
-// audio-bar pattern. Pop the next clone here; fall back to the default
-// stub when no clones remain so the script's caller still gets an object.
+// thisScene.createLayer(model_path) — WE-style runtime layer spawn. The parser
+// pre-spawns matching SceneNode clones for supported dynamic layer patterns.
+// Prefer an asset-specific queue when the script passes a model/image path,
+// then fall back to the legacy audio-bar queue.
 JSValue NodeSceneCreateLayer(JSContext* ctx, JSValueConst /*this_val*/, int argc,
                              JSValueConst* argv) {
     auto* host = static_cast<EngineHostState*>(JS_GetContextOpaque(ctx));
     auto* fs   = host->active_field_script;
-    if (! fs || fs->m_impl->clone_queue.empty()) return JS_DupValue(ctx, host->default_layer);
-    sr::SceneNode* node = fs->m_impl->clone_queue.front();
-    fs->m_impl->clone_queue.erase(fs->m_impl->clone_queue.begin());
+    if (! fs) return JS_DupValue(ctx, host->default_layer);
+
+    sr::SceneNode* node = nullptr;
+    if (argc > 0 && ! JS_IsObject(argv[0])) {
+        const char* asset = JS_ToCString(ctx, argv[0]);
+        if (asset) {
+            auto it = fs->m_impl->asset_clone_queues.find(asset);
+            if (it != fs->m_impl->asset_clone_queues.end() && ! it->second.empty()) {
+                node = it->second.front();
+                it->second.erase(it->second.begin());
+            }
+            JS_FreeCString(ctx, asset);
+        }
+    }
+    if (! node && ! fs->m_impl->clone_queue.empty()) {
+        node = fs->m_impl->clone_queue.front();
+        fs->m_impl->clone_queue.erase(fs->m_impl->clone_queue.begin());
+    }
+    if (! node) return JS_DupValue(ctx, host->default_layer);
+    node->SetVisible(true);
     if (argc > 0 && JS_IsObject(argv[0])) {
         JSValue perspective = JS_GetPropertyStr(ctx, argv[0], "perspective");
         if (! JS_IsUndefined(perspective)) node->SetPerspective(JS_ToBool(ctx, perspective) != 0);
         JS_FreeValue(ctx, perspective);
     }
     return WrapLayerNode(ctx, node);
+}
+
+JSValue NodeSceneDestroyLayer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 1) return JS_UNDEFINED;
+    if (auto* n = GetLayerNode(argv[0])) {
+        n->SetVisible(false);
+        auto* host = static_cast<EngineHostState*>(JS_GetContextOpaque(ctx));
+        auto* fs   = host ? host->active_field_script : nullptr;
+        if (fs) {
+            auto key_it = fs->m_impl->clone_asset_keys.find(n);
+            if (key_it != fs->m_impl->clone_asset_keys.end()) {
+                auto& queue = fs->m_impl->asset_clone_queues[key_it->second];
+                if (std::find(queue.begin(), queue.end(), n) == queue.end()) queue.push_back(n);
+            }
+        }
+    }
+    return JS_UNDEFINED;
 }
 
 // thisScene.getLayerIndex(layer) / sortLayer(layer, idx). sr doesn't have
@@ -2115,6 +2160,7 @@ const JSCFunctionListEntry s_layer_proto_funcs[] = {
     JS_CFUNC_DEF("getAnimation", 0, NodeGetAnimationStub),
     JS_CFUNC_DEF("getAnimationLayer", 1, NodeGetAnimationStub),
     JS_CFUNC_DEF("createLayer", 1, NodeSceneCreateLayer),
+    JS_CFUNC_DEF("destroyLayer", 1, NodeSceneDestroyLayer),
     JS_CFUNC_DEF("getLayerIndex", 1, NodeSceneGetLayerIndex),
     JS_CFUNC_DEF("sortLayer", 2, NodeSceneSortLayer),
     JS_CFUNC_DEF("play", 0, NodePlay),
@@ -2574,10 +2620,11 @@ void RunFieldScriptInit(JSContext* ctx, JsRuntime::Impl* rt, FieldScript* fs) {
 
 } // namespace
 
-FieldScript* JsRuntime::MakeFieldScript(std::string_view source, std::string_view script_sha,
-                                        FieldKind field_kind_in, const json& properties_config,
-                                        const json& initial_value, sr::SceneNode* node,
-                                        std::vector<sr::SceneNode*> clones) {
+FieldScript* JsRuntime::MakeFieldScript(
+    std::string_view source, std::string_view script_sha, FieldKind field_kind_in,
+    const json& properties_config, const json& initial_value, sr::SceneNode* node,
+    std::vector<sr::SceneNode*>                                  clones,
+    std::unordered_map<std::string, std::vector<sr::SceneNode*>> asset_clones) {
     JSContext* ctx = m_impl->ctx;
     if (! ctx) return nullptr;
 
@@ -2632,6 +2679,9 @@ FieldScript* JsRuntime::MakeFieldScript(std::string_view source, std::string_vie
     I->node          = node;
     I->wrapped_layer = wrapped; // takes ownership; freed in JsRuntime dtor
     I->clone_queue   = std::move(clones);
+    for (auto& [asset, nodes] : asset_clones) {
+        fs->AddAssetCloneQueue(std::move(asset), std::move(nodes));
+    }
 
     // 3. Wire scriptProperties._hostValues from the per-binding config so
     //    `scriptProperties.foo` returns the configured value (resolving

@@ -82,16 +82,7 @@ std::vector<VkDeviceQueueCreateInfo> Device::ChooseDeviceQueue(VkSurfaceKHR surf
     }
     m_graphics_queue.family_index           = graphic_indexs.front();
     const static float defaultQueuePriority = 0.0f;
-    {
-        VkDeviceQueueCreateInfo info {
-            .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = m_graphics_queue.family_index,
-            .queueCount       = 1,
-            .pQueuePriorities = &defaultQueuePriority,
-        };
-        queues.push_back(info);
-    }
-    m_present_queue.family_index = graphic_indexs.front();
+    m_present_queue.family_index            = graphic_indexs.front();
     if (surface) {
         index = 0;
         for (auto& prop : props) {
@@ -103,26 +94,33 @@ std::vector<VkDeviceQueueCreateInfo> Device::ChooseDeviceQueue(VkSurfaceKHR surf
         }
         if (present_indexs.empty()) {
             rstd_error("not find present queue");
-        } else if (graphic_indexs.front() != present_indexs.front()) {
+        } else {
             m_present_queue.family_index = present_indexs.front();
-            VkDeviceQueueCreateInfo info {
-                .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .queueFamilyIndex = m_present_queue.family_index,
-                .queueCount       = 1,
-                .pQueuePriorities = &defaultQueuePriority,
-            };
-            queues.push_back(info);
         }
+    }
+    for (uint32_t i = 0; i < props.size(); ++i) {
+        if (props[i].queueCount == 0) continue;
+        VkDeviceQueueCreateInfo info {
+            .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = i,
+            .queueCount       = 1,
+            .pQueuePriorities = &defaultQueuePriority,
+        };
+        queues.push_back(info);
     }
     return queues;
 }
 
 bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D extent,
                     Device& device) {
-    device.dld      = vvk::DeviceDispatch { inst.inst().Dispatch() };
-    device.m_gpu    = inst.gpu();
-    device.m_limits = inst.gpu().GetProperties().limits;
+    device.dld                    = vvk::DeviceDispatch { inst.inst().Dispatch() };
+    device.m_instance             = *inst.inst();
+    device.m_instance_api_version = inst.api_version();
+    device.m_gpu                  = inst.gpu();
+    device.m_limits               = inst.gpu().GetProperties().limits;
     device.set_out_extent(extent);
+    device.m_enabled_instance_extensions.assign(inst.enabled_extensions().begin(),
+                                                inst.enabled_extensions().end());
 
     Set<std::string> tested_exts;
     {
@@ -141,6 +139,7 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
         tested_exts.begin(), tested_exts.end(), tested_exts_c.begin(), [](const auto& s) {
             return s.c_str();
         });
+    device.m_enabled_device_extensions.assign(tested_exts.begin(), tested_exts.end());
     bool rq_surface = ! inst.offscreen();
 
     // Opt in to optional features the renderer actually uses. Geometry
@@ -151,6 +150,11 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR,
         .pNext = nullptr,
     };
+    VkPhysicalDeviceSynchronization2FeaturesKHR supported_sync2 {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
+        .pNext = nullptr,
+    };
+    supported_timeline.pNext = &supported_sync2;
     VkPhysicalDeviceFeatures2KHR supported2 {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR,
         .pNext = &supported_timeline,
@@ -169,6 +173,14 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
         .pNext             = nullptr,
         .timelineSemaphore = VK_TRUE,
     };
+    const bool enable_sync2 = exists(tested_exts, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) &&
+                              supported_sync2.synchronization2;
+    VkPhysicalDeviceSynchronization2FeaturesKHR enabled_sync2 {
+        .sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
+        .pNext            = nullptr,
+        .synchronization2 = enable_sync2 ? VK_TRUE : VK_FALSE,
+    };
+    if (enable_sync2) enabled_timeline.pNext = &enabled_sync2;
 
     VVK_CHECK_BOOL_RE(vvk::Device::Create(device.m_device,
                                           *device.m_gpu,
@@ -196,7 +208,7 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
     }
     {
         VmaAllocatorCreateInfo allocatorInfo = {};
-        allocatorInfo.vulkanApiVersion       = SCENERENDERER_VULKAN_VERSION;
+        allocatorInfo.vulkanApiVersion       = device.m_instance_api_version;
         allocatorInfo.physicalDevice         = *device.m_gpu;
         allocatorInfo.device                 = *device.m_device;
         allocatorInfo.instance               = *inst.inst();

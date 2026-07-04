@@ -854,15 +854,15 @@ void TextLayouter::SetText(std::string_view utf8) {
     }
 
     if (have_glyph_bounds) {
-        // Keep the source box in the same centered layout frame as the glyph
-        // vertices. Tight ink cropping would be re-stretched by the compose
-        // pass and makes small clock/date text look soft.
-        const float source_half_w =
-            std::max({ text_w * 0.5f, std::abs(glyph_min_x), std::abs(glyph_max_x) });
-        const float source_half_h =
-            std::max({ text_h * 0.5f, std::abs(glyph_min_y), std::abs(glyph_max_y) });
-        im.last_source_w = std::max(1.0f, source_half_w * 2.0f);
-        im.last_source_h = std::max(1.0f, source_half_h * 2.0f);
+        im.last_source_w               = std::max(1.0f, glyph_max_x - glyph_min_x);
+        im.last_source_h               = std::max(1.0f, glyph_max_y - glyph_min_y);
+        const float       shift_x      = -0.5f * (glyph_min_x + glyph_max_x);
+        const float       shift_y      = -0.5f * (glyph_min_y + glyph_max_y);
+        const std::size_t vertex_count = q * 4;
+        for (std::size_t i = 0; i < vertex_count; ++i) {
+            im.positions[i * 3 + 0] += shift_x;
+            im.positions[i * 3 + 1] += shift_y;
+        }
     }
 
     // Push into the mesh. Vertex array's stride is interleaved with padding

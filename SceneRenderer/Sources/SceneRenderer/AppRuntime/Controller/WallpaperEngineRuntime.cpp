@@ -778,6 +778,7 @@ void SceneRenderController::on(RenderDraw&&) {
             m_scene->shaderValueUpdater->SetAudioSpectrum(
                 std::span<const float, 64>(fi.audio_left),
                 std::span<const float, 64>(fi.audio_right));
+            m_scene->TickNodeFieldAnimations();
             sr::script::TickSceneScripts(*m_scene, fi);
             m_scene->TickCameraPaths();
             m_scene->TickMaterialShaderAnimations();

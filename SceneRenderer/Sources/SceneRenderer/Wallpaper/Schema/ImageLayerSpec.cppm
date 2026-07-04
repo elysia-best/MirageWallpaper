@@ -147,6 +147,14 @@ public:
     std::string        alpha_user_key;
 };
 
+class ImageAssetInfo {
+public:
+    std::optional<std::array<float, 2>> size;
+    std::string                         first_texture;
+};
+
+std::optional<ImageAssetInfo> LoadImageAssetInfo(fs::VFS& vfs, std::string_view image);
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(EffectFbo, name, scale);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ImageEffect, name, visible, passes, fbos, materials);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ImageObject, name, origin, angles, scale, size, visible,

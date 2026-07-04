@@ -24,11 +24,91 @@ namespace
 using shader_lex::Cursor;
 using shader_lex::LineWalker;
 
+bool TryParseAnnotationJson(std::string_view source, nlohmann::json& result) {
+    try {
+        result = nlohmann::json::parse(source);
+    } catch (nlohmann::json::parse_error&) {
+        return false;
+    }
+    return true;
+}
+
+bool CanStartJsonNumber(std::string_view source, usize pos) {
+    while (pos > 0) {
+        --pos;
+        char ch = source[pos];
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') continue;
+        return ch == '[' || ch == '{' || ch == ':' || ch == ',';
+    }
+    return true;
+}
+
+std::optional<std::string> NormalizeAnnotationNumbers(std::string_view source) {
+    std::string out;
+    out.reserve(source.size());
+
+    bool in_string = false;
+    bool escaped   = false;
+    bool changed   = false;
+    for (usize i = 0; i < source.size();) {
+        char ch = source[i];
+        if (in_string) {
+            out.push_back(ch);
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            ++i;
+            continue;
+        }
+
+        if (ch == '"') {
+            in_string = true;
+            out.push_back(ch);
+            ++i;
+            continue;
+        }
+
+        if ((ch == '-' || (ch >= '0' && ch <= '9')) && CanStartJsonNumber(source, i)) {
+            if (ch == '-') {
+                if (i + 1 >= source.size() || source[i + 1] < '0' || source[i + 1] > '9') {
+                    out.push_back(ch);
+                    ++i;
+                    continue;
+                }
+                out.push_back(ch);
+                ++i;
+            }
+            while (i + 1 < source.size() && source[i] == '0' && source[i + 1] >= '0' &&
+                   source[i + 1] <= '9') {
+                changed = true;
+                ++i;
+            }
+        }
+
+        out.push_back(source[i]);
+        ++i;
+    }
+
+    if (! changed) return std::nullopt;
+    return out;
+}
+
+bool ParseAnnotationJson(std::string_view source, nlohmann::json& result) {
+    if (TryParseAnnotationJson(source, result)) return true;
+    auto normalized = NormalizeAnnotationNumbers(source);
+    if (normalized && TryParseAnnotationJson(*normalized, result)) return true;
+    return ParseJson(source, result);
+}
+
 void HandleComboLine(WPShaderInfo* info, std::string_view line) {
     auto brace = line.find('{');
     if (brace == std::string_view::npos) return;
     nlohmann::json j;
-    if (! ParseJson(std::string(line.substr(brace)), j)) return;
+    if (! ParseAnnotationJson(line.substr(brace), j)) return;
     if (! j.contains("combo")) return;
     wpscene::WPCombo combo;
     combo.FromJson(j);
@@ -56,7 +136,7 @@ void HandleUniformLine(WPShaderInfo* info, std::span<const WPShaderTexInfo> texi
     while (! c.Eof() && c.Peek() != '{') c.Advance();
     if (c.Eof()) return;
     nlohmann::json sv_json;
-    if (! ParseJson(std::string(line.substr(c.Pos())), sv_json)) return;
+    if (! ParseAnnotationJson(line.substr(c.Pos()), sv_json)) return;
 
     auto name = tn->name;
 

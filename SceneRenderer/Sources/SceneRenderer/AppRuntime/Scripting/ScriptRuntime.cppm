@@ -141,11 +141,11 @@ public:
     // `node` (nullable) is the SceneNode the script will see as `thisLayer`
     // inside init/update. When null, `thisLayer` falls back to a generic
     // stub (the JS-side default created at bootstrap).
-    FieldScript* MakeFieldScript(std::string_view source, std::string_view script_sha,
-                                 FieldKind field_kind, const nlohmann::json& properties_config,
-                                 const nlohmann::json&        initial_value,
-                                 sr::SceneNode*              node   = nullptr,
-                                 std::vector<sr::SceneNode*> clones = {});
+    FieldScript* MakeFieldScript(
+        std::string_view source, std::string_view script_sha, FieldKind field_kind,
+        const nlohmann::json& properties_config, const nlohmann::json& initial_value,
+        sr::SceneNode* node = nullptr, std::vector<sr::SceneNode*> clones = {},
+        std::unordered_map<std::string, std::vector<sr::SceneNode*>> asset_clones = {});
 
     // Install the Scene root that backs `thisScene`. `thisScene.getLayer(name)`
     // searches from this node. Call once per scene after parsing finishes.
@@ -215,6 +215,7 @@ public:
     const ScriptValue& last_value() const noexcept;
     bool               alive() const noexcept;
     std::string_view   script_sha() const noexcept;
+    void               AddAssetCloneQueue(std::string asset, std::vector<sr::SceneNode*> nodes);
 
     // Impl is intentionally exposed inside the sr.script module so
     // JsRuntime::Impl (in the same module) can mutate it directly. Treated

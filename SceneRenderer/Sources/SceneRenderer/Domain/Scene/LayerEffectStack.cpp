@@ -10,10 +10,41 @@ import rstd.cppstd;
 
 using namespace sr;
 
+namespace
+{
+
+void ChangeMeshToUnitQuad(SceneMesh& target) {
+    SceneMesh mesh;
+    // clang-format off
+    const std::array pos = {
+        0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        1.0f, 1.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+    };
+    const std::array tex_coord = {
+        0.0f, 0.0f,
+        0.0f, 1.0f,
+        1.0f, 0.0f,
+        1.0f, 1.0f,
+    };
+    // clang-format on
+
+    SceneVertexArray vertex(MakeAttrSet({ VAttr::Position, VAttr::TexCoord }), 4);
+    vertex.SetVertex(WE_IN_POSITION, pos);
+    vertex.SetVertex(WE_IN_TEXCOORD, tex_coord);
+    mesh.AddVertexArray(std::move(vertex));
+    target.ChangeMeshDataFrom(mesh);
+}
+
+} // namespace
+
 SceneImageEffectLayer::SceneImageEffectLayer(SceneNode* node, float w, float h,
                                              std::string_view pingpong_a,
                                              std::string_view pingpong_b)
     : m_worldNode(node),
+      m_width(w),
+      m_height(h),
       m_pingpong_a(pingpong_a),
       m_pingpong_b(pingpong_b),
       m_final_mesh(std::make_unique<SceneMesh>()) {};
@@ -84,7 +115,13 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
             // inherits the layer's world transform (including any container
             // parent chain) via ModelTrans. Identity local — no CopyTrans dance.
             last_output->sceneNode->SetParentAnchor(m_worldNode);
-            mesh.ChangeMeshDataFrom(*m_final_mesh);
+            if (last_output->uses_quad_position_space) {
+                last_output->sceneNode->SetTranslate({ -m_width * 0.5f, -m_height * 0.5f, 0.0f });
+                last_output->sceneNode->SetScale({ m_width, m_height, 1.0f });
+                ChangeMeshToUnitQuad(mesh);
+            } else {
+                mesh.ChangeMeshDataFrom(*m_final_mesh);
+            }
         }
         last_output->sceneNode->SetAlphaSource(m_worldNode);
     }

@@ -24,7 +24,12 @@ using namespace sr::vulkan;
 constexpr uint64_t vk_wait_time { 10u * 1000u * 1000000u };
 constexpr uint32_t vk_command_num { 2 };
 
-constexpr std::array<Extension, 0> base_inst_exts {};
+constexpr std::array base_inst_exts {
+    Extension { false, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME },
+    Extension { false, VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME },
+    Extension { false, VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME },
+    Extension { false, VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME },
+};
 constexpr std::array base_device_exts {
     Extension { false, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME },
     Extension { true, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME },
@@ -37,7 +42,20 @@ constexpr std::array base_device_exts {
     // Timeline semaphores are required by the 4b41483 render infrastructure
     // (upload/readback overlap). MoltenVK supports timelineSemaphore.
     Extension { true, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME },
+    Extension { false, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME },
 };
+
+void AppendVideoDeviceExtensions(std::vector<Extension>& device_exts) {
+    device_exts.push_back({ false, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME });
+    device_exts.push_back({ false, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME });
+    device_exts.push_back({ false, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME });
+    device_exts.push_back({ false, VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME });
+    device_exts.push_back({ false, VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME });
+    device_exts.push_back({ false, VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME });
+    device_exts.push_back({ false, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME });
+    device_exts.push_back({ false, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME });
+    device_exts.push_back({ false, VK_EXT_SHADER_OBJECT_EXTENSION_NAME });
+}
 
 struct VulkanRender::Impl {
     Impl()  = default;
@@ -240,6 +258,9 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
 
     std::vector<Extension> inst_exts { base_inst_exts.begin(), base_inst_exts.end() };
     std::vector<Extension> device_exts { base_device_exts.begin(), base_device_exts.end() };
+    if (info.video_hwdec != "none") {
+        AppendVideoDeviceExtensions(device_exts);
+    }
 
     if (! info.offscreen) {
         std::transform(info.surface_info.instanceExts.begin(),
@@ -258,7 +279,9 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
         rstd_info("vulkan valid layer \"{}\" enabled", VALIDATION_LAYER_NAME);
     }
 
-    if (! Instance::Create(m_instance, inst_exts, inst_layers)) {
+    const auto instance_api_version =
+        info.video_hwdec == "none" ? SCENERENDERER_VULKAN_VERSION : VK_API_VERSION_1_3;
+    if (! Instance::Create(m_instance, inst_exts, inst_layers, instance_api_version)) {
         rstd_error("init vulkan failed");
         return false;
     }

@@ -43,7 +43,8 @@ SceneVertexArray::~SceneVertexArray() {
     if (m_pData != nullptr) delete[] m_pData;
 }
 SceneVertexArray::SceneVertexArray(SceneVertexArray&& o) noexcept
-    : m_attributes(o.m_attributes),
+    : m_attributes(std::move(o.m_attributes)),
+      m_options(std::move(o.m_options)),
       m_pData(std::exchange(o.m_pData, nullptr)),
       m_oneSize(o.m_oneSize),
       m_size(o.m_size),
@@ -52,7 +53,10 @@ SceneVertexArray::SceneVertexArray(SceneVertexArray&& o) noexcept
       m_generation(o.m_generation) {}
 
 SceneVertexArray& SceneVertexArray::operator=(SceneVertexArray&& o) noexcept {
-    m_attributes = o.m_attributes;
+    if (this == &o) return *this;
+    if (m_pData != nullptr) delete[] m_pData;
+    m_attributes = std::move(o.m_attributes);
+    m_options    = std::move(o.m_options);
     m_pData      = std::exchange(o.m_pData, nullptr);
     m_oneSize    = o.m_oneSize;
     m_size       = o.m_size;
@@ -63,13 +67,13 @@ SceneVertexArray& SceneVertexArray::operator=(SceneVertexArray&& o) noexcept {
 }
 
 bool SceneVertexArray::AddVertex(const float* data) {
-    if (m_size + m_oneSize >= m_capacity) return false;
+    if (m_size + m_oneSize > m_capacity) return false;
     usize  pos   = 0;
     usize  mpos  = 0;
     float* mData = m_pData + m_size;
     for (const auto& el : m_attributes) {
         auto typeSize = SceneVertexArray::TypeCount(el.type);
-        std::copy(data + pos, data + pos + typeSize, m_pData + mpos);
+        std::copy(data + pos, data + pos + typeSize, mData + mpos);
         pos += typeSize;
         mpos += SceneVertexArray::RealAttributeSize(el);
     }
