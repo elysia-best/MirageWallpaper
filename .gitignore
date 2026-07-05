@@ -27,3 +27,4 @@ build-*
 /CMakeUserPresets.json
 /defaultprojects
 .DS_Store
+assets
