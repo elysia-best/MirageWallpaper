@@ -1,6 +1,8 @@
 add_library(VideoRendererEngine STATIC
     VideoManifest.h
     VideoManifest.mm
+    VRMemoryAssetLoader.h
+    VRMemoryAssetLoader.mm
     VideoRendererEngine.h
     VideoRendererEngine.mm)
 

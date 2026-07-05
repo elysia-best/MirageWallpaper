@@ -1,5 +1,7 @@
 #import "VideoRendererEngine.h"
 
+#import "VRMemoryAssetLoader.h"
+
 #import <QuartzCore/QuartzCore.h>
 
 NSString *const VRVideoEngineErrorDomain = @"VideoRenderer.Engine";
@@ -36,6 +38,7 @@ static float VRClampVolume(float value) {
 @property (nonatomic, strong) AVPlayerLayer *playerLayer;
 @property (nonatomic, strong) AVPlayerLooper *looper;
 @property (nonatomic, strong) id activity;
+@property (nonatomic, strong) VRMemoryAssetLoader *memLoader;   // 持有内存加载器，避免释放
 @property (nonatomic, assign) BOOL loaded;
 @property (nonatomic, assign) float volume;
 @property (nonatomic, assign) BOOL muted;
@@ -107,14 +110,32 @@ static float VRClampVolume(float value) {
     [self.player pause];
     [self.player removeAllItems];
     self.looper = nil;
+    self.memLoader = nil;
     self.loaded = NO;
+
+    NSError *readErr = nil;
+    NSData *prewarm = [NSData dataWithContentsOfURL:manifest.videoURL
+                                            options:NSDataReadingMappedIfSafe
+                                              error:&readErr];
+    if (prewarm != nil) {
+        volatile char c = 0;
+        const uint8_t *bytes = (const uint8_t *)prewarm.bytes;
+        NSUInteger len = prewarm.length;
+        NSUInteger step = 4096;
+        for (NSUInteger i = 0; i < len; i += step) {
+            c = bytes[i];
+        }
+        (void)c;
+        // 用一个长生命周期的 loader 持有这份数据，保证页缓存常驻
+        self.memLoader = [VRMemoryAssetLoader loaderWithData:prewarm fileURL:manifest.videoURL];
+    }
 
     NSDictionary *assetOptions = @{
         AVURLAssetPreferPreciseDurationAndTimingKey: @NO,
     };
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:manifest.videoURL options:assetOptions];
     AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:asset];
-    item.preferredForwardBufferDuration = 3.0;
+    item.preferredForwardBufferDuration = 0;   // 不限制缓冲，尽量多预读
 
     if (![self.player canInsertItem:item afterItem:nil]) {
         if (error != NULL) {
