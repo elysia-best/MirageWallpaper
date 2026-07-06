@@ -1074,8 +1074,7 @@ void TextureCache::PumpVideoTextures(double dt_seconds) {
                 s.last_pts = -1.0;
                 break;
             }
-            const bool decoder_looped = kind == wavsen::video::NextFrame::Looped;
-            double     frame_pts      = -1.0;
+            double frame_pts = -1.0;
             switch (fkind) {
             case wavsen::video::FrameKind::VulkanShared: frame_pts = vkv.pts_seconds; break;
             case wavsen::video::FrameKind::VaapiDrm: frame_pts = drmv.pts_seconds; break;
@@ -1085,10 +1084,7 @@ void TextureCache::PumpVideoTextures(double dt_seconds) {
                 break;
             }
             advance_slot_pts(s, frame_pts);
-            if (decoder_looped) s.pts_acc = std::max(frame_pts, 0.0);
-            s.last_pts = frame_pts;
-            got_new    = true;
-            if (decoder_looped) break;
+            got_new = true;
         }
         if (! got_new && s.have_frame) continue; /* nothing to upload */
         if (! got_new) continue;

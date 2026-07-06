@@ -1084,7 +1084,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::Material& wpmat, Scene* pScene, S
                 .preprocess_info = {},
             });
             pWPShaderInfo->combos[std::string(WE_CB_GS_ENABLED)] = "1";
-            geometry_shader_enabled                              = true;
+            if (out_geometry_shader) *out_geometry_shader                              = true;
         }
     }
     sd_units.push_back({
@@ -1477,7 +1477,7 @@ void IndexImageTextureFallbacks(ParseContext& context, std::span<SceneObjectVar>
 
 void LoadConstvalue(
     SceneMaterial& material, const wpscene::Material& wpmat, const WPShaderInfo& info,
-    owe::Map<std::string, SceneShaderValueAnimation>* final_quad_shader_values = nullptr) {
+    sr::Map<std::string, SceneShaderValueAnimation>* final_quad_shader_values = nullptr) {
     // load glname from alias and load to constvalue
     for (const auto& cs : wpmat.constantshadervalues) {
         const auto&               name   = cs.first;
@@ -2182,7 +2182,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj) {
             scene.renderTargets[effect_ppong_a] = {
                 .width                = effect_extent[0],
                 .height               = effect_extent[1],
-                .allowReuse           = ! wpfbo.unique,
+                .allowReuse           = true,
                 .force_clear          = ! wpimgobj.fullscreen,
                 .clear_on_first_write = true,
             };
@@ -2342,6 +2342,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj) {
                 }
 
                 // load glname from alias and load to constvalue
+                sr::Map<std::string, SceneShaderValueAnimation> final_quad_shader_values;
                 LoadConstvalue(material, wpmat, wpEffShaderInfo, &final_quad_shader_values);
                 auto spMesh = std::make_shared<SceneMesh>();
                 {

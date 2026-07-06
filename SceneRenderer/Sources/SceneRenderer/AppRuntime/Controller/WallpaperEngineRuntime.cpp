@@ -354,11 +354,11 @@ void ApplyUserPropertyToImageColor(Scene& scene, const std::string& key,
                                              : CurrentImagePropertyAlpha(binding.node);
             std::array<float, 4> color4 { color.x(), color.y(), color.z(), alpha };
             if (MaterialHasShaderUniform(*material, G_COLOR4)) {
-                material->customShader.constValues[G_COLOR4] = color4;
+                material->customShader.constValues[std::string(G_COLOR4)] = color4;
                 material->customShader.dirty                   = true;
             }
             if (MaterialHasShaderUniform(*material, G_COLOR)) {
-                material->customShader.constValues[G_COLOR] = color3;
+                material->customShader.constValues[std::string(G_COLOR)] = color3;
                 material->customShader.dirty                  = true;
             }
         }
@@ -389,15 +389,15 @@ void ApplyUserPropertyToImageAlpha(Scene& scene, const std::string& key,
             if (! material) continue;
             const bool has_user_alpha = MaterialHasShaderUniform(*material, G_USERALPHA);
             if (has_user_alpha) {
-                material->customShader.constValues[G_USERALPHA] = alpha;
+                material->customShader.constValues[std::string(G_USERALPHA)] = alpha;
                 material->customShader.dirty                      = true;
             }
             if (MaterialHasShaderUniform(*material, G_ALPHA)) {
-                material->customShader.constValues[G_ALPHA] = alpha;
+                material->customShader.constValues[std::string(G_ALPHA)] = alpha;
                 material->customShader.dirty                  = true;
             }
             if (! has_user_alpha && MaterialHasShaderUniform(*material, G_COLOR4)) {
-                material->customShader.constValues[G_COLOR4] = color4;
+                material->customShader.constValues[std::string(G_COLOR4)] = color4;
                 material->customShader.dirty                   = true;
             }
         }

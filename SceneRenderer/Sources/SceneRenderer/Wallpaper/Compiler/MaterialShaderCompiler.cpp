@@ -11,6 +11,7 @@ import rstd.log;
 import rstd.cppstd;
 import sr.shader_compile;
 import sr.scene;
+import sr.spec_texs;
 import sr.pkg_asset_version;
 import sr.utils;
 import :shader_lex;
