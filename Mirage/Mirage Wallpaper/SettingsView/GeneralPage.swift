@@ -126,6 +126,21 @@ struct GeneralPage: SettingsPage {
             .id(pathRefresh)
 
             Section {
+                Picker("Steam API 线路", selection: $viewModel.settings.steamAPIEndpoint) {
+                    Text("自动（按时区）").tag(GSSteamAPIEndpoint.auto)
+                    Text("官方 (api.steampowered.com)").tag(GSSteamAPIEndpoint.official)
+                    Text("镜像 (steams.524228.xyz)").tag(GSSteamAPIEndpoint.mirror)
+                }
+                .onChange(of: viewModel.settings.steamAPIEndpoint) { _, _ in
+                    AppDelegate.shared.workshopViewModel.items = []
+                    AppDelegate.shared.workshopViewModel.currentPage = 1
+                    AppDelegate.shared.workshopViewModel.search()
+                }
+            } header: {
+                Label("创意工坊", systemImage: "network")
+            }
+
+            Section {
                 Toggle("详细日志（供调试）", isOn: $viewModel.settings.verboseLog)
                 HStack {
                     Text("重置所有设置")
