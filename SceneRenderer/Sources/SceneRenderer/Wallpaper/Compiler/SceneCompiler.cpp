@@ -1287,6 +1287,27 @@ bool CanCompositeFinalEffectShader(std::string_view shader) {
            shader == "effects/scroll";
 }
 
+bool HasShaderCombo(const WPShaderInfo& info, std::string_view combo_name) {
+    return std::any_of(info.combo_defs.begin(), info.combo_defs.end(), [&](const auto& combo) {
+        return combo.combo == combo_name;
+    });
+}
+
+bool HasShaderTextureMaterial(const WPShaderInfo& info, std::string_view material_key) {
+    return std::any_of(
+        info.texture_uniforms.begin(), info.texture_uniforms.end(), [&](const auto& tex) {
+            return tex.material == material_key;
+        });
+}
+
+bool CanCompositeFinalEffectMaterial(std::string_view shader, const WPShaderInfo& info) {
+    if (CanCompositeFinalEffectShader(shader)) return true;
+
+    // TODO: WE does not document this as the final-composite rule. This is
+    // inferred from shaders that sample `previous` and expose TRANSPARENCY.
+    return HasShaderCombo(info, "TRANSPARENCY") && HasShaderTextureMaterial(info, "previous");
+}
+
 void NormalizeEffectPositionCurve(SceneAnimationCurve& curve) {
     auto normalize_axis = [&](std::vector<SceneAnimationKey>& keys) {
         for (auto& key : keys) {
@@ -2195,7 +2216,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj) {
         }
 
         int32_t     i_eff = -1;
-        std::string last_effect_shader;
+        bool        last_effect_can_composite_final { false };
         for (const auto& wpeffobj : wpimgobj.effects) {
             i_eff++;
             if (! wpeffobj.visible && wpeffobj.visible_user.empty()) {
@@ -2423,7 +2444,10 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj) {
                     eff_mat_ok = false;
                     break;
                 }
-                if (auto* mat = spMesh->Material(); mat != nullptr) last_effect_shader = mat->name;
+                if (auto* mat = spMesh->Material(); mat != nullptr) {
+                    last_effect_can_composite_final =
+                        CanCompositeFinalEffectMaterial(mat->name, wpEffShaderInfo);
+                }
                 spEffNode->AddMesh(spMesh);
 
                 context.shader_updater->SetNodeData(spEffNode.as_ptr(), svData);
@@ -2443,7 +2467,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj) {
         }
 
         if (! wpimgobj.fullscreen && ! isPassthrough && ! wpimgobj.copybackground &&
-            ! CanCompositeFinalEffectShader(last_effect_shader)) {
+            ! last_effect_can_composite_final) {
             nlohmann::json    json;
             wpscene::Material passthrough_mat;
             if (! sr::ParseJson(

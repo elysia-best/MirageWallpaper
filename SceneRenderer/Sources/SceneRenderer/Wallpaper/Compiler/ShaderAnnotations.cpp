@@ -166,6 +166,7 @@ void HandleUniformLine(WPShaderInfo* info, std::span<const WPShaderTexInfo> texi
                 if (compos[i]) info->combos[wput.components[i].combo] = "1";
             }
         }
+        info->texture_uniforms.push_back(std::move(wput));
     } else {
         wpscene::WPUniformVar var;
         var.FromJson(sv_json, std::string(name));
