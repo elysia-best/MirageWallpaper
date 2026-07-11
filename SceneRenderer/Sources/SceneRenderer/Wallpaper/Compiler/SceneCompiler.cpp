@@ -1507,15 +1507,22 @@ bool IsShaderPositionUniform(const WPShaderInfo& info, const std::string& glname
     return false;
 }
 
-bool UsesEffectQuadPositionSpace(const wpscene::Material& wpmat) {
+bool UsesEffectPositionSpace(const wpscene::Material& wpmat) {
     if (wpmat.shader != "effects/spin" && wpmat.shader != "effects/transform") return false;
+    auto mode_it = wpmat.combos.find("MODE");
+    return mode_it != wpmat.combos.end() && mode_it->second == 1;
+}
+
+bool UsesUnitFinalQuad(const wpscene::Material& wpmat) {
+    if (wpmat.shader != "effects/transform") return false;
     auto mode_it = wpmat.combos.find("MODE");
     return mode_it != wpmat.combos.end() && mode_it->second == 1;
 }
 
 bool CanCompositeFinalEffectShader(std::string_view shader) {
     return IsLayerCompositeShader(shader) || shader == "effects/transform" ||
-           shader == "effects/scroll" || shader == "effects/perspective";
+           shader == "effects/scroll" || shader == "effects/spin" ||
+           shader == "effects/perspective";
 }
 
 bool HasShaderCombo(const WPShaderInfo& info, std::string_view combo_name) {
@@ -1798,7 +1805,7 @@ void LoadConstvalue(
         } else {
             std::vector<float> const_value = value;
             bool               normalize_position =
-                UsesEffectQuadPositionSpace(wpmat) && IsShaderPositionUniform(info, glname);
+                UsesEffectPositionSpace(wpmat) && IsShaderPositionUniform(info, glname);
             std::optional<SceneShaderValueAnimation> final_quad_value;
             if (normalize_position && const_value.size() >= 2) {
                 final_quad_value.emplace();
@@ -2787,7 +2794,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj) {
                 imgEffect->nodes.push_back(SceneImageEffectNode {
                     .output                   = matOutRT,
                     .sceneNode                = spEffNode.clone(),
-                    .uses_quad_position_space = UsesEffectQuadPositionSpace(wpmat),
+                    .uses_unit_final_quad     = UsesUnitFinalQuad(wpmat),
                     .final_quad_shader_values = std::move(final_quad_shader_values),
                 });
             }
@@ -3920,7 +3927,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
                     effect->nodes.push_back(SceneImageEffectNode {
                         .output                   = matOutRT,
                         .sceneNode                = effect_node.clone(),
-                        .uses_quad_position_space = UsesEffectQuadPositionSpace(wpmat),
+                        .uses_unit_final_quad     = UsesUnitFinalQuad(wpmat),
                         .final_quad_shader_values = std::move(final_quad_shader_values),
                     });
                 }
