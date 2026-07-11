@@ -300,7 +300,9 @@ inline void WritePipelineShaderStages(PipelineKeyWriter&         writer,
     std::sort(records.begin(), records.end(), [](const auto& lhs, const auto& rhs) {
         const auto lhs_stage = static_cast<std::uint32_t>(lhs.stage);
         const auto rhs_stage = static_cast<std::uint32_t>(rhs.stage);
-        if (lhs_stage != rhs_stage) return lhs_stage < rhs_stage;
+        if (lhs.stage != rhs.stage) {
+            return static_cast<int>(lhs.stage) < static_cast<int>(rhs.stage);
+        }
         return lhs.entry_point.compare(rhs.entry_point) < 0;
     });
 
