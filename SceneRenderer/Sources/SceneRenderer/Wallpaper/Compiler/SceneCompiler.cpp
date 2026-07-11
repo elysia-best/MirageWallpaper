@@ -197,7 +197,7 @@ bool AppendLayerCompositePassthroughEffect(fs::VFS& vfs, wpscene::ImageObject& i
     }
 
     wpscene::ImageEffect effect;
-    effect.name    = "solidlayer composite";
+    effect.name    = "linked layer composite";
     effect.visible = true;
     effect.materials.push_back(std::move(material));
     image.effects.push_back(std::move(effect));
@@ -2097,10 +2097,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj) {
     }
     const bool is_hidden_link_source =
         context.hidden_link_source_ids.count(static_cast<std::int32_t>(wpimgobj.id)) != 0;
-    if ((wpimgobj.solid || wpimgobj.solid_layer) && ! has_author_effect && is_hidden_link_source) {
-        AppendLayerCompositePassthroughEffect(vfs, wpimgobj);
-    }
-    if (wpimgobj.composite_layer && ! has_author_effect) {
+    if (! has_author_effect && (is_hidden_link_source || wpimgobj.composite_layer)) {
         AppendLayerCompositePassthroughEffect(vfs, wpimgobj);
     }
 
