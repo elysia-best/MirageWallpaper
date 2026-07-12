@@ -233,6 +233,13 @@ public:
     usize    CapacitySizeof() const { return m_capacity * Unit_Byte_Size; }
     uint64_t DataGeneration() const { return m_generation; }
 
+    // Dynamic meshes may still contain topology which is invariant for their
+    // whole lifetime (particle quad indices, for example). Such data is
+    // uploaded once through the static mesh cache while the vertex streams
+    // remain dynamic.
+    bool StaticTopology() const noexcept { return m_static_topology; }
+    void SetStaticTopology(bool value = true) noexcept { m_static_topology = value; }
+
     uint32_t ID() const { return m_id; }
     void     SetID(uint32_t id) { m_id = id; }
 
@@ -245,6 +252,8 @@ private:
     usize     m_capacity;
 
     usize m_render_size { std::numeric_limits<usize>::max() };
+
+    bool m_static_topology { false };
 
     uint32_t m_id { std::numeric_limits<uint32_t>::max() };
     uint64_t m_generation { 1 };
@@ -282,8 +291,22 @@ public:
     // VertexCount() inflated when fewer segments are emitted this frame.
     void ResetSize() noexcept;
 
+    // Per-frame particle generators fill a whole stream at once.  Expose the
+    // already-owned capacity and commit the final vertex count once, rather
+    // than treating every generated particle as an independent mutation (and
+    // bumping the upload generation for each one).
+    std::span<float> DynamicWriteData() noexcept { return { m_pData, m_capacity }; }
+    bool CommitDynamicVertexCount(usize count) noexcept;
+
     bool GetOption(std::string_view) const;
     void SetOption(std::string_view, bool);
+
+    // An instanced particle mesh uses one static corner stream and one stream
+    // whose attributes advance once per particle instead of once per corner.
+    bool InstanceRate() const noexcept { return m_instance_rate; }
+    void SetInstanceRate(bool value = true) noexcept { m_instance_rate = value; }
+    bool StaticData() const noexcept { return m_static_data; }
+    void SetStaticData(bool value = true) noexcept { m_static_data = value; }
 
     const float* Data() const { return m_pData; }
     usize        DataSize() const { return m_size; }
@@ -311,6 +334,9 @@ private:
     std::vector<SceneVertexAttribute> m_attributes;
 
     Map<std::string, bool> m_options;
+
+    bool m_instance_rate { false };
+    bool m_static_data { false };
 
     float* m_pData { nullptr };
     usize  m_oneSize { 0 };
@@ -758,6 +784,11 @@ public:
     void SetPrimitive(MeshPrimitive v) { m_primitive = v; }
     void SetPointSize(uint32_t v) { m_pointSize = v; }
 
+    bool ParticleInstanced() const noexcept { return m_particle_instanced; }
+    void SetParticleInstanced(bool value = true) noexcept { m_particle_instanced = value; }
+    u32  ParticleInstanceCount() const noexcept { return m_particle_instance_count; }
+    void SetParticleInstanceCount(u32 value) noexcept { m_particle_instance_count = value; }
+
     // ---- New submesh API ----
     const std::vector<Submesh>& Submeshes() const { return m_data->submeshes; }
     std::vector<Submesh>&       Submeshes() { return m_data->submeshes; }
@@ -824,6 +855,8 @@ private:
     MeshPrimitive     m_primitive { MeshPrimitive::TRIANGLE };
     uint32_t          m_pointSize { 1 };
     bool              m_dynamic;
+    bool              m_particle_instanced { false };
+    u32               m_particle_instance_count { 0 };
     std::atomic<bool> m_dirty;
 
     std::shared_ptr<Data>                       m_data;      // shared via ChangeMeshDataFrom
@@ -1549,6 +1582,10 @@ struct Particle {
 
     float     random { 0.0f };
     bool      mark_new { true };
+    // Stable identity inside one ParticleSubSystem. The dense simulation array
+    // is compacted as particles die, so operator-local state must never key
+    // itself by the transient vector index.
+    u32       slot_id { std::numeric_limits<u32>::max() };
     InitValue init {};
 };
 
@@ -1920,6 +1957,10 @@ public:
     void AddInitializer(ParticleInitOp&&);
     void AddOperator(ParticleOperatorOp&&);
 
+    void SetUsesAudioResponse() noexcept { m_uses_audio_response = true; }
+    void SetUsesMouseControlpoint() noexcept { m_uses_mouse_controlpoint = true; }
+    void SetNeedsDirectionTransform() noexcept { m_needs_direction_transform = true; }
+
     void AddChild(std::unique_ptr<ParticleSubSystem>&&);
 
     std::span<const ParticleControlpoint> Controlpoints() const;
@@ -1939,6 +1980,12 @@ private:
     void Tick(double frame_time, bool update_mesh);
     void Warmup();
     void Advance(double frame_time, bool update_mesh);
+    u32  AcquireParticleSlotId();
+    void ReleaseParticleSlotId(Particle&);
+    void RebindOrKillChildParticles(ParticleInstance&, isize old_index, isize new_index);
+    void CompactInstance(ParticleInstance&);
+    void ClearInstanceParticles(ParticleInstance&);
+    std::unique_ptr<ParticleInstance> MakeInstance();
 
     ParticleSystem&              m_sys;
     std::shared_ptr<SceneMesh>   m_mesh;
@@ -1958,6 +2005,9 @@ private:
     double               m_start_time { 0.0 };
     bool                 m_world_space { false };
     bool                 m_started { false };
+    bool                 m_uses_audio_response { false };
+    bool                 m_uses_mouse_controlpoint { false };
+    bool                 m_needs_direction_transform { false };
 
     std::vector<std::unique_ptr<ParticleSubSystem>> m_children;
     std::vector<std::unique_ptr<ParticleInstance>>  m_instances;
@@ -1966,6 +2016,9 @@ private:
     double    m_probability { 1.0f };
     SpawnType m_spawn_type { SpawnType::STATIC };
     u32       m_trail_length { 0 };
+    u32       m_next_particle_slot_id { 0 };
+    std::vector<u32> m_free_particle_slot_ids;
+    bool      m_mesh_has_geometry { false };
 
 public:
     u32 TrailLength() const { return m_trail_length; }

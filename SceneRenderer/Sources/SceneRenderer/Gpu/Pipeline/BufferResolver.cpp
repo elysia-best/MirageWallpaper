@@ -91,11 +91,13 @@ RenderBufferResolver::prepareDrawBuffers(const DrawBufferRequest& request) {
 
     DrawBufferRefs out;
     out.render_item           = request.render_item;
-    out.dynamic               = mesh.Dynamic();
-    out.allocation_generation = resolve_allocation_generation(request, out.dynamic);
+    out.dynamic               = false;
+    out.allocation_generation = resolve_allocation_generation(request, mesh.Dynamic());
+    out.instance_count        = mesh.ParticleInstanced() ? mesh.ParticleInstanceCount() : 1;
     auto keys                 = BuildDrawBufferKeys(request, out.allocation_generation);
     out.vertex_keys.reserve(submesh.vertex_arrays.size());
-    if (out.dynamic) out.dynamic_vertices.resize(submesh.vertex_arrays.size());
+    out.dynamic_vertices.resize(submesh.vertex_arrays.size());
+    out.static_vertices.resize(submesh.vertex_arrays.size());
 
     auto& mesh_cache = m_device.mesh_cache();
     for (usize i = 0; i < submesh.vertex_arrays.size(); i++) {
@@ -103,14 +105,16 @@ RenderBufferResolver::prepareDrawBuffers(const DrawBufferRequest& request) {
         out.vertex_keys.push_back(keys[i]);
         out.draw_count += static_cast<u32>(vertex.DataSize() / vertex.OneSize());
 
-        if (out.dynamic) {
+        const bool vertex_dynamic = mesh.Dynamic() && ! vertex.StaticData();
+        if (vertex_dynamic) {
             if (! m_dynamic_buffer.allocateSubRef(vertex.CapacitySizeOf(), out.dynamic_vertices[i]))
                 return std::nullopt;
+            out.dynamic = true;
         } else {
             auto ref = mesh_cache.QueryOrUpload({ &vertex, vertex.DataGeneration() },
                                                 bytesOf(vertex.Data(), vertex.CapacitySizeOf()));
             if (! ref) return std::nullopt;
-            out.static_vertices.push_back(std::move(*ref));
+            out.static_vertices[i] = std::move(*ref);
         }
     }
 
@@ -119,9 +123,10 @@ RenderBufferResolver::prepareDrawBuffers(const DrawBufferRequest& request) {
         out.draw_count    = static_cast<u32>(index.DataCount());
         out.index_key     = keys.back();
 
-        if (out.dynamic) {
+        if (mesh.Dynamic() && ! index.StaticTopology()) {
             if (! m_dynamic_buffer.allocateSubRef(index.CapacitySizeof(), out.dynamic_index))
                 return std::nullopt;
+            out.dynamic = true;
         } else {
             auto ref = mesh_cache.QueryOrUpload({ &index, index.DataGeneration() },
                                                 bytesOf(index.Data(), index.CapacitySizeof()));
@@ -147,14 +152,26 @@ bool RenderBufferResolver::updateDynamicDrawBuffers(const DrawBufferRequest& req
         mesh.SetLayoutDirty();
         return false;
     };
-    if (buffers.dynamic_vertices.size() != submesh.vertex_arrays.size()) return require_reprepare();
-    if (buffers.vertex_keys.size() != submesh.vertex_arrays.size()) return require_reprepare();
-    if (static_cast<bool>(buffers.dynamic_index) != ! submesh.index_arrays.empty())
+    if (buffers.dynamic_vertices.size() != submesh.vertex_arrays.size() ||
+        buffers.static_vertices.size() != submesh.vertex_arrays.size())
         return require_reprepare();
+    if (buffers.vertex_keys.size() != submesh.vertex_arrays.size()) return require_reprepare();
+    if (! submesh.index_arrays.empty()) {
+        const bool needs_dynamic_index = ! submesh.index_arrays[0].StaticTopology();
+        if (static_cast<bool>(buffers.dynamic_index) != needs_dynamic_index)
+            return require_reprepare();
+        if (! needs_dynamic_index && ! buffers.static_index) return require_reprepare();
+    } else if (buffers.dynamic_index || buffers.static_index) {
+        return require_reprepare();
+    }
 
     for (usize i = 0; i < submesh.vertex_arrays.size(); i++) {
         const auto& vertex                     = submesh.vertex_arrays[i];
         buffers.vertex_keys[i].data_generation = vertex.DataGeneration();
+        if (vertex.StaticData()) {
+            if (! buffers.static_vertices[i]) return require_reprepare();
+            continue;
+        }
         if (! buffers.dynamic_vertices[i] || vertex.DataSizeOf() > buffers.dynamic_vertices[i].size)
             return require_reprepare();
         if (! m_dynamic_buffer.writeToBuf(buffers.dynamic_vertices[i],
@@ -165,14 +182,18 @@ bool RenderBufferResolver::updateDynamicDrawBuffers(const DrawBufferRequest& req
     if (! submesh.index_arrays.empty()) {
         const auto& index  = submesh.index_arrays[0];
         buffers.draw_count = static_cast<u32>(index.RenderDataCount());
+        buffers.instance_count = mesh.ParticleInstanced() ? mesh.ParticleInstanceCount() : 1;
         if (buffers.index_key) buffers.index_key->data_generation = index.DataGeneration();
-        if (! buffers.dynamic_index || index.DataSizeOf() > buffers.dynamic_index.size)
-            return require_reprepare();
-        if (! m_dynamic_buffer.writeToBuf(buffers.dynamic_index,
-                                          mutableBytesOf(index.Data(), index.DataSizeOf())))
-            return false;
+        if (! index.StaticTopology()) {
+            if (! buffers.dynamic_index || index.DataSizeOf() > buffers.dynamic_index.size)
+                return require_reprepare();
+            if (! m_dynamic_buffer.writeToBuf(buffers.dynamic_index,
+                                              mutableBytesOf(index.Data(), index.DataSizeOf())))
+                return false;
+        }
     } else if (! submesh.vertex_arrays.empty()) {
         buffers.draw_count = static_cast<u32>(submesh.vertex_arrays[0].VertexCount());
+        buffers.instance_count = 1;
     }
 
     (void)mesh.ConsumeDirtyFlags(SceneMeshDirtyData);
@@ -184,6 +205,7 @@ void RenderBufferResolver::releaseDynamicDrawBuffers(DrawBufferRefs& buffers) {
         if (ref) m_dynamic_buffer.unallocateSubRef(ref);
     }
     buffers.dynamic_vertices.clear();
+    buffers.static_vertices.clear();
     if (buffers.dynamic_index) m_dynamic_buffer.unallocateSubRef(buffers.dynamic_index);
     buffers.dynamic_index = {};
     buffers.vertex_keys.clear();

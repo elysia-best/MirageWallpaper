@@ -49,6 +49,8 @@ SceneVertexArray::SceneVertexArray(SceneVertexArray&& o) noexcept
       m_oneSize(o.m_oneSize),
       m_size(o.m_size),
       m_capacity(o.m_capacity),
+      m_instance_rate(o.m_instance_rate),
+      m_static_data(o.m_static_data),
       m_id(o.m_id),
       m_generation(o.m_generation) {}
 
@@ -61,6 +63,8 @@ SceneVertexArray& SceneVertexArray::operator=(SceneVertexArray&& o) noexcept {
     m_oneSize    = o.m_oneSize;
     m_size       = o.m_size;
     m_capacity   = o.m_capacity;
+    m_instance_rate = o.m_instance_rate;
+    m_static_data = o.m_static_data;
     m_id         = o.m_id;
     m_generation = o.m_generation;
     return *this;
@@ -117,6 +121,15 @@ void SceneVertexArray::ResetSize() noexcept {
     if (m_size == 0) return;
     m_size = 0;
     BumpDataGeneration();
+}
+
+bool SceneVertexArray::CommitDynamicVertexCount(usize count) noexcept {
+    const usize size = count * m_oneSize;
+    rstd_assert(size <= m_capacity);
+    if (size > m_capacity) return false;
+    m_size = size;
+    BumpDataGeneration();
+    return true;
 }
 
 bool SceneVertexArray::TrySetSize(usize new_size) noexcept {

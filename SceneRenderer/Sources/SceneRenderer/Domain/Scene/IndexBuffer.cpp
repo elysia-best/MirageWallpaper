@@ -21,6 +21,7 @@ SceneIndexArray::SceneIndexArray(SceneIndexArray&& o) noexcept
       m_size(o.m_size),
       m_capacity(o.m_capacity),
       m_render_size(o.m_render_size),
+      m_static_topology(o.m_static_topology),
       m_id(o.m_id),
       m_generation(o.m_generation) {}
 

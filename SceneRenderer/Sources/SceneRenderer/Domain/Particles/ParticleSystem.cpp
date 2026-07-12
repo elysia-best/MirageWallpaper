@@ -48,9 +48,91 @@ ParticleSubSystem::ParticleSubSystem(ParticleSystem& p, std::shared_ptr<SceneMes
       m_maxcount_instance(maxcount_instance),
       m_probability(probability),
       m_spawn_type(type),
-      m_trail_length(trail_length) {};
+      m_trail_length(trail_length) {
+    m_instances.reserve(m_maxcount_instance);
+}
 
 ParticleSubSystem::~ParticleSubSystem() = default;
+
+u32 ParticleSubSystem::AcquireParticleSlotId() {
+    if (! m_free_particle_slot_ids.empty()) {
+        const u32 id = m_free_particle_slot_ids.back();
+        m_free_particle_slot_ids.pop_back();
+        return id;
+    }
+    return m_next_particle_slot_id++;
+}
+
+void ParticleSubSystem::ReleaseParticleSlotId(Particle& particle) {
+    if (particle.slot_id != std::numeric_limits<u32>::max()) {
+        m_free_particle_slot_ids.push_back(particle.slot_id);
+        particle.slot_id = std::numeric_limits<u32>::max();
+    }
+}
+
+void ParticleSubSystem::RebindOrKillChildParticles(ParticleInstance& parent, isize old_index,
+                                                    isize new_index) {
+    for (auto& child : m_children) {
+        for (auto& child_instance : child->m_instances) {
+            auto& bound = child_instance->GetBoundedData();
+            if (bound.parent != &parent || bound.parent_subsystem != this ||
+                bound.particle_idx != old_index)
+                continue;
+
+            if (new_index >= 0) {
+                bound.particle_idx = new_index;
+                continue;
+            }
+
+            // eventfollow/eventspawn children are attached to this exact
+            // parent particle. Compacting a dead parent must preserve the
+            // same death transition the old sparse vector delivered.
+            if (child->Type() == SpawnType::EVENT_FOLLOW ||
+                child->Type() == SpawnType::EVENT_SPAWN)
+                child_instance->SetDeath(true);
+            bound.particle_idx = -1;
+        }
+    }
+}
+
+void ParticleSubSystem::CompactInstance(ParticleInstance& instance) {
+    auto& particles = instance.ParticlesVec();
+    auto& trails    = instance.TrailsVec();
+    usize write     = 0;
+
+    for (usize read = 0; read < particles.size(); ++read) {
+        if (! ParticleModify::LifetimeOk(particles[read])) {
+            RebindOrKillChildParticles(instance, static_cast<isize>(read), -1);
+            ReleaseParticleSlotId(particles[read]);
+            continue;
+        }
+
+        if (write != read) {
+            particles[write] = std::move(particles[read]);
+            if (read < trails.size()) {
+                if (write >= trails.size()) trails.resize(write + 1);
+                trails[write] = std::move(trails[read]);
+            }
+            RebindOrKillChildParticles(instance,
+                                       static_cast<isize>(read),
+                                       static_cast<isize>(write));
+        }
+        ++write;
+    }
+
+    particles.resize(write);
+    if (trails.size() > write) trails.resize(write);
+}
+
+void ParticleSubSystem::ClearInstanceParticles(ParticleInstance& instance) {
+    auto& particles = instance.ParticlesVec();
+    for (usize i = 0; i < particles.size(); ++i) {
+        RebindOrKillChildParticles(instance, static_cast<isize>(i), -1);
+        ReleaseParticleSlotId(particles[i]);
+    }
+    particles.clear();
+    instance.TrailsVec().clear();
+}
 
 void ParticleSubSystem::AddEmitter(ParticleEmittOp&& em) { m_emiters.emplace_back(em); }
 
@@ -87,6 +169,16 @@ void ParticleSubSystem::AddChild(std::unique_ptr<ParticleSubSystem>&& child) {
     m_children.emplace_back(std::move(child));
 }
 
+std::unique_ptr<ParticleInstance> ParticleSubSystem::MakeInstance() {
+    auto instance = std::make_unique<ParticleInstance>();
+    // Each instance has a fixed authored upper bound. Reserve it once so a
+    // high-rate emitter never reallocates/moves live particles (or trails)
+    // while it is running.
+    instance->ParticlesVec().reserve(m_maxcount);
+    if (m_trail_length > 0) instance->TrailsVec().reserve(m_maxcount);
+    return instance;
+}
+
 ParticleInstance* ParticleSubSystem::QueryNewInstance() {
     if (Random::get(0.0, 1.0) <= m_probability) {
         for (auto& inst : m_instances) {
@@ -96,7 +188,7 @@ ParticleInstance* ParticleSubSystem::QueryNewInstance() {
             }
         }
         if (m_instances.size() < m_maxcount_instance) {
-            m_instances.emplace_back(std::make_unique<ParticleInstance>());
+            m_instances.emplace_back(MakeInstance());
             return m_instances.back().get();
         }
     }
@@ -132,44 +224,54 @@ void ParticleSubSystem::Advance(double frame_time, bool update_mesh) {
     double simulation_time = frame_time;
     m_time += simulation_time;
 
-    // Cursor in canvas-absolute world coords. The "global" camera lives at
-    // (ortho_w/2, ortho_h/2) with width=ortho_w (SceneCamera::Ortho uses
-    // [-w/2, +w/2]), so the visible world spans [0, ortho_w] x [0, ortho_h]
-    // with Y pointing up. Pointer is [0..1] with Y down -> flip Y.
-    const auto            pointer = m_sys.scene.pointerPosition;
-    const Eigen::Vector3d mouse_world {
-        static_cast<double>(pointer[0]) * static_cast<double>(m_sys.scene.ortho[0]),
-        (1.0 - static_cast<double>(pointer[1])) * static_cast<double>(m_sys.scene.ortho[1]),
-        0.0,
-    };
-    // Particle a_Position is consumed by the vertex shader in local space and
-    // then transformed by g_ModelMatrix (the owner node's world transform).
-    // To make a link_mouse cp track the cursor in world, push the cursor
-    // through the owner node's inverse model first.
-    Eigen::Vector3d mouse_local          = mouse_world;
+    // Most particle systems neither consume the cursor nor transform a
+    // world-space direction. Keep those systems out of all matrix work.
     Eigen::Matrix3d world_from_local_dir = Eigen::Matrix3d::Identity();
     Eigen::Matrix3d local_from_world_dir = Eigen::Matrix3d::Identity();
-    if (auto* node = m_owner_node) {
-        node->UpdateTrans();
-        world_from_local_dir = node->ModelTrans().block<3, 3>(0, 0);
-        if (std::abs(world_from_local_dir.determinant()) > 1e-9)
-            local_from_world_dir = world_from_local_dir.inverse();
+    if (m_uses_mouse_controlpoint || m_needs_direction_transform) {
+        // Cursor in canvas-absolute world coords. The "global" camera lives
+        // at (ortho_w/2, ortho_h/2) with width=ortho_w (SceneCamera::Ortho
+        // uses [-w/2, +w/2]), so the visible world spans [0, ortho_w] x
+        // [0, ortho_h] with Y pointing up. Pointer is [0..1] with Y down.
+        const auto            pointer = m_sys.scene.pointerPosition;
+        const Eigen::Vector3d mouse_world {
+            static_cast<double>(pointer[0]) * static_cast<double>(m_sys.scene.ortho[0]),
+            (1.0 - static_cast<double>(pointer[1])) * static_cast<double>(m_sys.scene.ortho[1]),
+            0.0,
+        };
+        Eigen::Vector3d mouse_local = mouse_world;
+        // Particle a_Position is consumed in local space before
+        // g_ModelMatrix. Convert a linked cursor to that same space.
+        if (auto* node = m_owner_node; node != nullptr) {
+            node->UpdateTrans();
+            world_from_local_dir = node->ModelTrans().block<3, 3>(0, 0);
+            if (std::abs(world_from_local_dir.determinant()) > 1e-9)
+                local_from_world_dir = world_from_local_dir.inverse();
 
-        Eigen::Matrix4d m_inv = node->ModelTrans().inverse();
-        Eigen::Vector4d v     = m_inv * Eigen::Vector4d(mouse_world.x(), mouse_world.y(), 0.0, 1.0);
-        mouse_local           = v.head<3>();
-    }
-    for (auto& cp : m_controlpoints) {
-        if (cp.link_mouse) cp.offset = cp.base_offset + mouse_local;
+            if (m_uses_mouse_controlpoint) {
+                Eigen::Matrix4d m_inv = node->ModelTrans().inverse();
+                Eigen::Vector4d v =
+                    m_inv * Eigen::Vector4d(mouse_world.x(), mouse_world.y(), 0.0, 1.0);
+                mouse_local = v.head<3>();
+            }
+        }
+        if (m_uses_mouse_controlpoint) {
+            for (auto& cp : m_controlpoints) {
+                if (cp.link_mouse) cp.offset = cp.base_offset + mouse_local;
+            }
+        }
     }
 
     std::array<float, 16> audio_average {};
-    for (std::size_t i = 0; i < audio_average.size(); ++i) {
-        audio_average[i] = m_sys.scene.audioAverage[i].load(std::memory_order_relaxed);
+    std::span<const float> audio_signal {};
+    if (m_uses_audio_response) {
+        for (std::size_t i = 0; i < audio_average.size(); ++i)
+            audio_average[i] = m_sys.scene.audioAverage[i].load(std::memory_order_relaxed);
+        audio_signal = std::span<const float> { audio_average.data(), audio_average.size() };
     }
 
     if (m_spawn_type == SpawnType::STATIC) {
-        if (m_instances.empty()) m_instances.emplace_back(std::make_unique<ParticleInstance>());
+        if (m_instances.empty()) m_instances.emplace_back(MakeInstance());
     }
 
     auto spawn_inst = [this](ParticleInstance&  inst,
@@ -225,9 +327,8 @@ void ParticleSubSystem::Advance(double frame_time, bool update_mesh) {
         }
 
         // clear when death if follow
-        if (inst->IsDeath() && m_spawn_type == SpawnType::EVENT_FOLLOW) {
-            inst->ParticlesVec().clear();
-        }
+        if (inst->IsDeath() && m_spawn_type == SpawnType::EVENT_FOLLOW)
+            ClearInstanceParticles(*inst);
 
         if (! inst->IsDeath()) {
             for (auto& emittOp : m_emiters) {
@@ -235,9 +336,17 @@ void ParticleSubSystem::Advance(double frame_time, bool update_mesh) {
                         m_initializers,
                         m_maxcount,
                         emitter_time,
-                        std::span<const float> { audio_average.data(), audio_average.size() },
+                        audio_signal,
                         std::span<const ParticleControlpoint> { m_controlpoints });
             }
+        }
+
+        // Emitters create a fresh Particle value when reusing/growing a
+        // slot. Give it a subsystem-stable id before any stateful operator
+        // runs so compaction cannot change its random/oscillator state.
+        for (auto& p : inst->ParticlesVec()) {
+            if (ParticleModify::IsNew(p) && p.slot_id == std::numeric_limits<u32>::max())
+                p.slot_id = AcquireParticleSlotId();
         }
 
         // event_death is always death after emitop
@@ -260,11 +369,10 @@ void ParticleSubSystem::Advance(double frame_time, bool update_mesh) {
         if (m_trail_length > 0) {
             auto& trails = inst->TrailsVec();
             if (trails.size() < info.particles.size()) {
+                const usize old_size = trails.size();
                 trails.resize(info.particles.size());
-            }
-            for (auto& t : trails) {
-                if (t.positions.size() != m_trail_length)
-                    t.positions.assign(m_trail_length, Eigen::Vector3f::Zero());
+                for (usize ti = old_size; ti < trails.size(); ++ti)
+                    trails[ti].positions.assign(m_trail_length, Eigen::Vector3f::Zero());
             }
         }
         for (auto& p : info.particles) {
@@ -298,8 +406,6 @@ void ParticleSubSystem::Advance(double frame_time, bool update_mesh) {
             }
         }
 
-        inst->SetNoLiveParticle(! has_live);
-
         std::for_each(m_operators.begin(), m_operators.end(), [&info](ParticleOperatorOp& op) {
             op(info);
         });
@@ -324,11 +430,13 @@ void ParticleSubSystem::Advance(double frame_time, bool update_mesh) {
             // every frame contributes a fresh cursor sample.
             Eigen::Vector3f trail_sample;
             bool            use_cursor_trail = false;
-            for (auto const& cp : m_controlpoints) {
-                if (cp.link_mouse) {
-                    trail_sample     = cp.offset.cast<float>();
-                    use_cursor_trail = true;
-                    break;
+            if (m_uses_mouse_controlpoint) {
+                for (auto const& cp : m_controlpoints) {
+                    if (cp.link_mouse) {
+                        trail_sample     = cp.offset.cast<float>();
+                        use_cursor_trail = true;
+                        break;
+                    }
                 }
             }
             auto& trails = inst->TrailsVec();
@@ -338,11 +446,35 @@ void ParticleSubSystem::Advance(double frame_time, bool update_mesh) {
                 trails[si].Push(use_cursor_trail ? trail_sample : Eigen::Vector3f { p.position });
             }
         }
+
+        // Keep only live particles between frames. Operators and geometry
+        // generation therefore scale with the current live set, not the
+        // largest historical emission burst. Child bindings and trail rings
+        // are remapped in CompactInstance before child simulation starts.
+        CompactInstance(*inst);
+        inst->SetNoLiveParticle(! has_live);
     }
 
     if (update_mesh) {
-        m_mesh->SetDirty();
-        m_sys.gener->GenGLData(m_instances, *m_mesh, m_genSpecOp);
+        bool has_live_geometry = false;
+        for (const auto& inst : m_instances) {
+            if (! inst->IsNoLiveParticle()) {
+                has_live_geometry = true;
+                break;
+            }
+        }
+        // Visibility must not change simulation time (hidden WE layers may
+        // later be shown again), but no draw can consume their vertex stream.
+        // Defer geometry generation/upload until the node is visible again.
+        const bool node_visible = m_owner_node == nullptr || m_owner_node->Visible();
+
+        // Emit one empty update when the last particle disappears, then keep
+        // the mesh untouched until a later emitter actually creates output.
+        if (node_visible && (has_live_geometry || m_mesh_has_geometry)) {
+            m_mesh->SetDirty();
+            m_sys.gener->GenGLData(m_instances, *m_mesh, m_genSpecOp);
+            m_mesh_has_geometry = has_live_geometry;
+        }
     }
 
     for (auto& child : m_children) {

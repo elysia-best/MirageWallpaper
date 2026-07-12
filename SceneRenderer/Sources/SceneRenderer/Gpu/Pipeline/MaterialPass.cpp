@@ -461,14 +461,21 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             VkVertexInputBindingDescription bind_desc {
                 .binding   = i,
                 .stride    = (uint32_t)vertex.OneSizeOf(),
-                .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+                .inputRate = vertex.InstanceRate() ? VK_VERTEX_INPUT_RATE_INSTANCE
+                                                    : VK_VERTEX_INPUT_RATE_VERTEX,
             };
             bind_descriptions.push_back(bind_desc);
 
             for (auto& item : ref->input_location_map) {
                 auto& name   = item.first;
                 auto& input  = item.second;
-                usize offset = exists(attrs_map, name) ? attrs_map[name].offset : 0;
+                // An instanced particle has separate corner and instance
+                // streams. Bind an input location only to the stream which
+                // actually owns that named attribute; assigning a missing
+                // input to offset zero would duplicate locations across
+                // bindings and is invalid Vulkan vertex input.
+                if (! exists(attrs_map, name)) continue;
+                usize offset = attrs_map[name].offset;
 
                 VkVertexInputAttributeDescription attr_desc {
                     .location = input.location,
@@ -880,27 +887,29 @@ void CustomShaderPass::recordRenderScopeDraw(RenderingResources& rr) {
     cmd.SetScissor(0, scissor);
 
     auto& draw_buffers = m_desc.draw_buffers;
-    if (draw_buffers.dynamic) {
-        auto gpu_buf = rr.dyn_buf->gpuBuf();
+    {
+        const auto gpu_buf = rr.dyn_buf->gpuBuf();
         for (usize i = 0; i < draw_buffers.dynamic_vertices.size(); i++) {
-            auto& buf = draw_buffers.dynamic_vertices[i];
-            cmd.BindVertexBuffers((u32)i, 1, &gpu_buf, &buf.offset);
-        }
-        if (draw_buffers.dynamic_index) {
-            cmd.BindIndexBuffer(gpu_buf, draw_buffers.dynamic_index.offset, VK_INDEX_TYPE_UINT32);
-        }
-    } else {
-        for (usize i = 0; i < draw_buffers.static_vertices.size(); i++) {
+            if (draw_buffers.dynamic_vertices[i]) {
+                auto& buf = draw_buffers.dynamic_vertices[i];
+                cmd.BindVertexBuffers((u32)i, 1, &gpu_buf, &buf.offset);
+                continue;
+            }
+            if (i >= draw_buffers.static_vertices.size() || ! draw_buffers.static_vertices[i])
+                continue;
             auto&        mref = draw_buffers.static_vertices[i];
             VkBuffer     vb   = mref.buffer();
             VkDeviceSize off  = mref.offset();
             cmd.BindVertexBuffers((u32)i, 1, &vb, &off);
         }
-        if (draw_buffers.static_index) {
-            VkBuffer     ib  = draw_buffers.static_index.buffer();
-            VkDeviceSize off = draw_buffers.static_index.offset();
-            cmd.BindIndexBuffer(ib, off, VK_INDEX_TYPE_UINT32);
-        }
+    }
+    if (draw_buffers.dynamic_index) {
+        auto gpu_buf = rr.dyn_buf->gpuBuf();
+        cmd.BindIndexBuffer(gpu_buf, draw_buffers.dynamic_index.offset, VK_INDEX_TYPE_UINT32);
+    } else if (draw_buffers.static_index) {
+        VkBuffer     ib  = draw_buffers.static_index.buffer();
+        VkDeviceSize off = draw_buffers.static_index.offset();
+        cmd.BindIndexBuffer(ib, off, VK_INDEX_TYPE_UINT32);
     }
 
     const bool has_index = draw_buffers.hasIndex();
@@ -911,16 +920,20 @@ void CustomShaderPass::recordRenderScopeDraw(RenderingResources& rr) {
                                  ? submeshes[m_desc.submesh_index].draw_ranges
                                  : kEmpty;
         if (ranges.empty()) {
-            cmd.DrawIndexed(draw_buffers.draw_count, 1, 0, 0, 0);
+            cmd.DrawIndexed(draw_buffers.draw_count, draw_buffers.instance_count, 0, 0, 0);
         } else {
             // Per-part drawing — preserves the file's z-order so later parts
             // overdraw earlier ones (eyelid over pupil during blink).
             for (const auto& r : ranges) {
-                cmd.DrawIndexed(r.index_count, 1, r.first_index, 0, 0);
+                cmd.DrawIndexed(r.index_count,
+                                draw_buffers.instance_count,
+                                r.first_index,
+                                0,
+                                0);
             }
         }
     } else {
-        cmd.Draw(draw_buffers.draw_count, 1, 0, 0);
+        cmd.Draw(draw_buffers.draw_count, draw_buffers.instance_count, 0, 0);
     }
 }
 

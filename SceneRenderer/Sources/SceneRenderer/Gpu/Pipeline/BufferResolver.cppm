@@ -29,6 +29,7 @@ struct DrawBufferRefs {
     uint64_t     allocation_generation { 0 };
     bool         dynamic { false };
     u32          draw_count { 0 };
+    u32          instance_count { 1 };
 
     std::vector<DrawBufferKey>   vertex_keys;
     std::optional<DrawBufferKey> index_key;
@@ -46,7 +47,7 @@ struct DrawBufferRefs {
     DrawBufferRefs& operator=(DrawBufferRefs&&) noexcept = default;
 
     bool hasIndex() const {
-        return dynamic ? static_cast<bool>(dynamic_index) : static_cast<bool>(static_index);
+        return static_cast<bool>(dynamic_index) || static_cast<bool>(static_index);
     }
 };
 

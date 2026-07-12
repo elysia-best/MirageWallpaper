@@ -41,6 +41,18 @@ inline u32 ResolveEmitNum(double& timer, float speed, u32 instantaneous, bool on
 
 inline u32 Emitt(std::vector<Particle>& particles, u32 num, u32 maxcount, bool sort,
                  SpwanOp Spwan) {
+    // ParticleSubSystem compacts dead particles at the end of every tick.
+    // Normal renderer paths deliberately disable sorting as well, so the
+    // vector contains only live particles here. Appending directly avoids an
+    // otherwise full live-set scan before every emission burst.
+    if (! sort) {
+        if (particles.size() >= maxcount) return 0;
+        const u32 emit_count =
+            std::min<u32>(num, maxcount - static_cast<u32>(particles.size()));
+        for (u32 i = 0; i < emit_count; ++i) particles.push_back(Spwan());
+        return emit_count;
+    }
+
     u32  lastPartcle = 0;
     bool has_dead    = true;
     u32  i           = 0;

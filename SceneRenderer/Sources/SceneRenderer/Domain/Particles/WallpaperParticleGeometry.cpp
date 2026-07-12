@@ -43,6 +43,7 @@ inline usize GenParticleData(std::span<const std::unique_ptr<ParticleInstance>> 
 
     const auto one_size   = sv.OneSize();
     const auto totle_size = 4 * one_size;
+    auto       dst        = sv.DynamicWriteData();
     usize      i { 0 };
     for (const auto& inst : instances) {
         if (inst->IsNoLiveParticle()) continue;
@@ -88,9 +89,17 @@ inline usize GenParticleData(std::span<const std::unique_ptr<ParticleInstance>> 
             AssignVertexTimes(
                 { data + offset, totle_size }, std::array { p.rotation[0], p.rotation[1] }, 4);
 
-            sv.SetVertexs((i++) * 4, { data, totle_size });
+            const usize out_offset = i * totle_size;
+            rstd_assert(out_offset + totle_size <= dst.size());
+            if (out_offset + totle_size > dst.size()) {
+                sv.CommitDynamicVertexCount(i * 4);
+                return i;
+            }
+            std::copy_n(data, totle_size, dst.data() + out_offset);
+            ++i;
         }
     }
+    sv.CommitDynamicVertexCount(i * 4);
     return i;
 }
 
@@ -131,6 +140,7 @@ inline usize GenParticlePointData(std::span<const std::unique_ptr<ParticleInstan
         v[slot.offset + 3] = w;
     };
 
+    auto  dst = sv.DynamicWriteData();
     usize i { 0 };
     for (const auto& inst : instances) {
         if (inst->IsNoLiveParticle()) continue;
@@ -153,9 +163,60 @@ inline usize GenParticlePointData(std::span<const std::unique_ptr<ParticleInstan
                 write4(velocity, p.velocity[0], p.velocity[1], p.velocity[2], lifetime);
             }
 
-            sv.SetVertexs(i++, { v.data(), one_size });
+            const usize out_offset = i * one_size;
+            rstd_assert(out_offset + one_size <= dst.size());
+            if (out_offset + one_size > dst.size()) {
+                sv.CommitDynamicVertexCount(i);
+                return i;
+            }
+            std::copy_n(v.data(), one_size, dst.data() + out_offset);
+            ++i;
         }
     }
+    sv.CommitDynamicVertexCount(i);
+    return i;
+}
+
+// Writes one record per particle for the genericparticle instanced shader.
+// The static corner stream is immutable; all values that evolve with the
+// simulation live in this compact second stream.
+inline usize GenParticleInstanceData(std::span<const std::unique_ptr<ParticleInstance>> instances,
+                                     const ParticleRawGenSpecOp& specOp, WPGOption opt,
+                                     SceneVertexArray& sv) noexcept {
+    const auto one_size = sv.OneSize();
+    // SetParticleMesh owns this stream's schema: FLOAT4 position/size,
+    // padded FLOAT3 rotation, FLOAT4 color, and optional FLOAT4 velocity.
+    // Avoid rebuilding a string-keyed attribute map for every rendered frame.
+    rstd_assert(one_size == (opt.thick_format ? 16u : 12u));
+
+    auto  dst = sv.DynamicWriteData();
+    usize i = 0;
+    for (const auto& inst : instances) {
+        if (inst->IsNoLiveParticle()) continue;
+        const Eigen::Vector3f base = inst->GetBoundedData().pos;
+        for (const auto& p : inst->Particles()) {
+            if (! ParticleModify::LifetimeOk(p)) continue;
+
+            float lifetime = p.lifetime;
+            specOp(p, { &lifetime });
+            const auto pos = base + p.position;
+            std::array<float, 16> v {
+                pos[0], pos[1], pos[2], p.size * 0.5f,
+                p.rotation[0], p.rotation[1], p.rotation[2], 0.0f,
+                p.color[0], p.color[1], p.color[2], p.alpha,
+                p.velocity[0], p.velocity[1], p.velocity[2], lifetime,
+            };
+            const usize out_offset = i * one_size;
+            rstd_assert(out_offset + one_size <= dst.size());
+            if (out_offset + one_size > dst.size()) {
+                sv.CommitDynamicVertexCount(i);
+                return i;
+            }
+            std::copy_n(v.data(), one_size, dst.data() + out_offset);
+            ++i;
+        }
+    }
+    sv.CommitDynamicVertexCount(i);
     return i;
 }
 
@@ -166,7 +227,8 @@ inline usize GenParticlePointData(std::span<const std::unique_ptr<ParticleInstan
 // vertices emitted; vertices land at [base_index, base_index+ret).
 inline size_t GenRopeParticleSegments(const Particle& p, const ParticleTrail& trail,
                                       const ParticleRawGenSpecOp& specOp, WPGOption opt,
-                                      SceneVertexArray& sv, size_t base_index) {
+                                      SceneVertexArray& sv, std::span<float> dst,
+                                      size_t base_index) {
     const auto            one_size = sv.OneSize();
     std::array<float, 32> v {};
     size_t                emitted = 0;
@@ -226,7 +288,10 @@ inline size_t GenRopeParticleSegments(const Particle& p, const ParticleTrail& tr
         v[off++] = p.alpha;
 
         rstd_assert(off == one_size);
-        sv.SetVertexs(base_index + emitted, { v.data(), one_size });
+        const size_t out_offset = (base_index + emitted) * one_size;
+        rstd_assert(out_offset + one_size <= dst.size());
+        if (out_offset + one_size > dst.size()) return emitted;
+        std::copy_n(v.data(), one_size, dst.data() + out_offset);
         emitted++;
     }
     return emitted;
@@ -235,6 +300,7 @@ inline size_t GenRopeParticleSegments(const Particle& p, const ParticleTrail& tr
 inline size_t GenRopeParticleData(std::span<const std::unique_ptr<ParticleInstance>> instances,
                                   const ParticleRawGenSpecOp& specOp, WPGOption opt,
                                   SceneVertexArray& sv) {
+    auto   dst   = sv.DynamicWriteData();
     size_t total = 0;
     for (const auto& inst : instances) {
         if (inst->IsNoLiveParticle()) continue;
@@ -243,9 +309,11 @@ inline size_t GenRopeParticleData(std::span<const std::unique_ptr<ParticleInstan
         const size_t n         = std::min(particles.size(), trails.size());
         for (size_t si = 0; si < n; si++) {
             if (! ParticleModify::LifetimeOk(particles[si])) continue;
-            total += GenRopeParticleSegments(particles[si], trails[si], specOp, opt, sv, total);
+            total +=
+                GenRopeParticleSegments(particles[si], trails[si], specOp, opt, sv, dst, total);
         }
     }
+    sv.CommitDynamicVertexCount(total);
     return total;
 }
 
@@ -268,7 +336,7 @@ struct RopeQuadAttrSlots {
 inline size_t GenRopeParticleQuadSegments(const Particle& p, const ParticleTrail& trail,
                                           const ParticleRawGenSpecOp& specOp, WPGOption opt,
                                           const RopeQuadAttrSlots& slots, SceneVertexArray& sv,
-                                          size_t base_index) {
+                                          std::span<float> dst, size_t base_index) {
     const auto            one_size = sv.OneSize();
     std::array<float, 64> v {};
 
@@ -322,7 +390,10 @@ inline size_t GenRopeParticleQuadSegments(const Particle& p, const ParticleTrail
                 write2(slots.uv3, uvs[q][0], uvs[q][1]);
             }
             write4(slots.color, p.color[0], p.color[1], p.color[2], p.alpha);
-            sv.SetVertexs((base_index + emitted) * 4 + q, { v.data(), one_size });
+            const size_t out_offset = ((base_index + emitted) * 4 + q) * one_size;
+            rstd_assert(out_offset + one_size <= dst.size());
+            if (out_offset + one_size > dst.size()) return emitted;
+            std::copy_n(v.data(), one_size, dst.data() + out_offset);
         }
         emitted++;
     }
@@ -344,6 +415,7 @@ inline size_t GenRopeParticleQuadData(std::span<const std::unique_ptr<ParticleIn
         .uv3      = FindAttrSlot(attrs, WE_IN_TEXCOORDC3),
         .color    = FindAttrSlot(attrs, WE_IN_COLOR),
     };
+    auto   dst   = sv.DynamicWriteData();
     size_t total = 0;
     for (const auto& inst : instances) {
         if (inst->IsNoLiveParticle()) continue;
@@ -353,9 +425,11 @@ inline size_t GenRopeParticleQuadData(std::span<const std::unique_ptr<ParticleIn
         for (size_t si = 0; si < n; si++) {
             if (! ParticleModify::LifetimeOk(particles[si])) continue;
             total +=
-                GenRopeParticleQuadSegments(particles[si], trails[si], specOp, opt, slots, sv, total);
+                GenRopeParticleQuadSegments(particles[si], trails[si], specOp, opt, slots, sv, dst,
+                                            total);
         }
     }
+    sv.CommitDynamicVertexCount(total * 4);
     return total;
 }
 
@@ -382,6 +456,17 @@ inline void updateIndexArray(uint32_t index, size_t count, SceneIndexArray& iarr
 
 void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInstance>> instances,
                                    SceneMesh& mesh, ParticleRawGenSpecOp& specOp) {
+    if (mesh.ParticleInstanced()) {
+        auto& instance_sv = mesh.GetVertexArray(1);
+        WPGOption opt;
+        opt.thick_format = instance_sv.GetOption(WE_CB_THICK_FORMAT);
+        const usize particle_num = GenParticleInstanceData(instances, specOp, opt, instance_sv);
+        mesh.SetParticleInstanceCount(static_cast<u32>(particle_num));
+        auto& indices = mesh.GetIndexArray(0);
+        indices.SetRenderDataCount(particle_num == 0 ? 0 : 6);
+        return;
+    }
+
     auto& sv = mesh.GetVertexArray(0);
 
     WPGOption opt;
@@ -394,7 +479,6 @@ void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInsta
         // quads on the CPU. Reset the active size before regen so the segment
         // count for this frame isn't masked by a previous frame's high-water
         // mark.
-        sv.ResetSize();
         usize segment_num = 0;
         if (mesh.Primitive() == MeshPrimitive::POINT) {
             segment_num = GenRopeParticleData(instances, specOp, opt, sv);
@@ -411,17 +495,21 @@ void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInsta
     }
 
     if (mesh.Primitive() == MeshPrimitive::POINT) {
-        sv.ResetSize();
         GenParticlePointData(instances, specOp, opt, sv);
         return;
     }
 
+    // Unlike the original path, never retain a previous frame's high-water
+    // vertex count. The indexed draw already tracks the exact active quad
+    // count, and the dynamic uploader must only copy vertices needed now.
     usize particle_num = GenParticleData(instances, specOp, opt, sv);
 
     auto& si       = mesh.GetIndexArray(0);
     u32   indexNum = (u32)(si.DataCount() / 6);
-    if (particle_num > indexNum) {
+    // Old/third-party particle meshes may not have had their fixed topology
+    // populated at compile time. Keep that compatibility path, but do not
+    // mutate topology for the normal compiler-produced meshes.
+    if (! si.StaticTopology() && particle_num > indexNum)
         updateIndexArray(indexNum, particle_num, si);
-    }
     si.SetRenderDataCount(particle_num * 6);
 }

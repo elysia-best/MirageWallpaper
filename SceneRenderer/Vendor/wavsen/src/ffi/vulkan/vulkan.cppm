@@ -518,6 +518,7 @@ using ::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 using ::VK_SUBOPTIMAL_KHR;
 using ::VK_SUBPASS_CONTENTS_INLINE;
 using ::VK_SUCCESS;
+using ::VK_VERTEX_INPUT_RATE_INSTANCE;
 using ::VK_VERTEX_INPUT_RATE_VERTEX;
 
 // ---- functions (loadable directly when not using VK_NO_PROTOTYPES) ----

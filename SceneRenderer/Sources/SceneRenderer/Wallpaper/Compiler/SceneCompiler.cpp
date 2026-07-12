@@ -888,9 +888,121 @@ bool PlatformSupportsGeometryShaders() {
     return false;
 }
 
+// Particle topology is a fixed sequence of independent quads. Build it at
+// compile time instead of extending it while particles run: the mesh's vertex
+// data is dynamic, but these indices never are.
+void InitializeParticleQuadIndices(SceneIndexArray& indices, uint32_t quad_count) {
+    std::array<uint32_t, 6> quad {};
+    for (uint32_t i = 0; i < quad_count; ++i) {
+        const uint32_t base = i * 4;
+        quad                 = { base, base + 1, base + 3, base + 1, base + 2, base + 3 };
+        indices.Assign(static_cast<usize>(i) * quad.size(), quad);
+    }
+    indices.SetRenderDataCount(0);
+    indices.SetStaticTopology();
+}
+
+// The WE genericparticle shader normally receives four fully-expanded vertex
+// records per particle. Keep assets immutable and synthesize an alternate
+// input declaration for its built-in source: a static corner stream plus a
+// compact per-instance stream reconstruct exactly the legacy attributes.
+// This transform deliberately targets only the stock shader and fails closed
+// if its known declaration block changes.
+std::optional<std::string> MakeInstancedGenericParticleVertexSource(std::string source) {
+    // WE ships this source with CRLF line endings. Normalize the transient
+    // compiler copy so the exact declaration replacement below is stable on
+    // every package; the asset on disk remains untouched.
+    source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
+    static constexpr std::string_view kLegacyDecls = R"(attribute vec3 a_Position;
+attribute vec4 a_TexCoordVec4;
+attribute vec4 a_Color;
+varying vec4 v_Color;
+
+#if THICKFORMAT
+attribute vec4 a_TexCoordVec4C1;
+#endif)";
+    static constexpr std::string_view kInstancedDecls = R"(#if PARTICLEINSTANCED
+attribute vec2 a_ParticleCorner;
+attribute vec4 a_ParticlePositionSize;
+attribute vec3 a_ParticleRotation;
+attribute vec4 a_ParticleColor;
+#if THICKFORMAT
+attribute vec4 a_ParticleVelocityLifetime;
+#endif
+
+#define a_Position (a_ParticlePositionSize.xyz)
+#define a_TexCoordVec4 (vec4(a_ParticleCorner, a_ParticleRotation.z, a_ParticlePositionSize.w))
+#define a_Color (a_ParticleColor)
+#if THICKFORMAT
+#define a_TexCoordVec4C1 (a_ParticleVelocityLifetime)
+#endif
+#else
+attribute vec3 a_Position;
+attribute vec4 a_TexCoordVec4;
+attribute vec4 a_Color;
+
+#if THICKFORMAT
+attribute vec4 a_TexCoordVec4C1;
+#endif
+#endif
+varying vec4 v_Color;)";
+    static constexpr std::string_view kLegacyCorner = "attribute vec2 a_TexCoordC2;";
+    static constexpr std::string_view kInstancedCorner = R"(#if PARTICLEINSTANCED
+#define a_TexCoordC2 (a_ParticleRotation.xy)
+#else
+attribute vec2 a_TexCoordC2;
+#endif)";
+
+    auto decl_pos = source.find(kLegacyDecls);
+    if (decl_pos == std::string::npos) return std::nullopt;
+    source.replace(decl_pos, kLegacyDecls.size(), kInstancedDecls);
+    auto corner_pos = source.find(kLegacyCorner);
+    if (corner_pos == std::string::npos) return std::nullopt;
+    source.replace(corner_pos, kLegacyCorner.size(), kInstancedCorner);
+    return source;
+}
+
 void SetParticleMesh(SceneMesh& mesh, const wpscene::Particle& particle, uint32_t count,
-                     bool thick_format, bool geometry_shader) {
+                     bool thick_format, bool geometry_shader, bool instanced) {
     (void)particle;
+    if (instanced && ! geometry_shader) {
+        // One immutable unit quad, followed by one vertex-rate-instance record
+        // per live particle. The generated genericparticle shader reconstructs
+        // WE's historical per-corner input layout from these two streams.
+        std::vector<VertexAttrSpec> corner_specs {
+            { "a_ParticleCorner", VertexType::FLOAT2 },
+        };
+        SceneVertexArray corners(MakeAttrSet(corner_specs), 4);
+        constexpr std::array<float, 8> kCorners {
+            0.0f, 1.0f,
+            1.0f, 1.0f,
+            1.0f, 0.0f,
+            0.0f, 0.0f,
+        };
+        corners.SetVertex("a_ParticleCorner", kCorners);
+        corners.SetStaticData();
+
+        std::vector<VertexAttrSpec> instance_specs {
+            { "a_ParticlePositionSize", VertexType::FLOAT4 },
+            { "a_ParticleRotation", VertexType::FLOAT3 },
+            { "a_ParticleColor", VertexType::FLOAT4 },
+        };
+        if (thick_format)
+            instance_specs.push_back({ "a_ParticleVelocityLifetime", VertexType::FLOAT4 });
+        SceneVertexArray instances(MakeAttrSet(instance_specs), count);
+        instances.SetInstanceRate();
+
+        mesh.SetParticleInstanced();
+        mesh.SetParticleInstanceCount(0);
+        mesh.AddVertexArray(std::move(corners));
+        mesh.AddVertexArray(std::move(instances));
+        mesh.AddIndexArray(SceneIndexArray(6));
+        InitializeParticleQuadIndices(mesh.GetIndexArray(0), 1);
+        mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
+        mesh.GetVertexArray(1).SetOption(WE_CB_THICK_FORMAT, thick_format);
+        return;
+    }
+
     std::vector<VertexAttrSpec> specs {
         VAttr::Position,
         VAttr::TexCoordVec4,
@@ -904,6 +1016,7 @@ void SetParticleMesh(SceneMesh& mesh, const wpscene::Particle& particle, uint32_
         specs.push_back(VAttr::TexCoordC2);
         mesh.AddVertexArray(SceneVertexArray(MakeAttrSet(specs), count * 4));
         mesh.AddIndexArray(SceneIndexArray(count * 6));
+        InitializeParticleQuadIndices(mesh.GetIndexArray(0), count);
     }
     mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
 }
@@ -963,6 +1076,7 @@ void SetRopeParticleMesh(SceneMesh& mesh, const wpscene::Particle& particle, uin
     } else {
         mesh.AddVertexArray(SceneVertexArray(MakeAttrSet(specs), count * 4));
         mesh.AddIndexArray(SceneIndexArray(count * 6));
+        InitializeParticleQuadIndices(mesh.GetIndexArray(0), count);
     }
     mesh.GetVertexArray(0).SetOption(WE_PRENDER_ROPE, true);
     mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
@@ -1004,6 +1118,7 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp) {
         pcs[i].offset = pcs[i].base_offset;
         pcs[i].link_mouse =
             wp.controlpoints[i].flags[wpscene::ParticleControlpoint::FlagEnum::link_mouse];
+        if (pcs[i].link_mouse) pSys.SetUsesMouseControlpoint();
         pcs[i].worldspace =
             wp.controlpoints[i].flags[wpscene::ParticleControlpoint::FlagEnum::worldspace];
     }
@@ -1019,6 +1134,8 @@ void LoadOperator(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                   std::shared_ptr<wpscene::ParticleInstanceoverride> over_state) {
     for (const auto& op : wp.operators) {
         pSys.AddOperator(WPParticleParser::genParticleOperatorOp(op, over_state));
+        if (op.is_object() && op.value("name", std::string {}) == "movement")
+            pSys.SetNeedsDirectionTransform();
     }
 }
 void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float count,
@@ -1037,6 +1154,7 @@ void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float cou
         // authored as `controlpoint: 0` always samples cps[0] even when WE
         // wired it through `cps[cp_start_index]`.
         if (newEm.controlpoint >= 0) newEm.controlpoint += cp_start_index;
+        if (newEm.audioprocessingmode != 0) pSys.SetUsesAudioResponse();
         pSys.AddEmitter(WPParticleParser::genParticleEmittOp(newEm, sort));
     }
 }
@@ -1307,6 +1425,18 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::Material& wpmat, Scene* pScene, S
         }
     }
     add_shader_unit(ShaderType::FRAGMENT, shaderPath + ".frag");
+
+    if (wpmat.shader == "genericparticle" &&
+        pWPShaderInfo->combos.contains("PARTICLEINSTANCED") &&
+        pWPShaderInfo->combos.at("PARTICLEINSTANCED") == "1") {
+        auto instanced_source = MakeInstancedGenericParticleVertexSource(sd_units.front().src);
+        if (! instanced_source) {
+            rstd_error("genericparticle vertex layout changed; cannot enable instanced particle path");
+            return false;
+        }
+        sd_units.front().src          = *instanced_source;
+        sd_original_sources.front()   = std::move(*instanced_source);
+    }
 
     std::vector<WPShaderTexInfo>                 texinfos;
     std::unordered_map<std::string, ImageHeader> texHeaders;
@@ -2998,6 +3128,11 @@ void ParseParticleObj(ParseContext& context, wpscene::ParticleObject& wppartobj,
 
     if (render_rope) particle_obj.material.shader = "genericropeparticle";
 
+    // Only the stock genericparticle shader receives the instanced layout;
+    // other/custom materials retain the original CPU-expanded layout.
+    const bool use_instanced_particles = ! render_rope &&
+                                         particle_obj.material.shader == "genericparticle";
+
     // wppartobj.origin[1] = context.ortho_h - wppartobj.origin[1];
 
     if (particle_obj.flags[wpscene::Particle::FlagEnum::perspective]) {
@@ -3014,6 +3149,7 @@ void ParseParticleObj(ParseContext& context, wpscene::ParticleObject& wppartobj,
     svData.use_camera_eye_position = particle_obj.flags[wpscene::Particle::FlagEnum::perspective];
 
     WPShaderInfo shaderInfo;
+    if (use_instanced_particles) shaderInfo.combos["PARTICLEINSTANCED"] = "1";
     shaderInfo.baseConstSvs                                    = context.global_base_uniforms;
     shaderInfo.baseConstSvs[std::string(G_ORIENTATIONUP)]      = std::array { 0.0f, 1.0f, 0.0f };
     shaderInfo.baseConstSvs[std::string(G_ORIENTATIONRIGHT)]   = std::array { 1.0f, 0.0f, 0.0f };
@@ -3112,7 +3248,12 @@ void ParseParticleObj(ParseContext& context, wpscene::ParticleObject& wppartobj,
             u32 rope_segs = mesh_maxcount * (trail_length - 1);
             SetRopeParticleMesh(mesh, particle_obj, rope_segs, thick_format, use_geometry_shader);
         } else {
-            SetParticleMesh(mesh, particle_obj, mesh_maxcount, thick_format, use_geometry_shader);
+            SetParticleMesh(mesh,
+                            particle_obj,
+                            mesh_maxcount,
+                            thick_format,
+                            use_geometry_shader,
+                            use_instanced_particles);
         }
     }
 
