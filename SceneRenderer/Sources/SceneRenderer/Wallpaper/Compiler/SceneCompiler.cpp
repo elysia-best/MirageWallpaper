@@ -3572,7 +3572,8 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
         }
     }
     bool wants_dynamic_text = has_text_script || has_indirect_text_script || has_pointsize_script ||
-                              context.scene_layer_text_writes;
+                              context.scene_layer_text_writes ||
+                              ! obj.text_user_key.empty() || ! obj.pointsize_user_key.empty();
     bool has_text_effect    = false;
     for (const auto& effect : obj.effects) {
         if (effect.visible || ! effect.visible_user.empty()) {
@@ -4344,6 +4345,36 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
                                                            [set_text](std::string_view s) {
                                                                set_text(s);
                                                            });
+    }
+
+    // Direct user-property bindings on `text` / `pointsize` (authored as
+    // `{user:"<key>"}`, no script). Register the same setter closures under
+    // the scene's user index so RenderSetUserProperty can drive live sidebar
+    // edits. Runs on the render thread, matching the setters' owning thread.
+    if (! obj.text_user_key.empty()) {
+        context.scene->text_user_index[obj.text_user_key].push_back(
+            [set_text](const std::string& s) { set_text(s); });
+    }
+    if (! obj.pointsize_user_key.empty()) {
+        context.scene->pointsize_user_index[obj.pointsize_user_key].push_back(
+            [set_pointsize](double v) { set_pointsize(v); });
+    }
+    // Text color / alpha user bindings. Unlike image layers (node uniforms),
+    // text color/alpha live in the glyph vertex colors, so drive the layouter
+    // directly and rebuild the compose quad for the refreshed layout.
+    if (! obj.color_user_key.empty()) {
+        context.scene->text_color_user_index[obj.color_user_key].push_back(
+            [layouter, rebuild_compose](float r, float g, float b) {
+                layouter->SetColor(r, g, b);
+                rebuild_compose(layouter->Metrics());
+            });
+    }
+    if (! obj.alpha_user_key.empty()) {
+        context.scene->text_alpha_user_index[obj.alpha_user_key].push_back(
+            [layouter, rebuild_compose](float a) {
+                layouter->SetAlpha(a);
+                rebuild_compose(layouter->Metrics());
+            });
     }
 
     std::vector<rstd::sync::Arc<SceneNode>> text_before_nodes;

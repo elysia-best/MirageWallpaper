@@ -63,6 +63,19 @@ struct TextObject {
     VisibleUserBinding visible_user;
     std::string        visible_user_key;
 
+    // user-property bindings for `text` / `pointsize` authored as
+    // `{"user":"<key>", "value":...}`. Empty when the field is a plain
+    // literal or a script binding. Drives live sidebar edits of custom text
+    // and font size without a scene reload.
+    UserValueBinding   text_user;
+    std::string        text_user_key;
+    UserValueBinding   pointsize_user;
+    std::string        pointsize_user_key;
+    UserValueBinding   color_user;
+    std::string        color_user_key;
+    UserValueBinding   alpha_user;
+    std::string        alpha_user_key;
+
     // Visual/material overlap with image kind.
     std::array<float, 3>     color { 1.0f, 1.0f, 1.0f };
     float                    alpha { 1.0f };
@@ -102,6 +115,14 @@ struct TextObject {
         if (json.contains("font")) font = json.at("font");
 
         sr::GetJsonValue(json, "pointsize", pointsize, false);
+        ReadUserValueBinding(json, "text", text_user);
+        text_user_key = text_user.name;
+        ReadUserValueBinding(json, "pointsize", pointsize_user);
+        pointsize_user_key = pointsize_user.name;
+        ReadUserValueBinding(json, "color", color_user);
+        color_user_key = color_user.name;
+        ReadUserValueBinding(json, "alpha", alpha_user);
+        alpha_user_key = alpha_user.name;
         sr::GetJsonValue(json, "padding", padding, false);
         sr::GetJsonValue(json, "horizontalalign", horizontalalign, false);
         sr::GetJsonValue(json, "verticalalign", verticalalign, false);

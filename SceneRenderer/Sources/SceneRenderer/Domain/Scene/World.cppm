@@ -2436,6 +2436,22 @@ public:
     Map<std::string, std::vector<ImagePropertyBinding>> image_color_user_index;
     Map<std::string, std::vector<ImagePropertyBinding>> image_alpha_user_index;
 
+    // user-property key → setter closures for text layers whose `text` /
+    // `pointsize` field was authored as `{user:"<key>"}`. The closures wrap
+    // the layouter/atlas rebuild built in ParseTextObj and run on the render
+    // thread (same thread as script actuators), so RenderSetUserProperty can
+    // push live sidebar edits without a scene reload.
+    Map<std::string, std::vector<std::function<void(const std::string&)>>> text_user_index;
+    Map<std::string, std::vector<std::function<void(double)>>>             pointsize_user_index;
+
+    // user-property key → setter closures for text layers whose `color` /
+    // `alpha` field was authored as `{user:"<key>"}`. Text color/alpha are
+    // baked into glyph vertex colors by the layouter (not a node uniform), so
+    // these closures re-run the layout with the new color. Same render-thread
+    // ownership as text_user_index.
+    Map<std::string, std::vector<std::function<void(float, float, float)>>> text_color_user_index;
+    Map<std::string, std::vector<std::function<void(float)>>>              text_alpha_user_index;
+
     struct MaterialTextureUserBinding {
         SceneMaterial* material { nullptr };
         uint32_t       slot { 0 };

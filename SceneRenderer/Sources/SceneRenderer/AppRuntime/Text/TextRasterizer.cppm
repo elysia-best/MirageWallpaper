@@ -257,6 +257,12 @@ public:
     void SetFace(FontFace* face);
     void SetHorizontalAlign(std::string_view align);
 
+    // Live per-vertex color / alpha updates. Rewrites the glyph vertex colors
+    // in place (re-runs the current layout), so text-layer `color` / `alpha`
+    // user properties take effect without a scene reload.
+    void SetColor(float r, float g, float b);
+    void SetAlpha(float alpha);
+
     // For ParseTextObj's initial-bbox log; reflects the most recent layout.
     float             TextWidth() const noexcept;
     float             TextHeight() const noexcept;

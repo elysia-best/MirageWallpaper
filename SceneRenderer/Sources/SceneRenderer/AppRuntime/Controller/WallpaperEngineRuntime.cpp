@@ -620,6 +620,72 @@ void ApplyUserPropertyToImageAlpha(Scene& scene, const std::string& key,
     }
 }
 
+// Drive text layers whose `text` field was authored as `{user:"<key>"}`.
+// The string value is taken verbatim (no float coercion) so custom text —
+// including CJK / emoji — reaches the layouter unchanged. Runs on the render
+// thread; the registered closures rebuild the glyph atlas + compose quad.
+void ApplyUserPropertyToText(Scene& scene, const std::string& key, const nlohmann::json& prop) {
+    auto it = scene.text_user_index.find(key);
+    if (it == scene.text_user_index.end()) return;
+
+    const nlohmann::json* val_ptr = &prop;
+    if (prop.is_object() && prop.contains("value")) val_ptr = &prop.at("value");
+    const nlohmann::json& v = *val_ptr;
+    if (! v.is_string()) return;
+    const std::string text = v.get<std::string>();
+    for (const auto& setter : it->second) {
+        if (setter) setter(text);
+    }
+}
+
+// Drive text layers whose `pointsize` field was authored as `{user:"<key>"}`.
+// Coerces the scalar the same way sliders do, then re-rasterises the glyph
+// atlas at the new size via the registered setter.
+void ApplyUserPropertyToPointSize(Scene& scene, const std::string& key,
+                                  const nlohmann::json& prop) {
+    auto it = scene.pointsize_user_index.find(key);
+    if (it == scene.pointsize_user_index.end()) return;
+
+    auto coerced = CoerceUserPropertyValue(prop);
+    if (! coerced.ok || coerced.value.size() < 1) return;
+    const double point_size = static_cast<double>(coerced.value[0]);
+    if (! (point_size > 0.0)) return;
+    for (const auto& setter : it->second) {
+        if (setter) setter(point_size);
+    }
+}
+
+// Drive text-layer `color` user bindings. Text color is baked into glyph
+// vertex colors, so this re-runs the layout with the new RGB.
+void ApplyUserPropertyToTextColor(Scene& scene, const std::string& key,
+                                  const nlohmann::json& prop) {
+    auto it = scene.text_color_user_index.find(key);
+    if (it == scene.text_color_user_index.end()) return;
+
+    auto coerced = CoerceUserPropertyValue(prop);
+    if (! coerced.ok || coerced.value.size() < 3) return;
+    const float r = coerced.value[0];
+    const float g = coerced.value[1];
+    const float b = coerced.value[2];
+    for (const auto& setter : it->second) {
+        if (setter) setter(r, g, b);
+    }
+}
+
+// Drive text-layer `alpha` user bindings.
+void ApplyUserPropertyToTextAlpha(Scene& scene, const std::string& key,
+                                  const nlohmann::json& prop) {
+    auto it = scene.text_alpha_user_index.find(key);
+    if (it == scene.text_alpha_user_index.end()) return;
+
+    auto coerced = CoerceUserPropertyValue(prop);
+    if (! coerced.ok || coerced.value.size() < 1) return;
+    const float alpha = std::clamp(coerced.value[0], 0.0f, 1.0f);
+    for (const auto& setter : it->second) {
+        if (setter) setter(alpha);
+    }
+}
+
 // Push a user-property value into every particle subsystem whose
 // instanceoverride was authored as `{user:"<key>", value:...}` for one of
 // its fields. The override sits behind a shared_ptr; mutating it through the
@@ -1150,6 +1216,10 @@ void SceneRenderController::on(RenderSetUserProperty&& m) {
     bool shader_combo_requires_graph = ApplyUserPropertyToShaderCombos(*m_scene, key, m.property);
     ApplyUserPropertyToImageColor(*m_scene, key, m.property);
     ApplyUserPropertyToImageAlpha(*m_scene, key, m.property);
+    ApplyUserPropertyToText(*m_scene, key, m.property);
+    ApplyUserPropertyToPointSize(*m_scene, key, m.property);
+    ApplyUserPropertyToTextColor(*m_scene, key, m.property);
+    ApplyUserPropertyToTextAlpha(*m_scene, key, m.property);
     ApplyUserPropertyToParticles(*m_scene, key, m.property);
     ApplyUserPropertyToSoundVolume(*m_scene, key, m.property);
     ApplyUserPropertyToCameraParallax(*m_scene, key, m.property);
@@ -1176,7 +1246,15 @@ void SceneRenderController::on(RenderSetUserProperty&& m) {
         rebuildRenderGraph(vulkan::RenderGraphResourceRetention::KeepSceneTextures, false);
         return;
     }
-    if (renderInited() && m_rg) refreshPreparedMaterialDirtyEvents();
+    // Text / pointsize edits resize the per-layer RT via SetLayoutDirty, which
+    // queues a *mesh* dirty event (not a material one). Drain it here too, or
+    // the GPU RT keeps its old size — enlarged text clips and the stale target
+    // ghosts. The per-frame loop drains this for scripted text; live user-prop
+    // edits need it explicitly.
+    if (renderInited() && m_rg) {
+        refreshPreparedMeshDirtyEvents();
+        refreshPreparedMaterialDirtyEvents();
+    }
 }
 
 void SceneRenderController::on(RenderSetMediaStatus&& m) {

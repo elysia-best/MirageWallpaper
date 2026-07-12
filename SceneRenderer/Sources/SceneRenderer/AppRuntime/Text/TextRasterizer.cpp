@@ -858,6 +858,21 @@ void TextLayouter::SetFace(FontFace* face) {
     SetText(im.current_text);
 }
 
+void TextLayouter::SetColor(float r, float g, float b) {
+    auto& im = *m_impl;
+    if (im.style.color[0] == r && im.style.color[1] == g && im.style.color[2] == b) return;
+    im.style.color = { r, g, b };
+    // Re-run the layout so every glyph quad picks up the new vertex color.
+    SetText(im.current_text);
+}
+
+void TextLayouter::SetAlpha(float alpha) {
+    auto& im = *m_impl;
+    if (im.style.alpha == alpha) return;
+    im.style.alpha = alpha;
+    SetText(im.current_text);
+}
+
 TextGeometry ResolveTextGeometry(const TextGeometryPolicy& policy,
                                  const TextLayoutMetrics&  metrics) {
     auto positive = [](float value, float fallback) {
