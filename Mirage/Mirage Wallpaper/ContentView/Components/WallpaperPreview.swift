@@ -18,18 +18,23 @@ struct WallpaperPreview: SubviewOfContentView {
     
     @State var hoveredTag: String?
     @State var isTagsHovered = false
-    
+
+    // 目录大小异步计算并缓存，避免每次重绘在主线程遍历整个壁纸目录造成卡顿。
+    @State private var sizeText: String = "…"
+
     init(contentViewModel viewModel: ContentViewModel, wallpaperViewModel: WallpaperViewModel) {
         self.viewModel = viewModel
         self.wallpaperViewModel = wallpaperViewModel
     }
-    
-    var wallpaperSize: String {
-        guard let sizeBytes = try? wallpaperViewModel.currentWallpaper.wallpaperDirectory.directoryTotalAllocatedSize(includingSubfolders: true)
-        else {
-            return "??? MB"
+
+    private func recomputeSize(for wallpaper: WEWallpaper) {
+        sizeText = "…"
+        let dir = wallpaper.wallpaperDirectory
+        Task.detached(priority: .utility) {
+            let bytes = (try? dir.directoryTotalAllocatedSize(includingSubfolders: true)) ?? 0
+            let text = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+            await MainActor.run { self.sizeText = text }
         }
-        return ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
     }
     
     var body: some View {
@@ -85,7 +90,8 @@ struct WallpaperPreview: SubviewOfContentView {
                             .resizable()
                             .frame(width: 32, height: 32)
                             .foregroundStyle(.secondary)
-                        Text("未知作者")
+                        Text(wallpaperViewModel.currentWallpaper.project.resolvedAuthor ?? "佚名作者")
+                            .lineLimit(1)
                     }
                     HStack {
                         HStack(spacing: 5) {
@@ -106,7 +112,7 @@ struct WallpaperPreview: SubviewOfContentView {
                     }
                     HStack {
                         Text(wallpaperViewModel.currentWallpaper.project.type)
-                        Text(wallpaperSize)
+                        Text(sizeText)
                     }
                     .font(.footnote)
                     
@@ -269,6 +275,9 @@ struct WallpaperPreview: SubviewOfContentView {
                 .disabled(wallpaperViewModel.currentWallpaper.project == .invalid ? true : false)
                 .animation(.default, value: wallpaperViewModel.currentWallpaper.project)
                 .padding([.horizontal, .top])
+            }
+            .task(id: wallpaperViewModel.currentWallpaper.id) {
+                recomputeSize(for: wallpaperViewModel.currentWallpaper)
             }
 
             HStack {
