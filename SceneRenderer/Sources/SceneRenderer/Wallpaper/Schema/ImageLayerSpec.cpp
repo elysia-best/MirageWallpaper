@@ -18,6 +18,33 @@ float NormalizeLayerAlpha(float alpha) {
     return std::clamp(alpha, 0.0f, 1.0f);
 }
 
+constexpr std::string_view kFoliageSwayEffect = "effects/foliagesway/effect.json";
+constexpr SceneVersion     kNormalizedFoliageSwayStrengthVersion = 9;
+
+void ScaleAnimCurve(AnimCurve& curve, float scale) {
+    auto scale_axis = [scale](std::vector<AnimKeyframe>& keys) {
+        for (auto& key : keys) {
+            key.value *= scale;
+            key.front.y *= scale;
+            key.back.y *= scale;
+        }
+    };
+    scale_axis(curve.c0);
+    scale_axis(curve.c1);
+    scale_axis(curve.c2);
+}
+
+void NormalizeLegacyFoliageSwayStrength(MaterialPass& pass) {
+    constexpr float scale = 0.01f;
+    auto            value = pass.constantshadervalues.find("strength");
+    if (value != pass.constantshadervalues.end()) {
+        for (float& component : value->second) component *= scale;
+    }
+    auto animation = pass.constantshadervalues_animations.find("strength");
+    if (animation != pass.constantshadervalues_animations.end())
+        ScaleAnimCurve(animation->second, scale);
+}
+
 } // namespace
 
 bool EffectCommand::FromJson(const nlohmann::json& json) {
@@ -92,7 +119,7 @@ bool ImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     return FromJson(json, vfs, kSceneVersionUnknown);
 }
 
-bool ImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs, SceneVersion /*v*/) {
+bool ImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs, SceneVersion v) {
     std::string filePath;
     sr::GetJsonValue(json, "file", filePath);
     ReadVisibleProperty(json, visible, visible_user);
@@ -118,6 +145,9 @@ bool ImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs, SceneVersio
         for (const auto& jP : jPasses) {
             MaterialPass pass;
             pass.FromJson(jP);
+            if (filePath == kFoliageSwayEffect && v != kSceneVersionUnknown &&
+                v < kNormalizedFoliageSwayStrengthVersion)
+                NormalizeLegacyFoliageSwayStrength(pass);
             passes[i++].Update(pass);
         }
     }
@@ -214,7 +244,7 @@ std::optional<ImageAssetInfo> sr::wpscene::LoadImageAssetInfo(fs::VFS&         v
     return info;
 }
 
-bool ImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs, SceneVersion /*v*/) {
+bool ImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs, SceneVersion v) {
     sr::GetJsonValue(json, "image", image);
     composite_layer = image == "models/util/composelayer.json";
     ReadVisibleProperty(json, visible, visible_user);
@@ -274,7 +304,7 @@ bool ImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs, SceneVersio
             rstd_error("Can't load material json: {}", matPath);
             return false;
         }
-        material.FromJson(jMat);
+        material.FromJson(jMat, v);
         if (image == "models/util/composelayer.json" && explicit_no_copy_background) {
             material.combos["CLEARALPHA"] = 1;
         }
@@ -285,7 +315,7 @@ bool ImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs, SceneVersio
     if (json.contains("effects")) {
         for (const auto& jE : json.at("effects")) {
             ImageEffect wpeff;
-            wpeff.FromJson(jE, vfs);
+            wpeff.FromJson(jE, vfs, v);
             effects.push_back(std::move(wpeff));
         }
     }

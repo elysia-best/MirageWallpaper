@@ -1659,7 +1659,7 @@ bool UsesUnitFinalQuad(const wpscene::Material& wpmat) {
 bool CanCompositeFinalEffectShader(std::string_view shader) {
     return IsLayerCompositeShader(shader) || shader == "effects/transform" ||
            shader == "effects/scroll" || shader == "effects/spin" ||
-           shader == "effects/perspective";
+           shader == "effects/perspective" || shader == "effects/foliagesway";
 }
 
 bool HasShaderCombo(const WPShaderInfo& info, std::string_view combo_name) {
@@ -1674,7 +1674,7 @@ bool HasShaderTextureMaterial(const WPShaderInfo& info, std::string_view materia
     });
 }
 
-bool HasSolidSceneContext(const ParseContext& context, const wpscene::ImageObject& obj) {
+bool HasSolidCompositeContext(const ParseContext& context, const wpscene::ImageObject& obj) {
     if (obj.solid || context.solid_layer_ids.contains(obj.id)) return true;
 
     std::unordered_set<std::int32_t> seen;
