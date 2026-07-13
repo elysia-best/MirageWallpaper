@@ -77,6 +77,12 @@ extension AppDelegate {
             .init(title: "退出 Mirage", systemImage: "power",
                   action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         ]
+        // A status-item menu has no reliable first-responder chain. Explicitly
+        // target AppDelegate so right-click menu actions (especially pause) are
+        // delivered to the renderer controller instead of being discarded.
+        for item in menu.items where item.action != #selector(NSApplication.terminate(_:)) {
+            item.target = self
+        }
 
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem.menu = menu

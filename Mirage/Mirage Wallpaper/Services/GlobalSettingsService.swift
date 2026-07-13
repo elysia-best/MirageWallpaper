@@ -243,7 +243,6 @@ class GlobalSettingsViewModel: ObservableObject {
     
     func save() {
         let data = try! JSONEncoder().encode(settings)
-        print(String(describing: String(data: data, encoding: .utf8)))
         UserDefaults.standard.set(data, forKey: "GlobalSettings")
     }
     
@@ -322,11 +321,21 @@ class GlobalSettingsViewModel: ObservableObject {
         case .pause, .stop:
             renderer.pause()
         case .mute:
-            renderer.resume()
+            if AppDelegate.shared.wallpaperViewModel.playRate == 0 {
+                renderer.pause()
+            } else {
+                renderer.resume()
+            }
             renderer.setMuted(true)
         case .keepRunning:
-            renderer.resume()
-            AppDelegate.shared.wallpaperViewModel.reapplyVolume()
+            // Do not let the periodic policy evaluator immediately undo a
+            // deliberate pause from the menu-bar control.
+            if AppDelegate.shared.wallpaperViewModel.playRate == 0 {
+                renderer.pause()
+            } else {
+                renderer.resume()
+                AppDelegate.shared.wallpaperViewModel.reapplyVolume()
+            }
         }
     }
 
