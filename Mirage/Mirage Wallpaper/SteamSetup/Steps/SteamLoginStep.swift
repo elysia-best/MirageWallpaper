@@ -5,6 +5,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct SteamLoginStep: View {
     @ObservedObject var viewModel: SteamSetupViewModel
@@ -36,6 +37,20 @@ struct SteamLoginStep: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
 
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Mirage 并非 Steam 官方客户端。", systemImage: "info.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                Text("若继续登录，密码仅通过本机的 Valve SteamCMD 安全终端提交，不会写入命令行或 Mirage 日志。SteamCMD 会在本机保存会话以便下载；您可随时在创意工坊页面“退出登录”清除它。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(maxWidth: 420, alignment: .leading)
+            .background(Color.orange.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
             VStack(spacing: 12) {
                 switch viewModel.loginState {
                 case .idle, .failed:
@@ -66,14 +81,24 @@ struct SteamLoginStep: View {
 
             if viewModel.loginState != .idle {
                 VStack(spacing: 4) {
-                    Button {
-                        showLog.toggle()
-                    } label: {
-                        Label(showLog ? "隐藏日志" : "显示 SteamCMD 日志", systemImage: "terminal")
-                            .font(.caption2)
+                    HStack(spacing: 10) {
+                        Button {
+                            showLog.toggle()
+                        } label: {
+                            Label(showLog ? "隐藏日志" : "显示 SteamCMD 日志", systemImage: "terminal")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+
+                        Button("复制脱敏日志") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(viewModel.loginLog.joined(separator: "\n"), forType: .string)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
 
                     if showLog {
                         ScrollView {
@@ -87,7 +112,7 @@ struct SteamLoginStep: View {
                                     }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .onChange(of: viewModel.loginLog.count) { _ in
+                                .onChange(of: viewModel.loginLog.count) { _, _ in
                                     if let last = viewModel.loginLog.indices.last {
                                         proxy.scrollTo(last, anchor: .bottom)
                                     }
@@ -155,6 +180,10 @@ struct SteamLoginStep: View {
                 .scaleEffect(1.5)
             Text("正在登录...")
                 .foregroundStyle(.secondary)
+            Button("取消登录") {
+                viewModel.cancelLogin()
+            }
+            .buttonStyle(.bordered)
         }
     }
 
@@ -191,6 +220,11 @@ struct SteamLoginStep: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.guardCode.isEmpty)
+
+            Button("取消登录") {
+                viewModel.cancelLogin()
+            }
+            .buttonStyle(.bordered)
         }
     }
 
@@ -239,6 +273,11 @@ struct SteamLoginStep: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 8)
+
+            Button("取消登录") {
+                viewModel.cancelLogin()
+            }
+            .buttonStyle(.bordered)
         }
     }
 }

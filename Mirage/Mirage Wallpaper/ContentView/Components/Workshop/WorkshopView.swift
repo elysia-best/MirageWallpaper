@@ -12,7 +12,6 @@ struct WorkshopView: View {
 
     @State private var hoveredId: String?
     @State private var isDownloadPopoverPresented = false
-    @State private var isSyncLogPresented = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -49,10 +48,6 @@ struct WorkshopView: View {
 
             if workshopViewModel.steamSetupState != .ready && workshopViewModel.items.isEmpty && !workshopViewModel.isLoading {
                 steamSetupBanner
-            }
-
-            if workshopViewModel.syncState == .syncing {
-                syncProgressBanner
             }
 
             if workshopViewModel.isLoading && workshopViewModel.items.isEmpty {
@@ -130,10 +125,18 @@ struct WorkshopView: View {
                 workshopViewModel.search()
             }
         }
-        .onChange(of: viewModel.topTabBarSelection) { _ in
+        .onChange(of: viewModel.topTabBarSelection) { _, _ in
             if viewModel.topTabBarSelection == 2 {
                 workshopViewModel.checkSteamSetup()
             }
+        }
+        .alert("Steam 登录", isPresented: Binding(
+            get: { workshopViewModel.logoutResultMessage != nil },
+            set: { if !$0 { workshopViewModel.logoutResultMessage = nil } }
+        )) {
+            Button("确定", role: .cancel) { workshopViewModel.logoutResultMessage = nil }
+        } message: {
+            Text(workshopViewModel.logoutResultMessage ?? "")
         }
     }
 
@@ -143,29 +146,6 @@ struct WorkshopView: View {
     var steamAccountSection: some View {
         if workshopViewModel.steamSetupState == .ready {
             HStack(spacing: 8) {
-                Button {
-                    workshopViewModel.syncSubscribed()
-                } label: {
-                    switch workshopViewModel.syncState {
-                    case .syncing:
-                        HStack(spacing: 4) {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 14, height: 14)
-                            Text("同步中...")
-                                .font(.caption)
-                        }
-                    default:
-                        Label("同步已订阅", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.caption)
-                    }
-                }
-                .disabled(workshopViewModel.syncState == .syncing)
-                .help("同步 Steam 上已订阅的 Wallpaper Engine 壁纸到本地")
-
-                Divider()
-                    .frame(height: 16)
-
                 HStack(spacing: 4) {
                     Image(systemName: "person.crop.circle.fill")
                         .foregroundStyle(.green)
@@ -184,6 +164,7 @@ struct WorkshopView: View {
                 }
                 .buttonStyle(.plain)
                 .help("登出 Steam")
+                .disabled(workshopViewModel.isLoggingOut)
             }
         } else {
             Button {
@@ -194,59 +175,6 @@ struct WorkshopView: View {
             }
             .buttonStyle(.borderedProminent)
         }
-    }
-
-    // MARK: - Sync Progress Banner (#7)
-
-    var syncProgressBanner: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                ProgressView()
-                    .scaleEffect(0.7)
-                    .frame(width: 16, height: 16)
-                Text("正在同步已订阅壁纸...")
-                    .font(.caption)
-                    .bold()
-                Spacer()
-                Button {
-                    isSyncLogPresented.toggle()
-                } label: {
-                    Label(isSyncLogPresented ? "隐藏日志" : "查看日志", systemImage: "terminal")
-                        .font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            }
-
-            if isSyncLogPresented {
-                ScrollView {
-                    ScrollViewReader { proxy in
-                        VStack(alignment: .leading, spacing: 1) {
-                            ForEach(Array(workshopViewModel.syncLog.enumerated()), id: \.offset) { idx, line in
-                                Text(line)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.green)
-                                    .id(idx)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .onChange(of: workshopViewModel.syncLog.count) { _ in
-                            if let last = workshopViewModel.syncLog.indices.last {
-                                proxy.scrollTo(last, anchor: .bottom)
-                            }
-                        }
-                    }
-                }
-                .frame(maxHeight: 120)
-                .padding(6)
-                .background(Color.black.opacity(0.85))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-        }
-        .padding(10)
-        .background(Color.blue.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.blue.opacity(0.2), lineWidth: 1))
     }
 
     var pageControls: some View {
@@ -304,4 +232,5 @@ struct WorkshopView: View {
                 .stroke(Color.blue.opacity(0.2), lineWidth: 1)
         )
     }
+
 }

@@ -98,10 +98,10 @@ enum WorkshopSortOrder: Int, CaseIterable, Identifiable {
 
     var apiValue: Int {
         switch self {
-        case .trending: return 0
+        case .trending: return 3
         case .mostRecent: return 1
-        case .mostSubscribed: return 3
-        case .topRated: return 12
+        case .mostSubscribed: return 9
+        case .topRated: return 0
         }
     }
 }
@@ -247,12 +247,41 @@ enum SteamSetupState: Equatable {
     case ready
 }
 
+/// Each Workshop dependency is intentionally tracked on its own.  A reachable
+/// Web API must not imply that SteamCMD, the Steam session, or the content CDN
+/// is also usable.
+enum SteamServiceState: Equatable {
+    case unknown
+    case checking
+    case available(String)
+    case needsAction(String)
+    case unavailable(String)
+
+    var summary: String {
+        switch self {
+        case .unknown: return "尚未检测"
+        case .checking: return "检测中"
+        case .available(let detail): return detail
+        case .needsAction(let detail): return detail
+        case .unavailable(let detail): return detail
+        }
+    }
+}
+
+struct SteamServiceStatus: Equatable {
+    var browsingAPI: SteamServiceState = .unknown
+    var steamCMD: SteamServiceState = .unknown
+    var authentication: SteamServiceState = .unknown
+    var workshopDownload: SteamServiceState = .unknown
+}
+
 enum SteamCMDInstallState: Equatable {
     case detecting
     case found(String)
     case notFound
     case downloading(Double)
     case extracting
+    case initializing
     case installed(String)
     case failed(String)
 }
@@ -271,11 +300,19 @@ enum SteamGuardType: Equatable {
     case mobileConfirm
 }
 
-enum SyncState: Equatable {
-    case idle
-    case syncing
-    case completed
-    case failed(String)
+enum SteamDiagnosticCategory: String, Codable, CaseIterable {
+    case browsingAPI = "浏览 API"
+    case steamCMDInstall = "SteamCMD 安装"
+    case authentication = "Steam 认证"
+    case workshopDownload = "创意工坊下载"
+}
+
+struct SteamDiagnosticEvent: Identifiable, Equatable {
+    let id = UUID()
+    let timestamp: Date
+    let category: SteamDiagnosticCategory
+    let domain: String
+    let message: String
 }
 
 // MARK: - Steam API Response Models

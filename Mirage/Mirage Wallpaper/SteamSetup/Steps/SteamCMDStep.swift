@@ -54,7 +54,7 @@ struct SteamCMDStep: View {
                             .font(.title2)
                             .bold()
 
-                        Text("SteamCMD 是 Valve 的官方命令行工具，用于下载 Steam 创意工坊内容。\n安装大小约 50MB。")
+                        Text("SteamCMD 是 Valve 的官方命令行工具，用于下载 Steam 创意工坊内容。\nMirage 会下载官方 bootstrap，随后由 SteamCMD 完成首次更新；所需时间和空间取决于网络。")
                             .font(.body)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -83,6 +83,11 @@ struct SteamCMDStep: View {
                             .font(.title3)
                             .bold()
                             .foregroundStyle(.blue)
+
+                        Button("取消下载") {
+                            viewModel.cancelSteamCMDInstallation()
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                 case .extracting:
@@ -92,6 +97,20 @@ struct SteamCMDStep: View {
 
                         Text("正在解压...")
                             .font(.body)
+                            .foregroundStyle(.secondary)
+                    }
+
+                case .initializing:
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+
+                        Text("正在完成 SteamCMD 首次初始化...")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+
+                        Text("这一步需要连接 Steam 服务，请勿关闭 Mirage。")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
 

@@ -44,13 +44,12 @@ class WorkshopViewModel: ObservableObject {
     @Published var downloadHistory: [DownloadTask] = []
 
     // MARK: - Sync State
-
-    @Published var syncState: SyncState = .idle
-    @Published var syncLog: [String] = []
-
-    // MARK: - Steam Setup
+    // MARK: - Steam service state
 
     @Published var steamSetupState: SteamSetupState = .notConfigured
+    @Published var steamServiceStatus = SteamServiceStatus()
+    @Published var logoutResultMessage: String?
+    @Published var isLoggingOut = false
 
     var totalPages: Int {
         max(1, Int(ceil(Double(totalItems) / Double(itemsPerPage))))
@@ -66,6 +65,7 @@ class WorkshopViewModel: ObservableObject {
     }
 
     private var searchDebounce: AnyCancellable?
+    private var serviceStateCancellables = Set<AnyCancellable>()
 
     init() {
         searchDebounce = $searchText
@@ -75,18 +75,58 @@ class WorkshopViewModel: ObservableObject {
                 self?.currentPage = 1
                 self?.search()
             }
+
+        SteamCMDManager.shared.$isLoggedIn
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refreshSetupState() }
+            .store(in: &serviceStateCancellables)
+
+        SteamCMDManager.shared.$authenticationState
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in
+                self?.steamServiceStatus.authentication = state
+                self?.refreshSetupState()
+            }
+            .store(in: &serviceStateCancellables)
     }
 
     // MARK: - Setup Check
 
     func checkSteamSetup() {
         let cmdManager = SteamCMDManager.shared
-        if cmdManager.detectSteamCMD() == nil {
+        steamServiceStatus.steamCMD = .checking
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let path = cmdManager.detectSteamCMD()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let path {
+                    self.steamServiceStatus.steamCMD = .available(path.path)
+                } else {
+                    self.steamServiceStatus.steamCMD = .unavailable("未安装 SteamCMD")
+                }
+                self.steamServiceStatus.authentication = cmdManager.authenticationState
+                self.refreshSetupState()
+            }
+        }
+    }
+
+    private func refreshSetupState() {
+        let cmdManager = SteamCMDManager.shared
+        if cmdManager.steamCMDPath == nil {
             steamSetupState = .steamCMDMissing
-        } else if cmdManager.savedUsername.isEmpty {
+            steamServiceStatus.workshopDownload = .needsAction("需要先安装 SteamCMD")
+        } else if !cmdManager.isLoggedIn {
             steamSetupState = .needsLogin
+            if cmdManager.savedUsername.isEmpty {
+                steamServiceStatus.authentication = .needsAction("需要登录 Steam")
+            }
+            steamServiceStatus.workshopDownload = .needsAction("需要有效的 Steam 会话")
         } else {
             steamSetupState = .ready
+            steamServiceStatus.authentication = .available("会话已验证")
+            if case .unknown = steamServiceStatus.workshopDownload {
+                steamServiceStatus.workshopDownload = .needsAction("尚未开始下载")
+            }
         }
     }
 
@@ -96,6 +136,7 @@ class WorkshopViewModel: ObservableObject {
         guard !isLoading else { return }
         isLoading = true
         error = nil
+        steamServiceStatus.browsingAPI = .checking
 
         Task { @MainActor in
             do {
@@ -113,9 +154,11 @@ class WorkshopViewModel: ObservableObject {
                 self.items = result.items
                 self.totalItems = result.total
                 self.isLoading = false
+                self.steamServiceStatus.browsingAPI = .available("Steam Web API 可用")
             } catch {
                 self.error = error.localizedDescription
                 self.isLoading = false
+                self.steamServiceStatus.browsingAPI = .unavailable(error.localizedDescription)
             }
         }
     }
@@ -230,7 +273,7 @@ class WorkshopViewModel: ObservableObject {
     }
 
     private func processDownloadQueue() {
-        let maxConcurrent = 2
+        let maxConcurrent = 1
         let currentActive = downloadQueue.filter {
             if case .downloading = $0.state { return true }
             if case .starting = $0.state { return true }
@@ -259,12 +302,16 @@ class WorkshopViewModel: ObservableObject {
             self.downloadQueue[idx].state = state
 
             if case .completed = state {
+                self.steamServiceStatus.workshopDownload = .available("最近一次下载已验证")
                 self.downloadQueue[idx].completedAt = Date()
                 self.processDownloadQueue()
                 NotificationCenter.default.post(name: .workshopItemDownloaded, object: workshopId)
                 self.applyDownloadedWallpaper(workshopId: workshopId)
             } else if case .failed = state {
+                self.steamServiceStatus.workshopDownload = .unavailable("最近一次下载失败")
                 self.processDownloadQueue()
+            } else if case .starting = state {
+                self.steamServiceStatus.workshopDownload = .checking
             }
         }
     }
@@ -291,28 +338,23 @@ class WorkshopViewModel: ObservableObject {
         search()
     }
 
-    // MARK: - Sync Subscribed
-
-    func syncSubscribed() {
-        guard syncState != .syncing else { return }
-        syncState = .syncing
-        syncLog.removeAll()
-        SteamCMDManager.shared.syncSubscribedWallpapers(
-            onLog: { [weak self] line in
-                self?.syncLog.append(line)
-            }
-        ) { [weak self] state in
-            self?.syncState = state
-            if case .completed = state {
-                NotificationCenter.default.post(name: .workshopItemDownloaded, object: nil)
-            }
-        }
-    }
-
     func logout() {
-        SteamCMDManager.shared.savedUsername = ""
-        SteamCMDManager.shared.isLoggedIn = false
-        steamSetupState = .needsLogin
+        guard !isLoggingOut else { return }
+        isLoggingOut = true
+        steamServiceStatus.authentication = .checking
+        SteamCMDManager.shared.logout { [weak self] result in
+            guard let self else { return }
+            self.isLoggingOut = false
+            switch result {
+            case .success:
+                self.steamServiceStatus.authentication = .needsAction("已退出登录")
+                self.logoutResultMessage = "已退出 Steam，并清除了 Mirage 本机保存的 SteamCMD 会话。"
+            case .failure(let error):
+                self.steamServiceStatus.authentication = .needsAction(error.localizedDescription)
+                self.logoutResultMessage = error.localizedDescription
+            }
+            self.refreshSetupState()
+        }
     }
 
     // MARK: - Auto Apply

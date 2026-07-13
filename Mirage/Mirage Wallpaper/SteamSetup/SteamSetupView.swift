@@ -12,8 +12,18 @@ struct SteamSetupView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Button("关闭") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+
             stepIndicator
-                .padding(.top, 20)
+                .padding(.top, 8)
                 .padding(.bottom, 16)
 
             Divider()
@@ -163,6 +173,20 @@ struct SteamSetupView: View {
             .background(Color.orange.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.2), lineWidth: 1))
+            .padding(.horizontal, 40)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Label("中国大陆网络说明", systemImage: "network.badge.shield.half.filled")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("此功能依赖全球 Steam 的 Web API、SteamCMD 登录服务和内容 CDN。蒸汽平台兼容性不保证；网络线路只能改善个别环节，Mirage 不承诺任何线路一定能解决登录或下载问题。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .background(Color.secondary.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
             .padding(.horizontal, 40)
 
             VStack(alignment: .leading, spacing: 14) {

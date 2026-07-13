@@ -67,6 +67,10 @@ class SteamSetupViewModel: ObservableObject {
         }
     }
 
+    func cancelSteamCMDInstallation() {
+        SteamCMDManager.shared.cancelSteamCMDInstallation()
+    }
+
     func login() {
         guard !username.isEmpty, !password.isEmpty else {
             errorMessage = "请输入用户名和密码"
@@ -77,7 +81,6 @@ class SteamSetupViewModel: ObservableObject {
         SteamCMDManager.shared.login(
             username: username,
             password: password,
-            guardCode: guardCode.isEmpty ? nil : guardCode,
             onLog: { [weak self] line in
                 self?.loginLog.append(line)
             }
@@ -85,6 +88,10 @@ class SteamSetupViewModel: ObservableObject {
             self?.loginState = state
             if case .failed(let msg) = state {
                 self?.errorMessage = msg
+            }
+            if case .success = state {
+                self?.password = ""
+                self?.guardCode = ""
             }
             if case .waitingForGuard = state {
                 self?.errorMessage = nil
@@ -97,21 +104,22 @@ class SteamSetupViewModel: ObservableObject {
             errorMessage = "请输入验证码"
             return
         }
-        errorMessage = nil
-        loginLog.removeAll()
-        SteamCMDManager.shared.login(
-            username: username,
-            password: password,
-            guardCode: guardCode,
-            onLog: { [weak self] line in
-                self?.loginLog.append(line)
-            }
-        ) { [weak self] state in
-            self?.loginState = state
-            if case .failed(let msg) = state {
-                self?.errorMessage = msg
-            }
+        guard SteamCMDManager.shared.submitGuardCode(guardCode) else {
+            errorMessage = "Steam Guard 会话已结束，请重新登录"
+            loginState = .failed("Steam Guard 会话已结束")
+            return
         }
+        guardCode = ""
+        errorMessage = nil
+        loginState = .loggingIn
+    }
+
+    func cancelLogin() {
+        SteamCMDManager.shared.cancelLogin()
+        password = ""
+        guardCode = ""
+        loginState = .idle
+        errorMessage = nil
     }
 
     func completeSetup() {
