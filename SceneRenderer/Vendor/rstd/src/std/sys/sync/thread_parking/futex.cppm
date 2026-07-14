@@ -1,0 +1,24 @@
+export module rstd:sys.sync.thread_parking.futex;
+import :sys.pal;
+
+namespace rstd::sys::sync::thread_parking::futex
+{
+using Futex = pal::futex::SmallFutex;
+using State = pal::futex::SmallPrimitive;
+
+export class Parker {
+private:
+    static constexpr State PARKED   = rstd::numeric_limits<State>::max();
+    static constexpr State EMPTY    = 0;
+    static constexpr State NOTIFIED = 1;
+
+    Futex state;
+
+public:
+    Parker();
+    ~Parker();
+    void park();
+    void park_timeout(rstd::time::Duration timeout);
+    void unpark();
+};
+} // namespace rstd::sys::sync::thread_parking::futex

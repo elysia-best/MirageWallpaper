@@ -1,0 +1,11 @@
+export module rstd.alloc;
+export import :alloc;
+export import :rc;
+export import :str;
+export import :boxed;
+export import :vec;
+export import :ffi;
+export import :string;
+export import :sync;
+export import :collections;
+export import :hash.random;

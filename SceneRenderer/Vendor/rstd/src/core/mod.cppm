@@ -1,0 +1,37 @@
+export module rstd.core;
+export import :choice;
+export import :core;
+export import :prelude;
+export import :trait;
+export import :cmp;
+export import :fmt;
+export import :convert;
+export import :slice;
+export import :alloc;
+
+export import :ops;
+export import :iter;
+
+export import :clone;
+export import :option;
+export import :result;
+export import :try_;
+export import :enum_;
+export import :task;
+export import :future;
+
+export import :panicking;
+export import :hint;
+export import :str;
+export import :ptr;
+export import :mem;
+export import :sync;
+export import :intrinsics;
+export import :time;
+export import :ffi;
+export import :hash;
+export import :memchr;
+export import :char_;
+export import :f32_;
+export import :f64_;
+export import :int_;

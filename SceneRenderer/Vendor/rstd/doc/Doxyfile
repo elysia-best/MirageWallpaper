@@ -1,0 +1,23 @@
+PROJECT_NAME           = "rstd"
+PROJECT_NUMBER         = 0.1.0
+INPUT                  = ../src
+GENERATE_LATEX         = NO
+
+HTML_EXTRA_STYLESHEET  = doxygen-awesome-css/doxygen-awesome.css
+
+RECURSIVE              = YES
+USE_MDFILE_AS_MAINPAGE = ../README.md
+INPUT                  = ../include ../src ../README.md 
+STRIP_FROM_INC_PATH    = ../include ../src
+MACRO_EXPANSION        = YES
+
+HIDE_UNDOC_CLASSES     = YES
+HIDE_UNDOC_MEMBERS     = YES
+HIDE_UNDOC_NAMESPACES  = YES
+SHOW_ENUM_VALUES       = YES
+WARN_IF_UNDOC_ENUM_VAL = YES
+
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+EXTENSION_MAPPING      = cppm=C++
+FILE_PATTERNS          = *.cppm *.cpp *.hpp *.h

@@ -1,0 +1,44 @@
+gtest_dep = dependency('gtest_main', required : false)
+if not gtest_dep.found()
+  gtest_proj = subproject('googletest')
+  gtest_dep = gtest_proj.get_variable('gtest_main_dep')
+endif
+
+test_sources = [
+  'trait.cpp',
+  'deref.cpp',
+  'result.cpp',
+    'try.cpp',
+    'try_async.cpp',
+    'try_coroutine.cpp',
+  'compile.cpp',
+  'option.cpp',
+  'clone.cpp',
+  'convert.cpp',
+  'enum.cpp',
+  'alloc/rc.cpp',
+  'alloc/str.cpp',
+  'alloc/boxed.cpp',
+  'alloc/vec.cpp',
+  'alloc/sync.cpp',
+  'alloc/string.cpp',
+  'collections/btree_map.cpp',
+  'collections/hash_map.cpp',
+  'iter/iterator.cpp',
+  'sys/sync/mutex/futex.cpp',
+  'sys/sync/mutex/pthread.cpp',
+  'thread/thread.cpp',
+  'num/nonzero.cpp',
+  'thread.cpp',
+  'sync/mpsc.cpp',
+  'time.cpp',
+  'fmt.cpp',
+  'log.cpp',
+]
+
+rstd_test = executable('rstd_test',
+  test_sources,
+  dependencies : [rstd_dep, gtest_dep],
+)
+
+test('rstd_test', rstd_test)

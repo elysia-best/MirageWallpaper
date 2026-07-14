@@ -21,7 +21,6 @@ build-*
 /dist
 /workshop
 /rstd
-/Vendor/rstd
 /assets
 /record
 /CMakeUserPresets.json

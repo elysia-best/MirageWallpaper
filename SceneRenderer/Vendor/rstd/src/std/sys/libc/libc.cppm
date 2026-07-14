@@ -1,0 +1,65 @@
+module;
+#include <errno.h>
+#include <time.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+#include <rstd/macro.hpp>
+
+#if RSTD_OS_UNIX
+#include <unistd.h>
+#endif
+
+export module rstd:sys.libc.std;
+
+export namespace rstd::sys::libc
+{
+using ::timespec;
+using ::time_t;
+using ::tm;
+
+inline auto time(time_t* timer) noexcept -> time_t {
+    return ::time(timer);
+}
+
+using ::abort;
+
+// Memory management
+using ::malloc;
+using ::free;
+using ::realloc;
+using ::calloc;
+
+// Utilities
+using ::memcpy;
+using ::memset;
+
+// Types
+using ::max_align_t;
+
+#undef errno
+[[gnu::always_inline]]
+inline auto errno() noexcept -> int {
+#if defined(RSTD_OS_LINUX)
+    return *__errno_location();
+#elif defined(RSTD_OS_WINDOWS)
+    return *_errno();
+#elif defined(RSTD_OS_APPLE)
+    return *__error();
+#else
+#error "rstd: unsupported platform for errno()"
+#endif
+};
+
+// Environment
+using ::getenv;
+#if RSTD_OS_UNIX
+using ::setenv;
+using ::unsetenv;
+
+// Process
+using ::getpid;
+#endif
+using ::_exit;
+
+} // namespace rstd::sys::libc

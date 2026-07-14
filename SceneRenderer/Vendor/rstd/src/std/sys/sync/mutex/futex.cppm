@@ -1,0 +1,114 @@
+module;
+#include <rstd/macro.hpp>
+export module rstd:sys.sync.mutex.futex;
+export import :sys.pal;
+
+#if RSTD_OS_LINUX || RSTD_OS_WINDOWS
+namespace rstd::sys::sync::mutex::futex
+{
+
+using Futex = pal::futex::SmallFutex;
+using State = pal::futex::SmallPrimitive;
+
+constexpr State UNLOCKED  = 0;
+constexpr State LOCKED    = 1; // locked, no other threads waiting
+constexpr State CONTENDED = 2; // locked, and other threads waiting (contended)
+
+export class Mutex {
+    Futex m_futex;
+
+    constexpr Mutex() noexcept: m_futex(UNLOCKED) {}
+
+public:
+    Mutex(const Mutex&)            = delete;
+    Mutex& operator=(const Mutex&) = delete;
+
+    static auto make() noexcept -> Mutex { return {}; }
+
+    [[nodiscard]]
+    bool try_lock() noexcept {
+        State expected = UNLOCKED;
+        // Acquire on success, Relaxed on failure (match Rust)
+        return m_futex.compare_exchange_strong(expected,
+                                               LOCKED,
+                                               rstd::sync::atomic::Ordering::Acquire,
+                                               rstd::sync::atomic::Ordering::Relaxed);
+    }
+
+    void lock() noexcept {
+        State expected = UNLOCKED;
+        if (! m_futex.compare_exchange_strong(expected,
+                                              LOCKED,
+                                              rstd::sync::atomic::Ordering::Acquire,
+                                              rstd::sync::atomic::Ordering::Relaxed)) {
+            lock_contended();
+        }
+    }
+
+    void unlock() noexcept {
+        // Release, and if it was contended, wake one waiter
+        if (m_futex.exchange(UNLOCKED, rstd::sync::atomic::Ordering::Release) == CONTENDED) {
+            wake();
+        }
+    }
+
+private:
+    [[gnu::cold]]
+    void lock_contended() noexcept {
+        // Spin first to speed things up if the lock is released quickly.
+        State state = spin();
+
+        // If it's unlocked now, attempt to take the lock without marking contended.
+        if (state == UNLOCKED) {
+            State expected = UNLOCKED;
+            if (m_futex.compare_exchange_strong(expected,
+                                                LOCKED,
+                                                rstd::sync::atomic::Ordering::Acquire,
+                                                rstd::sync::atomic::Ordering::Relaxed)) {
+                return; // Locked!
+            }
+            state = m_futex.load(rstd::sync::atomic::Ordering::Relaxed);
+        }
+
+        for (;;) {
+            // Put the lock in contended state.
+            // Avoid unnecessary write if already CONTENDED.
+            if (state != CONTENDED &&
+                m_futex.exchange(CONTENDED, rstd::sync::atomic::Ordering::Acquire) == UNLOCKED) {
+                // UNLOCKED -> CONTENDED, so we successfully locked it.
+                return;
+            }
+
+            // Wait for futex to change, assuming still CONTENDED.
+            // timeout = None
+            pal::futex::futex_wait(&m_futex, CONTENDED, {});
+
+            // Spin again after waking up.
+            state = spin();
+        }
+    }
+
+    State spin() noexcept {
+        int spin_count = 100;
+        for (;;) {
+            // Use load while spinning to be cache-friendly.
+            const State state = m_futex.load(rstd::sync::atomic::Ordering::Relaxed);
+
+            // Stop spinning when UNLOCKED, but also when CONTENDED.
+            if (state != LOCKED || spin_count == 0) {
+                return state;
+            }
+
+            rstd::hint::spin_loop();
+            --spin_count;
+        }
+    }
+
+    void wake() noexcept {
+        // Wake one waiter (match Rust comment/behavior)
+        pal::futex::futex_wake(&m_futex);
+    }
+};
+
+} // namespace rstd::sys::sync::mutex::futex
+#endif

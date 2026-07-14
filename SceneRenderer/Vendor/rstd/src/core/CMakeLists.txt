@@ -1,0 +1,91 @@
+cmake_minimum_required(VERSION 3.28)
+project(
+  rstd.core
+  VERSION 0.1.0
+  LANGUAGES CXX)
+
+add_library(rstd.core STATIC)
+add_library(rstd::core ALIAS rstd.core)
+target_compile_features(rstd.core PUBLIC cxx_std_20)
+target_include_directories(rstd.core PUBLIC include)
+target_link_libraries(rstd.core PUBLIC rstd.basic PRIVATE "$<LINK_ONLY:rstd.runtime>")
+target_sources(
+  rstd.core
+  PUBLIC FILE_SET
+         headers
+         TYPE
+         HEADERS
+         BASE_DIRS
+         include
+         FILES
+         include/rstd/enum.hpp
+         include/rstd/macro.hpp)
+
+target_sources(rstd.core PRIVATE mod.cpp)
+target_sources(
+  rstd.core
+  PUBLIC FILE_SET
+         modules
+         TYPE
+         CXX_MODULES
+         FILES
+         mod.cppm
+         prelude.cppm
+         core.cppm
+         trait.cppm
+         marker.cppm
+         convert.cppm
+         clone.cppm
+         option.cppm
+         result.cppm
+         try.cppm
+         enum.cppm
+         task.cppm
+         future.cppm
+         fmt.cppm
+          panic.cppm
+          panicking.cppm
+          choice.cppm
+         hint.cppm
+         memchr.cppm
+         cmp.cppm
+         time.cppm
+         alloc/global.cppm
+         alloc/layout.cppm
+         alloc/mod.cppm
+         intrinsics/mod.cppm
+         ffi/mod.cppm
+         ffi/c_str.cppm
+         hash/mod.cppm
+         num/mod.cppm
+         num/nonzero.cppm
+         num/niche_types.cppm
+         num/integer.cppm
+         slice/mod.cppm
+         str/mod.cppm
+         str/str.cppm
+         str/traits.cppm
+         ptr/mod.cppm
+         ptr/non_null.cppm
+         ptr/dyn.cppm
+         ptr/metadata.cppm
+         ptr/ptr.cppm
+         ops/mod.cppm
+         ops/deref.cppm
+         ops/function.cppm
+         iter/mod.cppm
+         iter/traits.cppm
+         iter/adapters.cppm
+         iter/sources.cppm
+         iter/range.cppm
+         mem/mod.cppm
+         mem/manually_drop.cppm
+         mem/maybe_uninit.cppm
+         mem/drop_guard.cppm
+         sync/mod.cppm
+         sync/atomic.cppm
+         forward/mod.cppm
+         char.cppm
+         f32.cppm
+         f64.cppm
+         int.cppm)

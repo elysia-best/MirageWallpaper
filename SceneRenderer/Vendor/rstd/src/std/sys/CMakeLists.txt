@@ -1,0 +1,69 @@
+list(
+  APPEND
+  RSTD_PRIVATE_SOURCES
+  sys/pal/unix/futex.cpp
+  sys/pal/windows/futex.cpp
+  sys/sync/once/futex.cpp
+  sys/sync/thread_parking/futex.cpp
+  sys/sync/thread_parking/pthread.cpp)
+
+set(RSTD_PRIVATE_SOURCES
+    ${RSTD_PRIVATE_SOURCES})
+
+set(RSTD_SYS_SOURCES
+    sys/mod.cppm
+    sys/fd.cppm
+    sys/io/mod.cppm
+    sys/io/stdio.cppm
+    sys/libc/mod.cppm
+    sys/libc/pthread.cppm
+    sys/libc/unix.cppm
+    sys/libc/windows.cppm
+    sys/libc/libc.cppm
+    sys/pal/mod.cppm
+    sys/pal/unix/mod.cppm
+    sys/pal/unix/futex.cppm
+    sys/pal/unix/time.cppm
+    sys/pal/unix/sync/mutex.cppm
+    sys/pal/unix/sync/condvar.cppm
+    sys/pal/unix/sync/mod.cppm
+    sys/pal/windows/mod.cppm
+    sys/pal/windows/futex.cppm
+    sys/pal/windows/time.cppm
+    sys/pal/windows/sync/mod.cppm
+    sys/pal/windows/sync/mutex.cppm
+    sys/pal/windows/sync/condvar.cppm
+    sys/sync/once_box.cppm
+    sys/sync/mutex/mod.cppm
+    sys/sync/mutex/futex.cppm
+    sys/sync/mutex/pthread.cppm
+    sys/sync/condvar/mod.cppm
+    sys/sync/condvar/futex.cppm
+    sys/sync/once/mod.cppm
+    sys/sync/once/futex.cppm
+    sys/sync/thread_parking/mod.cppm
+    sys/sync/thread_parking/futex.cppm
+    sys/sync/thread_parking/pthread.cppm
+    sys/thread/mod.cppm
+    sys/thread/unix.cppm
+    sys/thread/windows.cppm)
+
+if(NOT APPLE)
+  list(APPEND RSTD_SYS_SOURCES sys/socket.cppm)
+endif()
+
+if(APPLE)
+  list(REMOVE_ITEM RSTD_SYS_SOURCES
+    sys/pal/unix/futex.cppm
+    sys/sync/mutex/futex.cppm
+    sys/sync/condvar/futex.cppm
+    sys/sync/once/futex.cppm
+    sys/sync/thread_parking/futex.cppm)
+  list(REMOVE_ITEM RSTD_PRIVATE_SOURCES
+    sys/pal/unix/futex.cpp
+    sys/sync/once/futex.cpp
+    sys/sync/thread_parking/futex.cpp)
+endif()
+
+set(RSTD_SYS_SOURCES ${RSTD_SYS_SOURCES} PARENT_SCOPE)
+set(RSTD_PRIVATE_SOURCES ${RSTD_PRIVATE_SOURCES} PARENT_SCOPE)

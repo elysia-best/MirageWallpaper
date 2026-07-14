@@ -1,0 +1,78 @@
+export module rstd:sys.sync.once_box;
+export import rstd.core;
+import :forward;
+
+using rstd::boxed::Box;
+using rstd::sync::atomic::Atomic;
+
+export namespace rstd::sys::sync
+{
+
+template<typename T>
+class OnceBox {
+    Atomic<T*> m_ptr;
+
+    constexpr OnceBox(T* p) noexcept: m_ptr(p) {}
+
+public:
+    ~OnceBox() { take(); }
+    constexpr OnceBox(const OnceBox&) noexcept            = delete;
+    constexpr OnceBox& operator=(const OnceBox&) noexcept = delete;
+    OnceBox(OnceBox&& other) noexcept
+        : m_ptr(other.m_ptr.exchange(nullptr, rstd::sync::atomic::Ordering::AcqRel)) {}
+
+    OnceBox& operator=(OnceBox&& other) noexcept {
+        if (this != &other) {
+            m_ptr.store(other.m_ptr.exchange(nullptr), rstd::sync::atomic::Ordering::Release);
+        }
+        return *this;
+    }
+
+    static OnceBox make() noexcept { return { nullptr }; }
+
+    // Unsafe: caller must ensure the value is initialized and observed.
+    auto get_unchecked() const noexcept -> T& {
+        return *m_ptr.load(rstd::sync::atomic::Ordering::Relaxed);
+    }
+
+    template<typename F>
+    auto get_or_init(F&& f) -> T& {
+        T* p = m_ptr.load(rstd::sync::atomic::Ordering::Acquire);
+        if (p) {
+            return *p;
+        }
+        return initialize(rstd::forward<F>(f));
+    }
+
+    auto take() noexcept -> Option<Box<T>> {
+        T* p = m_ptr.exchange(nullptr, rstd::sync::atomic::Ordering::Relaxed);
+        if (p) {
+            return rstd::Some(Box<T>::from_raw(mut_ptr<T>::from_raw_parts(p)));
+        }
+        return {};
+    }
+
+    constexpr explicit operator bool() const noexcept {
+        return m_ptr.load(rstd::sync::atomic::Ordering::Relaxed) != nullptr;
+    }
+    T* operator->() { return m_ptr.load(rstd::sync::atomic::Ordering::Relaxed); }
+
+private:
+    template<typename F>
+    auto initialize(F&& f) -> T& {
+        T* raw      = rstd::move(f()).into_raw();
+        T* expected = nullptr;
+        if (m_ptr.compare_exchange_strong(expected,
+                                          raw,
+                                          rstd::sync::atomic::Ordering::Release,
+                                          rstd::sync::atomic::Ordering::Acquire)) {
+            return *raw;
+        } else {
+            auto dropped = Box<T>::from_raw(mut_ptr<T>::from_raw_parts(raw));
+            (void)dropped;
+            return *expected;
+        }
+    }
+};
+
+} // namespace rstd::sys::sync

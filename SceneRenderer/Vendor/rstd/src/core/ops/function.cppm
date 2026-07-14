@@ -1,0 +1,74 @@
+export module rstd.core:ops.function;
+export import :trait;
+
+namespace rstd
+{
+/// Trait for callables that can be called once, consuming themselves.
+/// \tparam T A function signature, e.g. `R(Args...)`.
+export template<typename T>
+struct FnOnce {
+    static_assert(false);
+};
+
+template<typename R, bool NoEx, typename... Args>
+struct FnOnce<R(Args...) noexcept(NoEx)> {
+    using Output = R;
+    template<typename Self, typename = void>
+    struct Api {
+        using Trait = FnOnce;
+
+        // auto call_once(Args... args) noexcept(NoEx) -> R;
+    };
+
+    template<typename T>
+    using Funcs = TraitFuncs<&T::call_once>;
+};
+
+/// Trait for callables that can be called by mutable reference.
+/// \tparam T A function signature, e.g. `R(Args...)`.
+export template<typename T>
+struct FnMut {
+    static_assert(false);
+};
+
+template<typename R, bool NoEx, typename... Args>
+struct FnMut<R(Args...) noexcept(NoEx)> {
+    static constexpr bool allow_const_member_impl { true };
+
+    template<typename Self, typename = void>
+    struct Api {
+        using Trait = FnMut;
+
+        auto operator()(Args... args) noexcept(NoEx) -> R {
+            return trait_call<0>(this, rstd::forward<Args>(args)...);
+        }
+    };
+    template<typename T>
+    using Funcs = TraitFuncs<&T::operator()>;
+
+    static constexpr bool direct { true };
+};
+
+/// Trait for callables that can be called by const reference.
+/// \tparam T A function signature, e.g. `R(Args...)`.
+export template<typename T>
+struct Fn {
+    static_assert(false);
+};
+
+template<typename R, bool NoEx, typename... Args>
+struct Fn<R(Args...) noexcept(NoEx)> {
+    template<typename Self, typename = void>
+        requires Impled<Self, FnMut<R(Args...) noexcept(NoEx)>>
+    struct Api {
+        using Trait = Fn;
+
+        auto operator()(Args... args) const noexcept(NoEx) -> R;
+    };
+    template<typename T>
+    using Funcs = TraitFuncs<&T::operator()>;
+
+    static constexpr bool direct { true };
+};
+
+} // namespace rstd

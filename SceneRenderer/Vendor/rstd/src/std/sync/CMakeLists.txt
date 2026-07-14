@@ -1,0 +1,16 @@
+set(RSTD_SYNC_SOURCES
+    sync/mod.cppm
+    sync/mutex.cppm
+    sync/condvar.cppm
+    sync/poison/mod.cppm
+    sync/poison/once.cppm
+    sync/mpsc/mod.cppm
+    sync/mpsc/mpmc/mod.cppm
+    sync/mpsc/mpmc/counter.cppm
+    sync/mpsc/mpmc/array.cppm
+    sync/mpsc/mpmc/list.cppm
+    sync/mpsc/mpmc/utils.cppm
+    sync/mpsc/mpmc/context.cppm
+    sync/mpsc/mpmc/waker.cppm
+    sync/mpsc/mpmc/select.cppm
+    PARENT_SCOPE)

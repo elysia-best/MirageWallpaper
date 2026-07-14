@@ -1,0 +1,57 @@
+module;
+#include <rstd/macro.hpp>
+export module rstd:sys.sync.mutex.pthread;
+
+#if RSTD_OS_UNIX && ! RSTD_OS_WINDOWS
+
+export import :sys.sync.once_box;
+export import :sys.pal;
+export import :sys.libc.pthread;
+import :forward;
+import rstd.alloc;
+
+using rstd_alloc::boxed::Box;
+using rstd::sys::sync::OnceBox;
+using namespace rstd::sys::libc;
+
+namespace rstd::sys::sync::mutex::pthread
+{
+
+export class Mutex {
+    OnceBox<pal::Mutex> pal;
+
+    Mutex() noexcept: pal(OnceBox<pal::Mutex>::make()) {}
+
+public:
+    static auto make() -> Mutex { return {}; }
+
+    void lock() { get().lock(); }
+
+    bool try_lock() { return get().try_lock(); }
+
+    void unlock() { get().unlock(); }
+
+    ~Mutex() {
+        if (! pal) return;
+        if (auto opt = pal.take()) {
+            auto& p = *opt;
+            if (p->try_lock()) {
+                p->unlock();
+            } else {
+                // Locked: leak the underlying pthread_mutex_t to mirror Rust behavior.
+                auto leaked = rstd::move(p).into_raw();
+                (void)leaked;
+            }
+        }
+    }
+
+private:
+    auto get() -> pal::Mutex& {
+        return pal.get_or_init([]() -> Box<pal::Mutex> {
+            return Box<pal::Mutex>::make(pal::Mutex::make());
+        });
+    }
+};
+
+} // namespace rstd::sys::sync::mutex::pthread
+#endif
