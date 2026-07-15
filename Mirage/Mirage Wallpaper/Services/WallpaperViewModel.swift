@@ -153,17 +153,42 @@ class WallpaperViewModel: ObservableObject {
             }
         }
         if w.kind == .scene, !w.assetOverlayDirectories.isEmpty {
+            let baseProperties = loadBaseProperties(for: w)
+            let presetKeys = Set(w.project.preset?.keys.map { $0 } ?? [])
             for (key, var property) in result where property.propertyType == .file ||
                 property.propertyType == .scenetexture || property.propertyType == .directory {
                 let path = property.value.stringValue
-                guard !path.isEmpty, !(path as NSString).isAbsolutePath else { continue }
-                if let resolved = resolvedPresetAsset(path, in: w.assetOverlayDirectories) {
+                guard !path.isEmpty else { continue }
+                if isWindowsAbsolutePath(path) || ((path as NSString).isAbsolutePath &&
+                    !FileManager.default.fileExists(atPath: path)) {
+                    if presetKeys.contains(key), let fallback = baseProperties[key]?.value {
+                        property.value = fallback
+                        result[key] = property
+                    }
+                } else if !(path as NSString).isAbsolutePath,
+                          let resolved = resolvedPresetAsset(path, in: w.assetOverlayDirectories) {
                     property.value = .string(resolved.path)
+                    result[key] = property
+                } else if !(path as NSString).isAbsolutePath,
+                          presetKeys.contains(key), path.hasPrefix("files/"),
+                          let fallback = baseProperties[key]?.value {
+                    property.value = fallback
                     result[key] = property
                 }
             }
         }
         return result
+    }
+
+    private func loadBaseProperties(for wallpaper: WEWallpaper) -> [String: WEProjectProperty] {
+        let url = wallpaper.renderDirectory.appending(path: "project.json")
+        guard let data = try? Data(contentsOf: url),
+              let project = try? JSONDecoder().decode(WEProject.self, from: data) else { return [:] }
+        return project.general?.properties?.items ?? [:]
+    }
+
+    private func isWindowsAbsolutePath(_ path: String) -> Bool {
+        path.range(of: "^[A-Za-z]:[\\\\/]", options: .regularExpression) != nil
     }
 
     private func resolvedPresetAsset(_ relativePath: String, in directories: [URL]) -> URL? {
