@@ -57,6 +57,7 @@ typedef struct {
 
 - (void)startAudioSpectrum;
 - (void)stopAudioSpectrum;
+- (void)pushAudioSpectrum:(NSArray<NSNumber *> *)spectrum;
 
 @end
 

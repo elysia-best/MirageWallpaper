@@ -1,6 +1,7 @@
 #include "ControlChannel.h"
 
 #include <cerrno>
+#include <array>
 #include <cstdio>
 #include <iostream>
 #include <poll.h>
@@ -110,6 +111,24 @@ void SceneControlChannel::dispatchLine(const char* line) {
             auto number = (*value)->as_f64();
             if (number.is_some()) m_wallpaper.setSpeed(static_cast<float>(*number));
         }
+    } else if (cmd == "audioSpectrum") {
+        auto data = msg.get("data");
+        if (data.is_none() || !(*data)->is_array()) return;
+        auto values = (*data)->as_array();
+        if (values.is_none() || (*values)->len() != 128) return;
+        std::array<float, 64> left {};
+        std::array<float, 64> right {};
+        std::size_t index = 0;
+        for (const auto& value : **values) {
+            auto number = value.as_f64();
+            if (number.is_none()) return;
+            if (index < 64)
+                left[index] = static_cast<float>(*number);
+            else
+                right[index - 64] = static_cast<float>(*number);
+            ++index;
+        }
+        m_wallpaper.setAudioSpectrum(std::move(left), std::move(right));
     } else if (cmd == "activate") {
         if (m_on_activate) m_on_activate();
     } else if (cmd == "quit") {

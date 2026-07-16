@@ -573,6 +573,15 @@ static NSString *const kDefaultUserAgent =
     [_webView evaluateJavaScript:arr completionHandler:nil];
 }
 
+- (void)pushAudioSpectrum:(NSArray<NSNumber *> *)spectrum {
+    if (spectrum.count != 128) return;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:spectrum options:0 error:nil];
+    if (data == nil) return;
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (json == nil) return;
+    [self eval:[NSString stringWithFormat:@"__wr_pushAudio(%@);", json]];
+}
+
 #pragma mark - WKNavigationDelegate
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {

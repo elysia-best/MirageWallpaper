@@ -49,6 +49,8 @@ struct SceneWallpaperConfig {
     FillMode                                fill_mode { FillMode::ASPECTCROP };
     float                                   speed { 1.0f };
     bool                                    graphviz { false };
+    bool                                    spectrum_enabled { true };
+    bool                                    external_spectrum { false };
 };
 
 class SceneRuntimeController;
@@ -82,6 +84,7 @@ public:
     void setFillMode(FillMode);
     void setSpeed(float);
     void setMediaStatus(MediaStatus);
+    void setAudioSpectrum(std::array<float, 64>, std::array<float, 64>);
     void setUserPropertyRaw(std::string_view, std::string);
     void setUserPropertyJson(std::string_view, Json);
     void setOnFirstFrame(FirstFrameCallback);

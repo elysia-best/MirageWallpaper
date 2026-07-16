@@ -30,9 +30,15 @@ final class RendererProcess {
     var desiredVolume: Float
     var desiredMuted: Bool
     var desiredPaused = false
+    let spectrumEnabled: Bool
 
     private let stateLock = NSLock()
+    private let writeLock = NSLock()
+    private let spectrumStateLock = NSLock()
+    private let spectrumQueue = DispatchQueue(label: "cn.laobamac.Mirage.renderer.spectrum")
     private var terminated = false
+    private var pendingSpectrum: [Float]?
+    private var spectrumWriterActive = false
     private var stdoutBuffer = Data()
 
     var isTerminated: Bool {
@@ -46,7 +52,7 @@ final class RendererProcess {
 
     init(process: Process, stdinPipe: Pipe, stdoutPipe: Pipe?, stderrPipe: Pipe,
          wallpaper: WEWallpaper, screenIndex: Int, generation: UInt64,
-         desiredVolume: Float, desiredMuted: Bool) {
+         desiredVolume: Float, desiredMuted: Bool, spectrumEnabled: Bool) {
         self.process = process
         self.stdinPipe = stdinPipe
         self.stdoutPipe = stdoutPipe
@@ -56,17 +62,40 @@ final class RendererProcess {
         self.generation = generation
         self.desiredVolume = desiredVolume
         self.desiredMuted = desiredMuted
+        self.spectrumEnabled = spectrumEnabled
     }
 
     func send(_ command: [String: Any]) {
         write(command, allowAfterStop: false)
     }
 
+    func sendSpectrum(_ spectrum: [Float]) {
+        spectrumStateLock.lock()
+        pendingSpectrum = spectrum
+        let shouldStart = !spectrumWriterActive
+        spectrumWriterActive = true
+        spectrumStateLock.unlock()
+        guard shouldStart else { return }
+        spectrumQueue.async { [weak self] in
+            self?.drainSpectrum()
+        }
+    }
+
+    private func drainSpectrum() {
+        while true {
+            spectrumStateLock.lock()
+            guard let spectrum = pendingSpectrum else {
+                spectrumWriterActive = false
+                spectrumStateLock.unlock()
+                return
+            }
+            pendingSpectrum = nil
+            spectrumStateLock.unlock()
+            send(["cmd": "audioSpectrum", "data": spectrum])
+        }
+    }
+
     private func write(_ command: [String: Any], allowAfterStop: Bool) {
-        stateLock.lock()
-        let canWrite = (allowAfterStop || !terminated) && process.isRunning
-        stateLock.unlock()
-        guard canWrite else { return }
         guard let data = try? JSONSerialization.data(withJSONObject: command, options: []) else {
             NSLog("[Mirage] 无法序列化控制指令: \(command)")
             return
@@ -74,6 +103,12 @@ final class RendererProcess {
         var line = data
         line.append(0x0A)
         let handle = stdinPipe.fileHandleForWriting
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        stateLock.lock()
+        let canWrite = (allowAfterStop || !terminated) && process.isRunning
+        stateLock.unlock()
+        guard canWrite else { return }
         do {
             try handle.write(contentsOf: line)
         } catch {
@@ -89,6 +124,9 @@ final class RendererProcess {
         }
         terminated = true
         stateLock.unlock()
+        spectrumStateLock.lock()
+        pendingSpectrum = nil
+        spectrumStateLock.unlock()
 
         // The graceful quit must be written after marking the handle stopped,
         // so no later live-control command can race it. Use the private bypass
@@ -175,6 +213,12 @@ final class RendererController {
     private static let sceneStartupTimeout: TimeInterval = 75
 
     var onProcessExit: ((Int, Bool) -> Void)?
+
+    init() {
+        SystemAudioSpectrumService.shared.onSpectrum = { [weak self] spectrum in
+            self?.setAudioSpectrum(spectrum)
+        }
+    }
 
     // MARK: Binary and resource resolution
 
@@ -317,6 +361,11 @@ final class RendererController {
             // Candidates stay transparent and silent until Metal confirms a
             // presented frame and Mirage explicitly activates them.
             args += ["--control-stdin", "--deferred-show", "--muted"]
+            if options.enableSpectrum {
+                args += ["--external-spectrum"]
+            } else {
+                args += ["--no-spectrum"]
+            }
             if let icd = moltenVKICD {
                 env["VK_ICD_FILENAMES"] = icd.path
                 env["VK_DRIVER_FILES"] = icd.path
@@ -335,7 +384,11 @@ final class RendererController {
             args += ["--fps", String(options.fps)]
             args += ["--volume", String(format: "%.3f", options.muted ? 0 : options.volume)]
             args += ["--screen", String(screenIndex)]
-            if !options.enableSpectrum { args += ["--no-spectrum"] }
+            if options.enableSpectrum {
+                args += ["--external-spectrum"]
+            } else {
+                args += ["--no-spectrum"]
+            }
             args += ["--control-stdin"]
 
         case .video:
@@ -370,7 +423,9 @@ final class RendererController {
             screenIndex: screenIndex,
             generation: generation,
             desiredVolume: options.volume,
-            desiredMuted: options.muted)
+            desiredMuted: options.muted,
+            spectrumEnabled: options.enableSpectrum &&
+                (wallpaper.kind == .scene || wallpaper.kind == .web))
 
         if wallpaper.kind == .scene,
            let propsFile = writeUserPropertiesFile(options.userProperties, for: wallpaper) {
@@ -418,6 +473,8 @@ final class RendererController {
                 }
                 if wasActive || wasCandidate {
                     let abnormal = status != 0 && !handle.isTerminated
+                    SystemAudioSpectrumService.shared.setEnabled(
+                        self.hasSpectrumConsumersLocked())
                     DispatchQueue.main.async { self.onProcessExit?(screenIndex, abnormal) }
                 }
             }
@@ -448,6 +505,7 @@ final class RendererController {
             handle.stop()
             return false
         }
+        refreshAudioSpectrumService()
 
         handle.startReadingOutput { [weak self, weak handle] event in
             guard let self, let handle else { return }
@@ -461,6 +519,8 @@ final class RendererController {
                       self.candidates[screenIndex] === handle else { return }
                 self.candidates[screenIndex] = nil
                 handle.stop()
+                SystemAudioSpectrumService.shared.setEnabled(
+                    self.hasSpectrumConsumersLocked())
                 NSLog("[Mirage] 场景首帧超时，保留旧壁纸 (屏幕=\(screenIndex), generation=\(generation))")
                 DispatchQueue.main.async { self.onProcessExit?(screenIndex, true) }
             }
@@ -499,6 +559,8 @@ final class RendererController {
                 handle.send(["cmd": "volume", "value": handle.desiredVolume])
                 handle.send(["cmd": "muted", "value": handle.desiredMuted])
                 handle.send(["cmd": handle.desiredPaused ? "pause" : "resume"])
+                SystemAudioSpectrumService.shared.setEnabled(
+                    self.hasSpectrumConsumersLocked())
                 NSLog("[Mirage] 场景切换完成 (屏幕=\(handle.screenIndex), generation=\(handle.generation))")
 
             default:
@@ -514,6 +576,7 @@ final class RendererController {
                     candidates.removeValue(forKey: screenIndex)].compactMap { $0 }
         }
         handles.forEach { $0.stop() }
+        refreshAudioSpectrumService()
     }
 
     func stopAll() {
@@ -527,6 +590,7 @@ final class RendererController {
             return result
         }
         handles.forEach { $0.stop() }
+        SystemAudioSpectrumService.shared.setEnabled(false)
     }
 
     func isRendering(on screenIndex: Int) -> Bool {
@@ -563,6 +627,28 @@ final class RendererController {
                     for (_, p) in candidates { body(p) }
                 }
             }
+        }
+    }
+
+    private func hasSpectrumConsumersLocked() -> Bool {
+        running.values.contains { $0.spectrumEnabled && $0.process.isRunning } ||
+            candidates.values.contains { $0.spectrumEnabled && $0.process.isRunning }
+    }
+
+    private func refreshAudioSpectrumService() {
+        let enabled = queue.sync { hasSpectrumConsumersLocked() }
+        SystemAudioSpectrumService.shared.setEnabled(enabled)
+    }
+
+    private func setAudioSpectrum(_ spectrum: [Float]) {
+        guard spectrum.count == 128 else { return }
+        let processes = queue.sync {
+            Array(running.values) + Array(candidates.values)
+        }
+        for process in processes {
+            guard process.spectrumEnabled,
+                  process.wallpaper.kind == .scene || process.wallpaper.kind == .web else { continue }
+            process.sendSpectrum(spectrum)
         }
     }
 

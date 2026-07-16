@@ -2,7 +2,11 @@ module;
 
 #include <rstd/macro.hpp>
 
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <ctime>
+#include <mutex>
 
 module sr.scene_wallpaper;
 import sr.types;
@@ -938,11 +942,7 @@ private:
 
 class SceneRenderController {
 public:
-    explicit SceneRenderController(SceneRuntimeController& main): m_main(main) {
-        // Best-effort: a failing init just leaves snapshots returning false
-        // and audio_average at zeros — wallpapers still render fine.
-        (void)m_audio_capture.init();
-    }
+    explicit SceneRenderController(SceneRuntimeController& main): m_main(main) {}
     ~SceneRenderController() {
         m_render->destroy();
         rstd_info("render handler deleted");
@@ -988,6 +988,22 @@ public:
     uint32_t consumeReleased() { return m_buttons_released.exchange(0); }
     bool     cursorInWindow() const { return m_cursor_in_window.load(); }
 
+    void configureAudioCapture(bool enabled, bool external) {
+        m_audio_enabled.store(enabled, std::memory_order_release);
+        m_external_audio.store(enabled && external, std::memory_order_release);
+        if (enabled) (void)m_audio_capture.init(! external);
+    }
+
+    void setExternalAudioSpectrum(std::array<float, 64> left,
+                                  std::array<float, 64> right) {
+        std::lock_guard lock(m_external_audio_mu);
+        m_external_left  = std::move(left);
+        m_external_right = std::move(right);
+        m_external_publish_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+    }
+
     void setSenders(RenderSender render_tx, MainSender main_tx) {
         m_render_tx.emplace(std::move(render_tx));
         m_main_tx.emplace(std::move(main_tx));
@@ -1012,6 +1028,21 @@ private:
     void consumeDirtyEventsCoveredByGraphRebuild();
     void refreshPreparedMeshDirtyEvents();
     void refreshPreparedMaterialDirtyEvents();
+
+    bool snapshotExternalAudio(wavsen::audio::AudioSpectrum& out) {
+        if (! m_external_audio.load(std::memory_order_acquire)) return false;
+        std::lock_guard lock(m_external_audio_mu);
+        if (m_external_publish_ms == 0) return false;
+        out.clear();
+        out.left       = m_external_left;
+        out.right      = m_external_right;
+        out.publish_ms = m_external_publish_ms;
+        for (std::size_t i = 0; i < out.average.size(); ++i) {
+            out.average[i] = 0.5f * (out.left[i] + out.right[i]);
+            out.bins[i]    = out.average[i];
+        }
+        return true;
+    }
 
     SceneRuntimeController& m_main;
 
@@ -1039,6 +1070,12 @@ private:
     std::shared_ptr<RenderSender> m_swapchain_tx;
 
     wavsen::audio::AudioCapture m_audio_capture;
+    std::atomic<bool>            m_audio_enabled { true };
+    std::atomic<bool>            m_external_audio { false };
+    std::mutex                   m_external_audio_mu;
+    std::array<float, 64>        m_external_left {};
+    std::array<float, 64>        m_external_right {};
+    std::int64_t                 m_external_publish_ms { 0 };
 };
 
 // ---- SceneRenderController message handlers ---------------------------------
@@ -1085,7 +1122,25 @@ void SceneRenderController::on(RenderDraw&&) {
             fi.mouse_buttons_pressed  = consumePressed();
             fi.mouse_buttons_released = consumeReleased();
             wavsen::audio::AudioSpectrum spec;
-            const bool                   primed = m_audio_capture.snapshot(spec);
+            bool primed = false;
+            if (m_audio_enabled.load(std::memory_order_acquire)) {
+                primed = m_audio_capture.snapshot(spec);
+                wavsen::audio::AudioSpectrum external;
+                if (snapshotExternalAudio(external)) {
+                    if (! primed) {
+                        spec = external;
+                    } else {
+                        for (std::size_t i = 0; i < spec.average.size(); ++i) {
+                            spec.left[i]    = std::max(spec.left[i], external.left[i]);
+                            spec.right[i]   = std::max(spec.right[i], external.right[i]);
+                            spec.average[i] = std::max(spec.average[i], external.average[i]);
+                            spec.bins[i]    = spec.average[i];
+                        }
+                        spec.publish_ms = std::max(spec.publish_ms, external.publish_ms);
+                    }
+                    primed = true;
+                }
+            }
             // Treat as silence if wavsen hasn't published recently. Without
             // this, a disconnected sink / suspended pipeline leaves the
             // last snapshot frozen and bars stick at the last live value.
@@ -1395,6 +1450,8 @@ void SceneRuntimeController::on(MainLoadScene&&) {
 
 void SceneRuntimeController::on(MainConfigure&& m) {
     m_config          = std::move(m.config);
+    m_render_controller->configureAudioCapture(
+        m_config.spectrum_enabled, m_config.external_spectrum);
     m_user_properties = NormalizeUserProperties(m_config.user_properties);
     ++m_config_generation;
     // Preserve zero as the "not configured" sentinel after wraparound.
@@ -1785,6 +1842,12 @@ void SceneWallpaper::setSpeed(float speed) {
 
 void SceneWallpaper::setMediaStatus(MediaStatus status) {
     (void)m_runtime->renderSender().send(RenderMsg { RenderSetMediaStatus { std::move(status) } });
+}
+
+void SceneWallpaper::setAudioSpectrum(std::array<float, 64> left,
+                                      std::array<float, 64> right) {
+    m_runtime->renderController()->setExternalAudioSpectrum(
+        std::move(left), std::move(right));
 }
 
 void SceneWallpaper::setUserPropertyRaw(std::string_view name, std::string value) {

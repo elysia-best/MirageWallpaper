@@ -33,6 +33,7 @@ struct WallpaperArgs {
     int   fps = 60;
     float volume = 1.0f;
     BOOL  spectrum = YES;
+    BOOL  externalSpectrum = NO;
     int   screen = 0;
     int   runSeconds = 0;
     BOOL  diag = NO;
@@ -47,6 +48,7 @@ static void PrintUsage(const char *argv0) {
         "  --fps N                target frame rate (default 60)\n"
         "  --volume 0..1          master volume (default 1.0)\n"
         "  --no-spectrum          disable audio-spectrum capture\n"
+        "  --external-spectrum    receive spectrum from the control channel\n"
         "  --screen N             screen index to cover (default 0 = main)\n"
         "  --asset-overlay DIR    serve preset assets before base assets\n"
         "  --control-stdin        accept live JSON control commands on stdin\n"
@@ -71,6 +73,8 @@ static BOOL ParseArgs(int argc, char **argv, WallpaperArgs &out) {
             const char *v = take(i, arg); if (!v) return false; out.volume = strtof(v, nullptr);
         } else if (strcmp(arg, "--no-spectrum") == 0) {
             out.spectrum = NO;
+        } else if (strcmp(arg, "--external-spectrum") == 0) {
+            out.externalSpectrum = YES;
         } else if (strcmp(arg, "--screen") == 0) {
             const char *v = take(i, arg); if (!v) return false; out.screen = atoi(v);
         } else if (strcmp(arg, "--asset-overlay") == 0) {
@@ -140,7 +144,7 @@ int main(int argc, char *argv[]) {
 
         WREngineConfig cfg = [WebRendererEngine defaultConfig];
         cfg.enableInspector = NO;
-        cfg.enableAudioSpectrum = args.spectrum;
+        cfg.enableAudioSpectrum = args.spectrum && !args.externalSpectrum;
         cfg.initialVolume = args.volume;
         cfg.frameRate = args.fps;
         NSMutableArray<NSString *> *assetOverlays = [NSMutableArray arrayWithCapacity:args.assetOverlays.size()];
@@ -224,6 +228,9 @@ int main(int argc, char *argv[]) {
                         }
                     } else if ([name isEqualToString:@"fps"]) {
                         if ([value isKindOfClass:[NSNumber class]]) [eng setFrameRate:[value intValue]];
+                    } else if ([name isEqualToString:@"audioSpectrum"]) {
+                        NSArray *data = [cmd[@"data"] isKindOfClass:[NSArray class]] ? cmd[@"data"] : nil;
+                        if (data.count == 128) [eng pushAudioSpectrum:data];
                     }
                 }
                 onEOF:^{

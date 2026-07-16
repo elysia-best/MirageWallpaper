@@ -88,6 +88,8 @@ struct Options {
     bool                      muted { false };
     bool                      control_stdin { false };
     bool                      deferred_show { false };
+    bool                      spectrum_enabled { true };
+    bool                      external_spectrum { false };
 };
 
 struct AppState {
@@ -126,6 +128,8 @@ void PrintUsage(const char* argv0) {
         << "      --muted                 Start with audio muted\n"
         << "      --control-stdin         Accept live JSON control commands on stdin\n"
         << "      --deferred-show         Keep the window transparent until activated\n"
+        << "      --no-spectrum           Disable audio response\n"
+        << "      --external-spectrum     Receive spectrum from stdin\n"
         << "      --run-seconds N         Exit after N seconds (test helper)\n";
 }
 
@@ -211,6 +215,10 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             out.control_stdin = true;
         } else if (arg == "--deferred-show") {
             out.deferred_show = true;
+        } else if (arg == "--no-spectrum") {
+            out.spectrum_enabled = false;
+        } else if (arg == "--external-spectrum") {
+            out.external_spectrum = true;
         } else if (arg == "--screen") {
             const char* value = require_value(i, arg);
             if (value == nullptr || ! ParseUInt(value, out.screen)) return false;
@@ -390,6 +398,8 @@ int main(int argc, char** argv) {
     config.graphviz        = options.graphviz;
     config.fps             = options.fps;
     config.muted           = options.muted;
+    config.spectrum_enabled = options.spectrum_enabled;
+    config.external_spectrum = options.external_spectrum;
     if (options.cache_dir.empty())
         config.cache_dir = sr::platform::GetCachePath("SceneRenderer");
     else
