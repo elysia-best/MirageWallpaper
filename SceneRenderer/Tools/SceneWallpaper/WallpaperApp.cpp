@@ -1,8 +1,10 @@
-#include "../../Sources/SceneRenderer/Host/macOS/MacDesktopHost.h"
+#include "DesktopHost.h"
 #include "ControlChannel.h"
 #include "SceneSnapshot.h"
 
+#if defined(__APPLE__)
 #define VK_USE_PLATFORM_METAL_EXT
+#endif
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
@@ -23,12 +25,16 @@
 #include <optional>
 #include <sstream>
 #include <string>
-#include <sys/event.h>
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#if defined(__APPLE__)
+#include <sys/event.h>
 #include <xlocale.h>
+#else
+#include <locale.h>
+#endif
 
 import sr.json;
 import rstd.cppstd;
@@ -103,6 +109,7 @@ void ParentDeathWatchdogLoop(pid_t parent) {
     }
 }
 
+#if defined(__APPLE__)
 void StartParentDeathWatchdog() {
     const pid_t parent = ::getppid();
     // Already reparented to launchd (or launched directly by it): there is no
@@ -111,7 +118,7 @@ void StartParentDeathWatchdog() {
     std::thread([parent]() {
         ParentDeathWatchdogLoop(parent);
         std::cerr << "[SceneWallpaper] parent process exited; shutting down" << std::endl;
-        SceneRendererMacDesktopStop(nullptr);
+        sr::host::DesktopStop(nullptr);
         // The graceful path needs a running NSApp run loop, which may not have
         // started yet (the parent can die during Vulkan/scene init while the
         // main thread is still blocked). Give it a moment, then leave for real
@@ -120,6 +127,7 @@ void StartParentDeathWatchdog() {
         std::_Exit(0);
     }).detach();
 }
+#endif // defined(__APPLE__)
 } // namespace
 
 namespace
@@ -249,11 +257,16 @@ bool ParseDouble(std::string_view text, double& out) {
     if (text.empty()) return false;
     std::string value_text(text);
     char*       parsed_end = nullptr;
-    static locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
     errno = 0;
+#if defined(__APPLE__)
+    // macOS lacks a thread-safe C-locale strtod without newlocale/strtod_l.
+    static locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
     const double value = c_locale != nullptr
                              ? strtod_l(value_text.c_str(), &parsed_end, c_locale)
                              : std::strtod(value_text.c_str(), &parsed_end);
+#else
+    const double value = std::strtod(value_text.c_str(), &parsed_end);
+#endif
     if (errno == ERANGE || parsed_end != value_text.data() + value_text.size() ||
         ! std::isfinite(value)) {
         return false;
@@ -459,6 +472,7 @@ int main(int argc, char** argv) {
     Options options;
     if (! ParseArgs(argc, argv, options)) return 1;
 
+#if defined(__APPLE__)
     setenv("MVK_CONFIG_PRESENT_WITH_COMMAND_BUFFER", "1", /*overwrite=*/0);
     // MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS is deliberately NOT set: it makes
     // every vkQueueSubmit block the calling thread until the Metal command
@@ -466,19 +480,20 @@ int main(int argc, char** argv) {
     // wait and defeats any CPU/GPU overlap. The renderer's synchronisation is
     // explicit (fences + semaphores), so the asynchronous default is correct.
     // Still overrideable from the shell for debugging.
+#endif
 
     auto     wallpaper = std::make_unique<sr::SceneWallpaper>();
     AppState state;
     state.wallpaper = wallpaper.get();
 
-    SceneRendererMacDesktopConfig desktop_config {
+    sr::host::DesktopConfig desktop_config {
         .title        = "SceneRenderer Wallpaper",
         .input_hz     = options.input_hz,
         .screen_index = options.screen,
         .display_id   = options.display_id,
         .deferred_show = options.deferred_show,
     };
-    SceneRendererMacDesktopCallbacks callbacks {
+    sr::host::DesktopCallbacks callbacks {
         .mouse_move   = MouseMoveCallback,
         .mouse_button = MouseButtonCallback,
         .mouse_enter  = MouseEnterCallback,
@@ -489,19 +504,21 @@ int main(int argc, char** argv) {
         .deactivated  = DeactivatedCallback,
         .userdata     = &state,
     };
-    state.desktop = SceneRendererMacDesktopCreate(&desktop_config, callbacks);
+    state.desktop = sr::host::DesktopCreate(&desktop_config, callbacks);
     if (state.desktop == nullptr) {
-        std::cerr << "Failed to create macOS desktop wallpaper host\n";
+        std::cerr << "Failed to create desktop wallpaper host\n";
         return 1;
     }
 
+#if defined(__APPLE__)
     // From here on there is a window on screen; never let it outlive the
     // parent that owns it. Installed before the (long) Vulkan + scene init so
     // a parent that dies during startup is covered too.
     StartParentDeathWatchdog();
+#endif
 
-    std::uint32_t render_width  = SceneRendererMacDesktopPixelWidth(state.desktop);
-    std::uint32_t render_height = SceneRendererMacDesktopPixelHeight(state.desktop);
+    std::uint32_t render_width  = sr::host::DesktopPixelWidth(state.desktop);
+    std::uint32_t render_height = sr::host::DesktopPixelHeight(state.desktop);
     if (options.resolution) {
         render_width  = options.resolution->width;
         render_height = options.resolution->height;
@@ -516,7 +533,7 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to initialize SceneWallpaper runtime\n";
         wallpaper.reset();
         state.wallpaper = nullptr;
-        SceneRendererMacDesktopDestroy(state.desktop);
+        sr::host::DesktopDestroy(state.desktop);
         return 1;
     }
 
@@ -537,20 +554,25 @@ int main(int argc, char** argv) {
     if (! LoadUserProperties(options.user_properties, config)) {
         wallpaper.reset();
         state.wallpaper = nullptr;
-        SceneRendererMacDesktopDestroy(state.desktop);
+        sr::host::DesktopDestroy(state.desktop);
         return 1;
     }
 
     sr::RenderInitInfo info;
     info.enable_valid_layer = options.valid_layer;
+#if defined(__APPLE__)
     const bool use_metalfx = options.metalfx &&
-                             SceneRendererMacDesktopPrepareMetalFX(state.desktop);
+                             sr::host::DesktopPrepareMetalFX(state.desktop);
     info.offscreen          = use_metalfx;
+#else
+    const bool use_metalfx = false;
+    info.offscreen          = false;
+#endif
     info.width              = ClampRenderExtent(render_width, 1920);
     info.height             = ClampRenderExtent(render_height, 1080);
     info.msaa_samples       = options.msaa;
     info.redraw_callback    = [&state]() {
-        SceneRendererMacDesktopWake(state.desktop);
+        sr::host::DesktopWake(state.desktop);
     };
     info.failure_callback = [&state](VkResult) {
         EmitLifecycleEvent(&state, "renderer-error");
@@ -560,16 +582,17 @@ int main(int argc, char** argv) {
         info.metal_frame_callback = [&state](void* texture, void* command_queue,
                                              std::uint32_t width,
                                              std::uint32_t height) {
-            SceneRendererMacDesktopPresentMetalFrame(state.desktop, texture, command_queue,
-                                                      width, height);
+            sr::host::DesktopPresentMetalFrame(state.desktop, texture, command_queue,
+                                               width, height);
         };
     } else {
-        void* metal_layer = SceneRendererMacDesktopMetalLayer(state.desktop);
+#if defined(__APPLE__)
+        void* metal_layer = sr::host::DesktopMetalLayer(state.desktop);
         if (metal_layer == nullptr) {
             std::cerr << "Failed to obtain CAMetalLayer for Vulkan surface\n";
             wallpaper.reset();
             state.wallpaper = nullptr;
-            SceneRendererMacDesktopDestroy(state.desktop);
+            sr::host::DesktopDestroy(state.desktop);
             return 1;
         }
         info.surface_info.instanceExts.emplace_back(VK_KHR_SURFACE_EXTENSION_NAME);
@@ -587,6 +610,16 @@ int main(int argc, char** argv) {
                 };
                 return create_surface(instance, &create_info, nullptr, surface);
             };
+#else
+        sr::host::DesktopSurfaceInfo surface_info;
+        if (! sr::host::DesktopGetSurfaceInfo(state.desktop, surface_info)) {
+            std::cerr << "Failed to create desktop Vulkan surface info\n";
+            sr::host::DesktopDestroy(state.desktop);
+            return 1;
+        }
+        info.surface_info.instanceExts = std::move(surface_info.instance_extensions);
+        info.surface_info.createSurfaceOp = std::move(surface_info.create_surface);
+#endif
     }
 
     wallpaper->setOnAudioDemand(EmitAudioDemand);
@@ -602,7 +635,7 @@ int main(int argc, char** argv) {
         void* desktop = state.desktop;
         std::thread([desktop, seconds = options.run_seconds]() {
             std::this_thread::sleep_for(std::chrono::seconds(seconds));
-            SceneRendererMacDesktopStop(desktop);
+            sr::host::DesktopStop(desktop);
         }).detach();
     }
 
@@ -618,7 +651,7 @@ int main(int argc, char** argv) {
         std::cerr << "Vulkan initialization timed out\n";
         wallpaper.reset();
         state.wallpaper = nullptr;
-        SceneRendererMacDesktopDestroy(state.desktop);
+        sr::host::DesktopDestroy(state.desktop);
         return 1;
     }
     EmitLifecycleEvent(&state, "vulkan-ready");
@@ -633,7 +666,7 @@ int main(int argc, char** argv) {
             std::cerr << "Scene load timed out\n";
             wallpaper.reset();
             state.wallpaper = nullptr;
-            SceneRendererMacDesktopDestroy(state.desktop);
+            sr::host::DesktopDestroy(state.desktop);
             return 1;
         }
     }
@@ -643,17 +676,21 @@ int main(int argc, char** argv) {
         void* desktop = state.desktop;
         control.emplace(
             *wallpaper,
-            [desktop]() { SceneRendererMacDesktopStop(desktop); },
-            [desktop]() { SceneRendererMacDesktopActivate(desktop); },
-            [desktop]() { SceneRendererMacDesktopDeactivate(desktop); },
+            [desktop]() { sr::host::DesktopStop(desktop); },
+            [desktop]() { sr::host::DesktopActivate(desktop); }
+#if defined(__APPLE__)
+            ,
+            [desktop]() { sr::host::DesktopDeactivate(desktop); },
             [](const std::string& path, const std::string& token) {
                 const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(path);
                 EmitSnapshotDone(token, ok);
-            });
+            }
+#endif
+            );
         control->start();
     }
 
-    const int ok = SceneRendererMacDesktopRun(state.desktop);
+    const int ok = sr::host::DesktopRun(state.desktop);
 
     if (control) {
         control->stop();
@@ -661,7 +698,7 @@ int main(int argc, char** argv) {
     }
     state.wallpaper = nullptr;
     wallpaper.reset();
-    SceneRendererMacDesktopDestroy(state.desktop);
+    sr::host::DesktopDestroy(state.desktop);
     state.desktop = nullptr;
     return ok ? 0 : 1;
 }

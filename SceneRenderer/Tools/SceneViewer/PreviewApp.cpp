@@ -1,15 +1,33 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#if defined(__APPLE__)
 #include <OpenGL/gl.h>
+#endif
 
 #include <argparse/argparse.hpp>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <thread>
 #include <utility>
+#include <vector>
+#if defined(__APPLE__)
 #include <xlocale.h>
+#else
+#include <locale.h>
+#endif
 
 import rstd.cppstd;
 import rstd.log;
@@ -24,6 +42,7 @@ atomic<bool> renderCall(false);
 
 extern "C" void SceneRendererSetLiveFrameCallback(
     void (*cb)(const uint8_t*, uint32_t, uint32_t, void*), void* userdata);
+#if defined(__APPLE__)
 extern "C" void SceneRendererSetLiveMetalFrameCallback(
     void (*cb)(void*, uint32_t, uint32_t, void*), void* userdata);
 extern "C" void* SceneRendererMacMetalDisplayCreate(GLFWwindow* window);
@@ -33,6 +52,7 @@ extern "C" void  SceneRendererMacMetalTextureRelease(void* texture);
 extern "C" void  SceneRendererMacMetalDisplayDraw(void* handle, void* texture, uint32_t width,
                                                   uint32_t height, void (*presented)(void*),
                                                   void* userdata);
+#endif
 
 struct LiveFrameState {
     std::mutex           mutex;
@@ -42,6 +62,7 @@ struct LiveFrameState {
     bool                 dirty { false };
 };
 
+#if defined(__APPLE__)
 struct LiveMetalFrameState {
     std::mutex mutex;
     void*      texture { nullptr };
@@ -49,6 +70,7 @@ struct LiveMetalFrameState {
     uint32_t   height { 0 };
     bool       dirty { false };
 };
+#endif
 
 void live_frame_callback(const uint8_t* rgba, uint32_t width, uint32_t height, void* userdata) {
     auto* state = static_cast<LiveFrameState*>(userdata);
@@ -64,6 +86,7 @@ void live_frame_callback(const uint8_t* rgba, uint32_t width, uint32_t height, v
     glfwPostEmptyEvent();
 }
 
+#if defined(__APPLE__)
 void live_metal_frame_callback(void* texture, uint32_t width, uint32_t height, void* userdata) {
     auto* state = static_cast<LiveMetalFrameState*>(userdata);
     if (state == nullptr || texture == nullptr || width == 0 || height == 0) return;
@@ -107,7 +130,9 @@ void clear_live_metal_frame(LiveMetalFrameState& state) {
     }
     SceneRendererMacMetalTextureRelease(texture);
 }
+#endif
 
+#if defined(__APPLE__)
 void draw_live_frame(GLFWwindow* window, LiveFrameState& state) {
     std::vector<uint8_t> rgba;
     uint32_t             width = 0, height = 0;
@@ -151,6 +176,7 @@ void draw_live_frame(GLFWwindow* window, LiveFrameState& state) {
 
     glfwSwapBuffers(window);
 }
+#endif
 
 struct UserData {
     sr::SceneWallpaper* psw { nullptr };
@@ -198,11 +224,15 @@ bool parseDouble(std::string_view text, double& out) {
     if (text.empty()) return false;
     std::string value_text(text);
     char*       parsed_end = nullptr;
-    static locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
     errno = 0;
+#if defined(__APPLE__)
+    static locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
     const double value = c_locale != nullptr
                              ? strtod_l(value_text.c_str(), &parsed_end, c_locale)
                              : std::strtod(value_text.c_str(), &parsed_end);
+#else
+    const double value = std::strtod(value_text.c_str(), &parsed_end);
+#endif
     if (errno == ERANGE || parsed_end != value_text.data() + value_text.size() ||
         ! std::isfinite(value)) {
         return false;
@@ -246,6 +276,7 @@ int main(int argc, char** argv) {
     glfwSetErrorCallback([](int code, const char* desc) {
         std::cerr << "GLFW error " << code << ": " << (desc ? desc : "(null)") << "\n";
     });
+#if defined(__APPLE__)
     // MoltenVK reads these at startup. Keep them overrideable from the shell,
     // but choose the conservative presentation path for a standalone Cocoa
     // debug window. This helps avoid CAMetalLayer transactions lingering until
@@ -268,6 +299,7 @@ int main(int argc, char** argv) {
     }
     GLFWwindow* surface_window = nullptr;
     GLFWwindow* window         = nullptr;
+#if defined(__APPLE__)
     const char* direct_present = envValue("SCENERENDERER_MACOS_DIRECT_PRESENT");
     const char* cpu_fallback   = envValue("SCENERENDERER_MACOS_CPU_FALLBACK");
     const bool  use_direct_present = direct_present && direct_present[0] == '1';
@@ -275,10 +307,16 @@ int main(int argc, char** argv) {
         ! use_direct_present && cpu_fallback && cpu_fallback[0] != '\0' &&
         cpu_fallback[0] != '0';
     const bool use_metal_display_fallback = ! use_direct_present && ! use_cpu_display_fallback;
+#else
+    constexpr bool use_cpu_display_fallback   = false;
+    constexpr bool use_metal_display_fallback = false;
+#endif
     const bool use_display_fallback = use_cpu_display_fallback || use_metal_display_fallback;
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+#if defined(__APPLE__)
     glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
+#endif
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
     // Bulk-scan path: SCENERENDERER_HEADLESS=1 hides the window so a scan loop over
     // hundreds of pkgs doesn't spam the desktop. Compile/render still
@@ -304,7 +342,9 @@ int main(int argc, char** argv) {
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_CLIENT_API,
                        use_cpu_display_fallback ? GLFW_OPENGL_API : GLFW_NO_API);
+#if defined(__APPLE__)
         glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
+#endif
         glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
         glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
         window = glfwCreateWindow(w_width,
@@ -394,7 +434,8 @@ int main(int argc, char** argv) {
     if (cache_path.empty()) cache_path = sr::platform::GetCachePath("SceneRenderer");
     config.cache_dir = std::move(cache_path);
 
-    LiveFrameState      live_frame_state;
+#if defined(__APPLE__)
+    LiveFrameState live_frame_state;
     LiveMetalFrameState live_metal_frame_state;
     void*               metal_display = nullptr;
     if (use_cpu_display_fallback) {
@@ -412,6 +453,7 @@ int main(int argc, char** argv) {
         SceneRendererSetLiveMetalFrameCallback(live_metal_frame_callback,
                                                &live_metal_frame_state);
     }
+#endif
 
     // Apply --user-properties FILE before the scene loads so the first
     // frame already reflects the user's edits. Mirrors the daemon path
@@ -481,16 +523,20 @@ int main(int argc, char** argv) {
             // final window-close transaction is flushed.
             glfwWaitEventsTimeout(wait_seconds);
             apply_locked_mouse();
+#if defined(__APPLE__)
             if (use_cpu_display_fallback) draw_live_frame(window, live_frame_state);
             if (use_metal_display_fallback)
                 draw_live_metal_frame(metal_display, live_metal_frame_state);
+#endif
         }
     }
+#if defined(__APPLE__)
     if (use_cpu_display_fallback) SceneRendererSetLiveFrameCallback(nullptr, nullptr);
     if (use_metal_display_fallback) {
         SceneRendererSetLiveMetalFrameCallback(nullptr, nullptr);
         SceneRendererMacMetalDisplayDestroy(metal_display);
     }
+#endif
     delete psw;
     if (use_metal_display_fallback) clear_live_metal_frame(live_metal_frame_state);
     glfwDestroyWindow(window);

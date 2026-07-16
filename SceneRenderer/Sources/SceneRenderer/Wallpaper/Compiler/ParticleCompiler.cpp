@@ -107,7 +107,7 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const Json& wpj) {
         std::string name;
         sr::GetJsonValue(wpj, "name", name);
 
-        if (name == "colorrandom") {
+        if (name.compare("colorrandom") == 0) {
             VecRandom r;
             r.min = { 0.0f, 0.0f, 0.0f };
             r.max = { 255.0f, 255.0f, 255.0f };
@@ -123,25 +123,25 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const Json& wpj) {
                           return x / 255.0f;
                       }));
             };
-        } else if (name == "lifetimerandom") {
+        } else if (name.compare("lifetimerandom") == 0) {
             SingleRandom r = { 0.0f, 1.0f };
             SingleRandom::ReadFromJson(wpj, r);
             return [=](Particle& p, double) {
                 PM::InitLifetime(p, GenRandom(r.min, r.max, r.exponent));
             };
-        } else if (name == "sizerandom") {
+        } else if (name.compare("sizerandom") == 0) {
             SingleRandom r = { 0.0f, 20.0f };
             SingleRandom::ReadFromJson(wpj, r);
             return [=](Particle& p, double) {
                 PM::InitSize(p, GenRandom(r.min, r.max, r.exponent));
             };
-        } else if (name == "alpharandom") {
+        } else if (name.compare("alpharandom") == 0) {
             SingleRandom r = { 0.05f, 1.0f };
             SingleRandom::ReadFromJson(wpj, r);
             return [=](Particle& p, double) {
                 PM::InitAlpha(p, GenRandom(r.min, r.max, r.exponent));
             };
-        } else if (name == "velocityrandom") {
+        } else if (name.compare("velocityrandom") == 0) {
             VecRandom r;
             r.min[0] = r.min[1] = -32.0f;
             r.max[0] = r.max[1] = 32.0f;
@@ -152,7 +152,7 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const Json& wpj) {
                     result[component] = GenRandom(r.min[component], r.max[component], r.exponent);
                 PM::ChangeVelocity(p, result[0], result[1], result[2]);
             };
-        } else if (name == "rotationrandom") {
+        } else if (name.compare("rotationrandom") == 0) {
             VecRandom r;
             r.max[2] = rstd::f32_::consts::TAU;
             VecRandom::ReadFromJson(wpj, r);
@@ -162,7 +162,7 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const Json& wpj) {
                     result[component] = GenRandom(r.min[component], r.max[component], r.exponent);
                 PM::ChangeRotation(p, result[0], result[1], result[2]);
             };
-        } else if (name == "angularvelocityrandom") {
+        } else if (name.compare("angularvelocityrandom") == 0) {
             VecRandom r;
             r.min[2] = -5.0f;
             r.max[2] = 5.0f;
@@ -173,7 +173,7 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const Json& wpj) {
                     result[component] = GenRandom(r.min[component], r.max[component], r.exponent);
                 PM::ChangeAngularVelocity(p, result[0], result[1], result[2]);
             };
-        } else if (name == "turbulentvelocityrandom") {
+        } else if (name.compare("turbulentvelocityrandom") == 0) {
             // to do
             TurbulentRandom r;
             TurbulentRandom::ReadFromJson(wpj, r);
@@ -299,10 +299,10 @@ struct FrequencyValue {
 
     static auto ReadFromJson(const Json& j, std::string_view name) {
         FrequencyValue v;
-        if (name == "oscillatesize") {
+        if (name.compare("oscillatesize") == 0) {
             v.scalemin = 0.8f;
             v.scalemax = 1.2f;
-        } else if (name == "oscillateposition") {
+        } else if (name.compare("oscillateposition") == 0) {
             v.frequencymax = 5.0f;
         }
         sr::GetJsonValue(j, "frequencymin", v.frequencymin, false);
@@ -454,7 +454,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
         if (wpj.get("name").is_none()) break;
         std::string name;
         sr::GetJsonValue(wpj, "name", name);
-        if (name == "movement") {
+        if (name.compare("movement") == 0) {
             float drag { 0.0f };
 
             std::array<float, 3> gravity { 0, 0, 0 };
@@ -480,7 +480,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                     PM::Accelerate(p, acc, info.time_pass);
                 }
             };
-        } else if (name == "angularmovement") {
+        } else if (name.compare("angularmovement") == 0) {
             float                drag { 0.0f };
             std::array<float, 3> force { 0, 0, 0 };
             sr::GetJsonValue(wpj, "drag", drag, false);
@@ -493,7 +493,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                     PM::AngularAccelerate(p, acc, info.time_pass);
                 }
             };
-        } else if (name == "sizechange") {
+        } else if (name.compare("sizechange") == 0) {
             auto vc = ValueChange::ReadFromJson(wpj);
             return [vc, modifiers](const ParticleInfo& info) {
                 auto size_over = modifiers.Size();
@@ -501,7 +501,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                     PM::MutiplySize(p, size_over * FadeValueChange(PM::LifetimePos(p), vc));
             };
 
-        } else if (name == "alphafade") {
+        } else if (name.compare("alphafade") == 0) {
             float fadeintime { 0.5f }, fadeouttime { 0.5f };
             sr::GetJsonValue(wpj, "fadeintime", fadeintime, false);
             sr::GetJsonValue(wpj, "fadeouttime", fadeouttime, false);
@@ -515,14 +515,14 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                                          1.0f - FadeValueChange(life, fadeouttime, 1.0f, 0, 1.0f));
                 }
             };
-        } else if (name == "alphachange") {
+        } else if (name.compare("alphachange") == 0) {
             auto vc = ValueChange::ReadFromJson(wpj);
             return [vc](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
                     PM::MutiplyAlpha(p, FadeValueChange(PM::LifetimePos(p), vc));
                 }
             };
-        } else if (name == "colorchange") {
+        } else if (name.compare("colorchange") == 0) {
             auto vc = VecChange::ReadFromJson(wpj);
             return [vc](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
@@ -534,7 +534,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                     PM::MutiplyColor(p, result[0], result[1], result[2]);
                 }
             };
-        } else if (name == "oscillatealpha") {
+        } else if (name.compare("oscillatealpha") == 0) {
             FrequencyValue fv = FrequencyValue::ReadFromJson(wpj, name);
             return [fv](const ParticleInfo& info) mutable {
                 fv.CheckAndResize(info.particles.size());
@@ -544,7 +544,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                     PM::MutiplyAlpha(p, fv.GetScale(p.slot_id, PM::LifetimePassed(p)));
                 }
             };
-        } else if (name == "oscillatesize") {
+        } else if (name.compare("oscillatesize") == 0) {
             FrequencyValue fv = FrequencyValue::ReadFromJson(wpj, name);
             return [fv](const ParticleInfo& info) mutable {
                 fv.CheckAndResize(info.particles.size());
@@ -555,7 +555,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                 }
             };
 
-        } else if (name == "oscillateposition") {
+        } else if (name.compare("oscillateposition") == 0) {
             std::vector<Vector3f>         lastMove;
             FrequencyValue                fvx = FrequencyValue::ReadFromJson(wpj, name);
             std::array<FrequencyValue, 3> fxp = { fvx, fvx, fvx };
@@ -574,7 +574,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                     PM::Move(p, del);
                 }
             };
-        } else if (name == "turbulence") {
+        } else if (name.compare("turbulence") == 0) {
             Turbulence tur   = Turbulence::ReadFromJson(wpj);
             double     phase = Random::get(tur.phasemin, tur.phasemax);
             double     speed = Random::get(tur.speedmin, tur.speedmax);
@@ -591,7 +591,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                     PM::Accelerate(p, result, info.time_pass);
                 }
             };
-        } else if (name == "vortex") {
+        } else if (name.compare("vortex") == 0) {
             Vortex v = Vortex::ReadFromJson(wpj);
             return [=](const ParticleInfo& info) {
                 const auto& cp = info.controlpoints[v.controlpoint];
@@ -627,7 +627,7 @@ ParticleOperatorOp WPParticleParser::genParticleOperatorOp(const Json& wpj,
                     }
                 }
             };
-        } else if (name == "controlpointattract") {
+        } else if (name.compare("controlpointattract") == 0) {
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
             return [=](const ParticleInfo& info) {
                 const auto& cp = info.controlpoints[c.controlpoint];
@@ -659,7 +659,7 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         .frequency = wpe.audiofrequency,
         .bounds    = wpe.audiobounds,
     };
-    if (wpe.name == "boxrandom") {
+    if (wpe.name.compare("boxrandom") == 0) {
         ParticleBoxEmitterArgs box;
         box.emitSpeed      = wpe.rate;
         box.minDistance    = wpe.distancemin;
@@ -675,7 +675,7 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         box.audio_response = audio_response;
         box.sort           = sort;
         return ParticleBoxEmitterArgs::MakeEmittOp(box);
-    } else if (wpe.name == "sphererandom") {
+    } else if (wpe.name.compare("sphererandom") == 0) {
         ParticleSphereEmitterArgs sphere;
         sphere.emitSpeed      = wpe.rate;
         sphere.minDistance    = wpe.distancemin[0];
