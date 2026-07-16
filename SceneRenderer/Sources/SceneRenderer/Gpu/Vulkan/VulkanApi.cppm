@@ -488,6 +488,7 @@ public:
                          VkSurfaceKHR surface);
 
     void Destroy();
+    bool RecreateSwapchain(VkSurfaceKHR surface, VkExtent2D extent);
 
     // Rebuild the surface swapchain (VK_ERROR_OUT_OF_DATE_KHR, resolution
     // change, display hot-plug). Waits for device idle before touching the old
