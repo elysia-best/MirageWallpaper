@@ -133,6 +133,14 @@ bool RequiresVulkanVideoDeviceExtensions(std::string_view hwdec) {
 #endif
 }
 
+bool IsRecoverableSurfaceResult(VkResult result) {
+    return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
+}
+
+bool NeedsSurfaceSwapchainRecreate(VkResult result) {
+    return result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR;
+}
+
 struct RenderProgram {
     enum class PreparedPassKind
     {
@@ -628,6 +636,7 @@ struct VulkanRender::Impl {
     void                                UpdateCameraFillMode(Scene&, sr::FillMode);
 
     bool                       initRes();
+    bool                       recreateSurfaceSwapchain();
     bool                       acquireUploadCommandSlot(RenderingResources&, std::size_t&);
     bool                       commitPreparedUploads();
     bool                       drawFrameSwapchain();
@@ -1142,6 +1151,32 @@ bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr) {
 }
 
 void VulkanRender::Impl::DestroyRenderingResource(RenderingResources& rr) {}
+
+bool VulkanRender::Impl::recreateSurfaceSwapchain() {
+    if (! m_with_surface || ! m_device || ! m_finpass) return false;
+
+    const VkExtent2D old_extent = m_device->out_extent();
+    if (! m_device->RecreateSwapchain(*m_instance.surface(), old_extent)) return false;
+
+    m_finpass->setPresentFormat(m_device->swapchain().format());
+    m_finpass->setPresentCanTransferSrc(
+        (m_device->swapchain().usage() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0);
+
+    VkSemaphoreCreateInfo ci { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                               .pNext = nullptr };
+    m_sem_swap_finish_per_image.clear();
+    m_sem_swap_finish_per_image.resize(m_device->swapchain().images().size());
+    for (auto& s : m_sem_swap_finish_per_image) {
+        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(ci, s));
+    }
+
+    const VkExtent2D new_extent = m_device->swapchain().extent();
+    rstd_info("surface swapchain recreated: {}x{} images={}",
+              new_extent.width,
+              new_extent.height,
+              m_device->swapchain().images().size());
+    return true;
+}
 
 bool VulkanRender::Impl::acquireUploadCommandSlot(RenderingResources& rr, std::size_t& slot) {
     if (m_upload_cmds.empty() || m_failed) return false;
