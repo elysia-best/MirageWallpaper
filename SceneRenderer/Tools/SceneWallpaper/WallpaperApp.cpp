@@ -13,6 +13,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -207,6 +208,68 @@ void EmitSnapshotDone(const std::string& token, bool ok) {
     std::cout << "{\"event\":\"snapshot-done\",\"token\":\"" << escaped
               << "\",\"ok\":" << (ok ? "true" : "false") << "}\n" << std::flush;
 }
+
+class DesktopHandle {
+public:
+    DesktopHandle() = default;
+    ~DesktopHandle() { reset(); }
+
+    DesktopHandle(const DesktopHandle&) = delete;
+    DesktopHandle& operator=(const DesktopHandle&) = delete;
+
+    void reset(void* handle = nullptr) {
+        if (handle_ != nullptr) sr::host::DesktopDestroy(handle_);
+        handle_ = handle;
+    }
+
+    [[nodiscard]] void* get() const noexcept { return handle_; }
+    [[nodiscard]] explicit operator bool() const noexcept { return handle_ != nullptr; }
+
+private:
+    void* handle_ { nullptr };
+};
+
+class StopTimer {
+public:
+    StopTimer() = default;
+    ~StopTimer() { stop(); }
+
+    StopTimer(const StopTimer&) = delete;
+    StopTimer& operator=(const StopTimer&) = delete;
+
+    void start(void* desktop, int seconds) {
+        stop();
+        if (desktop == nullptr || seconds <= 0) return;
+
+        {
+            std::lock_guard lock(mutex_);
+            stop_requested_ = false;
+        }
+        worker_ = std::thread([this, desktop, seconds]() {
+            std::unique_lock lock(mutex_);
+            const bool stopped = cv_.wait_for(lock, std::chrono::seconds(seconds), [this]() {
+                return stop_requested_;
+            });
+            lock.unlock();
+            if (! stopped) sr::host::DesktopStop(desktop);
+        });
+    }
+
+    void stop() {
+        {
+            std::lock_guard lock(mutex_);
+            stop_requested_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+
+private:
+    std::mutex              mutex_;
+    std::condition_variable cv_;
+    bool                    stop_requested_ { false };
+    std::thread             worker_;
+};
 
 void PrintUsage(const char* argv0) {
     std::cerr
@@ -417,6 +480,23 @@ bool LoadUserProperties(const std::string& path, sr::SceneWallpaperConfig& confi
     return true;
 }
 
+#if defined(__APPLE__)
+extern "C" void SceneRendererSetLiveMetalFrameCallback(
+    void (*cb)(void*, std::uint32_t, std::uint32_t, void*), void* userdata);
+
+void LiveMetalFrameCallback(void* texture, std::uint32_t width, std::uint32_t height,
+                            void* userdata) {
+    auto* state = static_cast<AppState*>(userdata);
+    if (state == nullptr || state->desktop == nullptr) return;
+    sr::host::DesktopPresent(state->desktop, texture, width, height);
+}
+
+class LiveMetalFrameCallbackGuard {
+public:
+    ~LiveMetalFrameCallbackGuard() { SceneRendererSetLiveMetalFrameCallback(nullptr, nullptr); }
+};
+#endif
+
 void MouseMoveCallback(double x, double y, void* userdata) {
     auto* state = static_cast<AppState*>(userdata);
     if (state == nullptr || state->wallpaper == nullptr) return;
@@ -482,9 +562,11 @@ int main(int argc, char** argv) {
     // Still overrideable from the shell for debugging.
 #endif
 
-    auto     wallpaper = std::make_unique<sr::SceneWallpaper>();
-    AppState state;
-    state.wallpaper = wallpaper.get();
+    DesktopHandle      desktop;
+    sr::SceneWallpaper wallpaper;
+    StopTimer          run_timer;
+    AppState           state;
+    state.wallpaper = &wallpaper;
 
     sr::host::DesktopConfig desktop_config {
         .title        = "SceneRenderer Wallpaper",
@@ -504,8 +586,9 @@ int main(int argc, char** argv) {
         .deactivated  = DeactivatedCallback,
         .userdata     = &state,
     };
-    state.desktop = sr::host::DesktopCreate(&desktop_config, callbacks);
-    if (state.desktop == nullptr) {
+    desktop.reset(sr::host::DesktopCreate(&desktop_config, callbacks));
+    state.desktop = desktop.get();
+    if (! desktop) {
         std::cerr << "Failed to create desktop wallpaper host\n";
         return 1;
     }
@@ -517,8 +600,8 @@ int main(int argc, char** argv) {
     StartParentDeathWatchdog();
 #endif
 
-    std::uint32_t render_width  = sr::host::DesktopPixelWidth(state.desktop);
-    std::uint32_t render_height = sr::host::DesktopPixelHeight(state.desktop);
+    std::uint32_t render_width  = sr::host::DesktopPixelWidth(desktop.get());
+    std::uint32_t render_height = sr::host::DesktopPixelHeight(desktop.get());
     if (options.resolution) {
         render_width  = options.resolution->width;
         render_height = options.resolution->height;
@@ -529,11 +612,8 @@ int main(int argc, char** argv) {
             std::lround(static_cast<double>(render_height) * options.render_scale));
     }
 
-    if (! wallpaper->init()) {
+    if (! wallpaper.init()) {
         std::cerr << "Failed to initialize SceneWallpaper runtime\n";
-        wallpaper.reset();
-        state.wallpaper = nullptr;
-        sr::host::DesktopDestroy(state.desktop);
         return 1;
     }
 
@@ -552,11 +632,13 @@ int main(int argc, char** argv) {
         config.cache_dir = options.cache_dir;
 
     if (! LoadUserProperties(options.user_properties, config)) {
-        wallpaper.reset();
-        state.wallpaper = nullptr;
-        sr::host::DesktopDestroy(state.desktop);
         return 1;
     }
+
+#if defined(__APPLE__)
+    SceneRendererSetLiveMetalFrameCallback(LiveMetalFrameCallback, &state);
+    LiveMetalFrameCallbackGuard live_metal_guard;
+#endif
 
     sr::RenderInitInfo info;
     info.enable_valid_layer = options.valid_layer;
@@ -565,14 +647,20 @@ int main(int argc, char** argv) {
                              sr::host::DesktopPrepareMetalFX(state.desktop);
     info.offscreen          = use_metalfx;
 #else
-    const bool use_metalfx = false;
-    info.offscreen          = false;
+    info.offscreen = false;
+    sr::host::DesktopSurfaceInfo surface_info;
+    if (! sr::host::DesktopGetSurfaceInfo(desktop.get(), surface_info)) {
+        std::cerr << "Failed to create desktop Vulkan surface info\n";
+        return 1;
+    }
+    info.surface_info.instanceExts = std::move(surface_info.instance_extensions);
+    info.surface_info.createSurfaceOp = std::move(surface_info.create_surface);
 #endif
-    info.width              = ClampRenderExtent(render_width, 1920);
-    info.height             = ClampRenderExtent(render_height, 1080);
-    info.msaa_samples       = options.msaa;
-    info.redraw_callback    = [&state]() {
-        sr::host::DesktopWake(state.desktop);
+    info.width           = ClampRenderExtent(render_width, 1920);
+    info.height          = ClampRenderExtent(render_height, 1080);
+    info.msaa_samples    = options.msaa;
+    info.redraw_callback = [desktop = desktop.get()]() {
+        sr::host::DesktopWake(desktop);
     };
     info.failure_callback = [&state](VkResult) {
         EmitLifecycleEvent(&state, "renderer-error");
@@ -590,9 +678,6 @@ int main(int argc, char** argv) {
         void* metal_layer = sr::host::DesktopMetalLayer(state.desktop);
         if (metal_layer == nullptr) {
             std::cerr << "Failed to obtain CAMetalLayer for Vulkan surface\n";
-            wallpaper.reset();
-            state.wallpaper = nullptr;
-            sr::host::DesktopDestroy(state.desktop);
             return 1;
         }
         info.surface_info.instanceExts.emplace_back(VK_KHR_SURFACE_EXTENSION_NAME);
@@ -614,7 +699,6 @@ int main(int argc, char** argv) {
         sr::host::DesktopSurfaceInfo surface_info;
         if (! sr::host::DesktopGetSurfaceInfo(state.desktop, surface_info)) {
             std::cerr << "Failed to create desktop Vulkan surface info\n";
-            sr::host::DesktopDestroy(state.desktop);
             return 1;
         }
         info.surface_info.instanceExts = std::move(surface_info.instance_extensions);
@@ -622,21 +706,17 @@ int main(int argc, char** argv) {
 #endif
     }
 
-    wallpaper->setOnAudioDemand(EmitAudioDemand);
-    wallpaper->configure(std::move(config));
-    wallpaper->initVulkan(std::move(info));
+    wallpaper.setOnAudioDemand(EmitAudioDemand);
+    wallpaper.configure(std::move(config));
+    wallpaper.initVulkan(std::move(info));
 
     if (options.mouse_position) {
-        wallpaper->mouseEnter(true);
-        wallpaper->mouseInput((*options.mouse_position)[0], (*options.mouse_position)[1]);
+        wallpaper.mouseEnter(true);
+        wallpaper.mouseInput((*options.mouse_position)[0], (*options.mouse_position)[1]);
     }
 
     if (options.run_seconds > 0) {
-        void* desktop = state.desktop;
-        std::thread([desktop, seconds = options.run_seconds]() {
-            std::this_thread::sleep_for(std::chrono::seconds(seconds));
-            sr::host::DesktopStop(desktop);
-        }).detach();
+        run_timer.start(desktop.get(), options.run_seconds);
     }
 
     // Live control channel: Mirage.app pipes JSON commands on stdin to drive
@@ -647,11 +727,8 @@ int main(int argc, char** argv) {
     // control thread — otherwise a race between RenderInit/LoadScene message
     // dispatch and a premature stdin EOF (triggering NSApp stop / cleanup) can
     // cause "Sender::acquire on null" panics in the mpsc channel layer.
-    if (! wallpaper->waitVulkanInited(30000)) {
+    if (! wallpaper.waitVulkanInited(30000)) {
         std::cerr << "Vulkan initialization timed out\n";
-        wallpaper.reset();
-        state.wallpaper = nullptr;
-        sr::host::DesktopDestroy(state.desktop);
         return 1;
     }
     EmitLifecycleEvent(&state, "vulkan-ready");
@@ -659,28 +736,25 @@ int main(int argc, char** argv) {
         using clock   = std::chrono::steady_clock;
         auto deadline = clock::now() + std::chrono::seconds(30);
         while (clock::now() < deadline) {
-            if (wallpaper->sceneReady()) break;
+            if (wallpaper.sceneReady()) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        if (! wallpaper->sceneReady()) {
+        if (! wallpaper.sceneReady()) {
             std::cerr << "Scene load timed out\n";
-            wallpaper.reset();
-            state.wallpaper = nullptr;
-            sr::host::DesktopDestroy(state.desktop);
             return 1;
         }
     }
     EmitLifecycleEvent(&state, "scene-ready");
     std::optional<mirage::SceneControlChannel> control;
     if (options.control_stdin) {
-        void* desktop = state.desktop;
+        void* desktop_handle = desktop.get();
         control.emplace(
-            *wallpaper,
-            [desktop]() { sr::host::DesktopStop(desktop); },
-            [desktop]() { sr::host::DesktopActivate(desktop); }
+            wallpaper,
+            [desktop_handle]() { sr::host::DesktopStop(desktop_handle); },
+            [desktop_handle]() { sr::host::DesktopActivate(desktop_handle); }
 #if defined(__APPLE__)
             ,
-            [desktop]() { sr::host::DesktopDeactivate(desktop); },
+            [desktop_handle]() { sr::host::DesktopDeactivate(desktop_handle); },
             [](const std::string& path, const std::string& token) {
                 const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(path);
                 EmitSnapshotDone(token, ok);
@@ -690,15 +764,11 @@ int main(int argc, char** argv) {
         control->start();
     }
 
-    const int ok = sr::host::DesktopRun(state.desktop);
+    const int ok = sr::host::DesktopRun(desktop.get());
 
-    if (control) {
-        control->stop();
-        control.reset();
-    }
+    if (control) control->stop();
+    run_timer.stop();
     state.wallpaper = nullptr;
-    wallpaper.reset();
-    sr::host::DesktopDestroy(state.desktop);
     state.desktop = nullptr;
     return ok ? 0 : 1;
 }
