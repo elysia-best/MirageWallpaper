@@ -48,13 +48,13 @@ inline void* DesktopCreate(const DesktopConfig* config, DesktopCallbacks callbac
         .deferred_show = config != nullptr ? config->deferred_show : false,
     };
     SceneRendererMacDesktopCallbacks mac_callbacks {
-        .mouse_move   = callbacks.mouse_move,
-        .mouse_button = callbacks.mouse_button,
-        .mouse_enter  = callbacks.mouse_enter,
-        .closed       = callbacks.closed,
+        .mouse_move            = callbacks.mouse_move,
+        .mouse_button          = callbacks.mouse_button,
+        .mouse_enter           = callbacks.mouse_enter,
+        .closed                = callbacks.closed,
         .first_frame_presented = callbacks.first_frame_presented,
-        .activated    = callbacks.activated,
-        .userdata     = callbacks.userdata,
+        .activated             = callbacks.activated,
+        .userdata              = callbacks.userdata,
     };
     return SceneRendererMacDesktopCreate(&mac_config, mac_callbacks);
 }
