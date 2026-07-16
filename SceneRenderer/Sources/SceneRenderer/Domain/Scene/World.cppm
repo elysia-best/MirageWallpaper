@@ -1,5 +1,9 @@
 module;
 
+#if defined(__linux__)
+#include <string>
+#endif
+
 #include <atomic>
 #include <climits>
 #include <cmath>
@@ -1722,7 +1726,7 @@ public:
         m_resolved = false;
     }
     void        SetFinalCamera(std::string camera) {
-        if (m_final_camera.compare(camera) == 0) return;
+        if (m_final_camera == camera) return;
         m_final_camera = std::move(camera);
         m_resolved     = false;
     }
