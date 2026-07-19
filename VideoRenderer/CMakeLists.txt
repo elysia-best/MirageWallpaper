@@ -1,40 +1,49 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(VideoRenderer
-    VERSION 0.1.0
-    LANGUAGES CXX OBJCXX)
+if(APPLE)
+    project(VideoRenderer VERSION 0.1.0 LANGUAGES CXX OBJC OBJCXX)
+else()
+    project(VideoRenderer VERSION 0.1.0 LANGUAGES CXX)
+endif()
 
 set(VIDEORENDERER_VERSION 0.1.0)
 
-set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "macOS deployment target" FORCE)
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "macOS deployment target" FORCE)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_OBJCXX_STANDARD 20)
-set(CMAKE_OBJCXX_EXTENSIONS OFF)
+
+if(APPLE)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-add_compile_options($<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
-add_link_options($<$<LINK_LANGUAGE:OBJCXX>:-fobjc-arc>)
+if(APPLE)
+    add_compile_options($<$<COMPILE_LANGUAGE:OBJC,OBJCXX>:-fobjc-arc>)
+    add_link_options($<$<LINK_LANGUAGE:OBJCXX>:-fobjc-arc>)
 
-find_library(COCOA_FRAMEWORK        Cocoa        REQUIRED)
-find_library(AVFOUNDATION_FRAMEWORK AVFoundation REQUIRED)
-find_library(QUARTZCORE_FRAMEWORK   QuartzCore   REQUIRED)
-find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
-find_library(FOUNDATION_FRAMEWORK   Foundation   REQUIRED)
-find_library(UNIFORMTYPEIDENTIFIERS_FRAMEWORK UniformTypeIdentifiers REQUIRED)
+    find_library(COCOA_FRAMEWORK        Cocoa        REQUIRED)
+    find_library(AVFOUNDATION_FRAMEWORK AVFoundation REQUIRED)
+    find_library(QUARTZCORE_FRAMEWORK   QuartzCore   REQUIRED)
+    find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK   Foundation   REQUIRED)
+    find_library(UNIFORMTYPEIDENTIFIERS_FRAMEWORK UniformTypeIdentifiers REQUIRED)
 
-set(VR_FRAMEWORKS
-    ${COCOA_FRAMEWORK}
-    ${AVFOUNDATION_FRAMEWORK}
-    ${QUARTZCORE_FRAMEWORK}
-    ${COREGRAPHICS_FRAMEWORK}
-    ${FOUNDATION_FRAMEWORK})
-list(APPEND VR_FRAMEWORKS ${UNIFORMTYPEIDENTIFIERS_FRAMEWORK})
+    set(VR_FRAMEWORKS
+        ${COCOA_FRAMEWORK}
+        ${AVFOUNDATION_FRAMEWORK}
+        ${QUARTZCORE_FRAMEWORK}
+        ${COREGRAPHICS_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK})
+    list(APPEND VR_FRAMEWORKS ${UNIFORMTYPEIDENTIFIERS_FRAMEWORK})
+endif()
 
 add_subdirectory(Sources/VideoRenderer)
 
@@ -46,4 +55,9 @@ if(VIDEORENDERER_BUILD_VIEWER)
 endif()
 if(VIDEORENDERER_BUILD_WALLPAPER)
     add_subdirectory(Tools/VideoWallpaper)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(Tests)
 endif()

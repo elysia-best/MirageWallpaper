@@ -36,22 +36,6 @@ static void PrintUsage(const char *argv0) {
         argv0);
 }
 
-static BOOL ParseFillMode(const char *value, VRVideoFillMode &out) {
-    if (strcmp(value, "cover") == 0) {
-        out = VRVideoFillModeCover;
-        return YES;
-    }
-    if (strcmp(value, "contain") == 0 || strcmp(value, "fit") == 0) {
-        out = VRVideoFillModeContain;
-        return YES;
-    }
-    if (strcmp(value, "stretch") == 0) {
-        out = VRVideoFillModeStretch;
-        return YES;
-    }
-    return NO;
-}
-
 static BOOL ParseArgs(int argc, char **argv, ViewerArgs &out) {
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -74,7 +58,7 @@ static BOOL ParseArgs(int argc, char **argv, ViewerArgs &out) {
         } else if (strcmp(arg, "--muted") == 0) {
             out.muted = YES;
         } else if (strcmp(arg, "--fill") == 0) {
-            const char *v = take(i, arg); if (!v || !ParseFillMode(v, out.fillMode)) return NO;
+            const char *v = take(i, arg); if (!v || !VRParseVideoFillMode(v, out.fillMode)) return NO;
         } else if (strcmp(arg, "--run-seconds") == 0) {
             const char *v = take(i, arg); if (!v) return NO; out.runSeconds = atoi(v);
         } else if (arg[0] == '-') {

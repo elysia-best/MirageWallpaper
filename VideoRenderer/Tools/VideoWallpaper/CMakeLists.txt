@@ -1,11 +1,15 @@
-add_executable(VideoWallpaper VideoWallpaper.mm ControlChannel.m)
-
-target_link_libraries(VideoWallpaper PRIVATE
-    VideoRendererEngine
-    ${VR_FRAMEWORKS})
-
-target_compile_features(VideoWallpaper PRIVATE cxx_std_20)
-set_target_properties(VideoWallpaper PROPERTIES
-    OBJCXX_STANDARD 20
-    OBJCXX_STANDARD_REQUIRED ON)
-target_compile_options(VideoWallpaper PRIVATE -Wno-deprecated-declarations)
+if(APPLE)
+    add_executable(VideoWallpaper macOS/VideoWallpaper.mm macOS/ControlChannel.m)
+    target_link_libraries(VideoWallpaper PRIVATE VideoRendererEngine ${VR_FRAMEWORKS})
+    target_compile_features(VideoWallpaper PRIVATE cxx_std_20)
+    set_target_properties(VideoWallpaper PROPERTIES
+        OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED ON)
+    target_compile_options(VideoWallpaper PRIVATE -Wno-deprecated-declarations)
+elseif(UNIX AND NOT APPLE)
+    add_executable(VideoWallpaper Linux/VideoWallpaper.cpp)
+    target_link_libraries(VideoWallpaper PRIVATE VideoRendererEngine)
+    target_compile_features(VideoWallpaper PRIVATE cxx_std_20)
+else()
+    message(FATAL_ERROR "VideoWallpaper has no platform backend for this system")
+endif()
