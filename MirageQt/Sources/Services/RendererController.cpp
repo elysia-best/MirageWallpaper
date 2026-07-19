@@ -75,12 +75,8 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         return false;
     }
 
-    if (wallpaper.kind() == WallpaperKind::Web || wallpaper.kind() == WallpaperKind::Video) {
-        if (error) {
-            *error = wallpaper.kind() == WallpaperKind::Web
-                ? QStringLiteral("Linux WebWallpaperQt 渲染器尚未实现，当前仅保留占位调用。")
-                : QStringLiteral("Linux VideoWallpaperQt 渲染器尚未实现，当前仅保留占位调用。");
-        }
+    if (wallpaper.kind() == WallpaperKind::Web) {
+        if (error) *error = QStringLiteral("Linux WebRenderer 尚未实现。");
         emit rendererMessage(error ? *error : QString());
         return false;
     }
@@ -117,8 +113,15 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         }
         break;
     }
-    case WallpaperKind::Web:
     case WallpaperKind::Video:
+        args << wallpaper.renderDirectory
+             << "--screen" << QString::number(screenIndex)
+             << "--volume" << number(options.volume)
+             << "--fill" << fillModeKey(options.fillMode);
+        if (options.muted) args << "--muted";
+        args << "--control-stdin";
+        break;
+    case WallpaperKind::Web:
     case WallpaperKind::Unsupported:
         delete running;
         process->deleteLater();
@@ -281,11 +284,16 @@ QString RendererController::sceneWallpaperBinary() const {
 }
 
 QString RendererController::webWallpaperBinary() const {
-    return firstExecutable({siblingBinary("WebWallpaperQt")});
+    return firstExecutable({siblingBinary("WebWallpaper")});
 }
 
 QString RendererController::videoWallpaperBinary() const {
-    return firstExecutable({siblingBinary("VideoWallpaperQt")});
+    return firstExecutable({
+        siblingBinary("VideoWallpaper"),
+        QDir::cleanPath(Paths::repoRoot() + "/VideoRenderer/build/release/Tools/VideoWallpaper/VideoWallpaper"),
+        QDir::cleanPath(Paths::repoRoot() + "/VideoRenderer/build/debug/Tools/VideoWallpaper/VideoWallpaper"),
+        QDir::cleanPath(Paths::repoRoot() + "/VideoRenderer/cmake-build-debug-clang-21/Tools/VideoWallpaper/VideoWallpaper"),
+    });
 }
 
 QString RendererController::writeUserPropertiesFile(const QHash<QString, ProjectProperty>& props, const Wallpaper& wallpaper) const {
