@@ -13,8 +13,6 @@ find_package(Qt6 6.11 REQUIRED COMPONENTS
     Network
     WebEngineCore
     WebEngineWidgets
-    Multimedia
-    MultimediaWidgets
     DBus)
 find_package(X11 REQUIRED)
 
@@ -132,44 +130,8 @@ target_link_libraries(MirageQt PRIVATE
     Qt6::Widgets
     Qt6::WebEngineWidgets)
 
-qt_add_executable(WebWallpaperQt
-    Sources/Renderers/Common/ControlReader.cpp
-    Sources/Renderers/Common/ControlReader.h
-    Sources/Renderers/Common/DesktopWindowX11.cpp
-    Sources/Renderers/Common/DesktopWindowX11.h
-    Sources/Renderers/WebWallpaperQt/WebWallpaperMain.cpp
-    Sources/Renderers/WebWallpaperQt/WebWallpaperWindow.cpp
-    Sources/Renderers/WebWallpaperQt/WebWallpaperWindow.h
-    Sources/Renderers/WebWallpaperQt/WEUrlSchemeHandler.cpp
-    Sources/Renderers/WebWallpaperQt/WEUrlSchemeHandler.h)
+set_target_properties(MirageQt PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
-target_link_libraries(WebWallpaperQt PRIVATE
-    MirageQtCore
-    Qt6::Widgets
-    Qt6::WebEngineCore
-    Qt6::WebEngineWidgets
-    X11::X11)
-
-qt_add_executable(VideoWallpaperQt
-    Sources/Renderers/Common/ControlReader.cpp
-    Sources/Renderers/Common/ControlReader.h
-    Sources/Renderers/Common/DesktopWindowX11.cpp
-    Sources/Renderers/Common/DesktopWindowX11.h
-    Sources/Renderers/VideoWallpaperQt/VideoWallpaperMain.cpp
-    Sources/Renderers/VideoWallpaperQt/VideoWallpaperWindow.cpp
-    Sources/Renderers/VideoWallpaperQt/VideoWallpaperWindow.h)
-
-target_link_libraries(VideoWallpaperQt PRIVATE
-    MirageQtCore
-    Qt6::Widgets
-    Qt6::Multimedia
-    Qt6::MultimediaWidgets
-    X11::X11)
-
-foreach(target MirageQt WebWallpaperQt VideoWallpaperQt)
-    set_target_properties(${target} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-endforeach()
-
-install(TARGETS MirageQt WebWallpaperQt VideoWallpaperQt
+install(TARGETS MirageQt
     RUNTIME DESTINATION bin)
