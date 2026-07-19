@@ -4,24 +4,11 @@
 #import <AVFoundation/AVFoundation.h>
 
 #import "VideoManifest.h"
+#include "VideoRendererTypes.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSString *const VRVideoEngineErrorDomain;
-
-typedef NS_ENUM(NSInteger, VRVideoFillMode) {
-    VRVideoFillModeCover = 0,
-    VRVideoFillModeContain = 1,
-    VRVideoFillModeStretch = 2,
-};
-
-typedef struct {
-    VRVideoFillMode fillMode;
-    float initialVolume;
-    BOOL muted;
-    BOOL autoplay;
-    BOOL loadFromMemory;
-} VRVideoEngineConfig;
 
 @interface VRVideoRendererEngine : NSView
 
