@@ -18,9 +18,16 @@ extension AppDelegate {
 struct AboutUsView: View {
     @ObservedObject private var localization = MirageLocalization.shared
     @State private var copiedUSDTAddress = false
+    @State private var enlargedQR: SponsorQRModel?
+    @Namespace private var qrNamespace
 
     private let afdianURL = URL(string: "https://www.ifdian.net/a/laobamac")!
     private let usdtAddress = "0xFc0a5C52e3A085FEc7b077FE3D2C413114Bf880D"
+
+    private let wechatModel = SponsorQRModel(id: "wechat-pay", resource: "wechat-pay", fileExtension: "png", title: "微信支付", subtitle: "使用微信扫一扫")
+    private let alipayModel = SponsorQRModel(id: "alipay", resource: "alipay", fileExtension: "jpg", title: "支付宝", subtitle: "使用支付宝扫一扫")
+
+    private var zoomAnimation: Animation { .spring(response: 0.42, dampingFraction: 0.82) }
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     }
@@ -34,46 +41,95 @@ struct AboutUsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                HStack(spacing: 20) {
-                    if let icon = NSImage(named: "AppIcon") {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .frame(width: 88, height: 88)
+        ZStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    HStack(spacing: 20) {
+                        if let icon = NSImage(named: "AppIcon") {
+                            Image(nsImage: icon)
+                                .resizable()
+                                .frame(width: 88, height: 88)
+                        }
+                        Divider().frame(maxHeight: 90)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Mirage").bold().font(.largeTitle)
+                            Text("macOS 动态壁纸引擎").font(.footnote).foregroundStyle(.secondary)
+                            Text("场景 · 网页 · 视频").font(.caption).foregroundStyle(.tertiary)
+                        }
                     }
-                    Divider().frame(maxHeight: 90)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Mirage").bold().font(.largeTitle)
-                        Text("macOS 动态壁纸引擎").font(.footnote).foregroundStyle(.secondary)
-                        Text("场景 · 网页 · 视频").font(.caption).foregroundStyle(.tertiary)
+
+                    VStack(spacing: 14) {
+                        Text("版本 \(version)（构建 \(build)）").foregroundStyle(.secondary)
+                        Text("提交 \(commit)").font(.caption.monospaced()).foregroundStyle(.tertiary)
+                        HStack(spacing: 4) {
+                            Text("作者")
+                            Text("王孝慈 (laobamac)").bold()
+                        }
+                        Link("github.com/laobamac/MirageWallpaper",
+                             destination: URL(string: "https://github.com/laobamac/MirageWallpaper")!)
+                            .font(.footnote)
                     }
+                    .font(.callout)
+
+                    sponsorSection
+
+                    ProjectFeedbackBanner(showsActions: false)
                 }
-
-                VStack(spacing: 14) {
-                    Text("版本 \(version)（构建 \(build)）").foregroundStyle(.secondary)
-                    Text("提交 \(commit)").font(.caption.monospaced()).foregroundStyle(.tertiary)
-                    HStack(spacing: 4) {
-                        Text("作者")
-                        Text("王孝慈 (laobamac)").bold()
-                    }
-                    Link("github.com/laobamac/MirageWallpaper",
-                         destination: URL(string: "https://github.com/laobamac/MirageWallpaper")!)
-                        .font(.footnote)
-                }
-                .font(.callout)
-
-                sponsorSection
-
-                ProjectFeedbackBanner(showsActions: false)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 24)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 24)
+            .textSelection(.enabled)
+
+            enlargedOverlay
         }
-        .textSelection(.enabled)
         .environment(\.locale, localization.locale)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var enlargedOverlay: some View {
+        if let model = enlargedQR {
+            ZStack {
+                // Dimmed backdrop; tapping anywhere dismisses.
+                Rectangle()
+                    .fill(.black.opacity(0.55))
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .onTapGesture { dismissEnlarged() }
+
+                VStack(spacing: 16) {
+                    if let image = model.image {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .frame(width: 300, height: 300)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .matchedGeometryEffect(id: model.id, in: qrNamespace)
+                    }
+                    Text(model.title)
+                        .font(.title3.bold())
+                        .foregroundStyle(.white)
+                    Text(model.subtitle)
+                        .font(.callout)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+                .padding(28)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+                .shadow(color: .black.opacity(0.35), radius: 30, y: 12)
+                .onTapGesture { dismissEnlarged() }
+            }
+            .zIndex(1)
+        }
+    }
+
+    private func enlarge(_ model: SponsorQRModel) {
+        withAnimation(zoomAnimation) { enlargedQR = model }
+    }
+
+    private func dismissEnlarged() {
+        withAnimation(zoomAnimation) { enlargedQR = nil }
     }
 
     private var sponsorSection: some View {
@@ -99,8 +155,8 @@ struct AboutUsView: View {
                 }
                 .buttonStyle(.plain)
 
-                SponsorQRCode(resource: "wechat-pay", fileExtension: "png", title: "微信支付", subtitle: "使用微信扫一扫")
-                SponsorQRCode(resource: "alipay", fileExtension: "jpg", title: "支付宝", subtitle: "使用支付宝扫一扫")
+                tappableQRCode(wechatModel)
+                tappableQRCode(alipayModel)
 
                 usdtCard
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -113,6 +169,19 @@ struct AboutUsView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.pink.opacity(0.25))
         }
+    }
+
+    @ViewBuilder
+    private func tappableQRCode(_ model: SponsorQRModel) -> some View {
+        SponsorQRCode(resource: model.resource, fileExtension: model.fileExtension,
+                      title: LocalizedStringKey(model.title), subtitle: LocalizedStringKey(model.subtitle))
+            // The enlarged copy owns the matched geometry while zoomed, so hide
+            // the source card to avoid a duplicate ghost during the transition.
+            .opacity(enlargedQR?.id == model.id ? 0 : 1)
+            .matchedGeometryEffect(id: model.id, in: qrNamespace, isSource: enlargedQR?.id != model.id)
+            .contentShape(Rectangle())
+            .onTapGesture { enlarge(model) }
+            .help(L("点击放大"))
     }
 
     private var usdtCard: some View {
@@ -139,6 +208,21 @@ struct AboutUsView: View {
             .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Describes one scannable payment code so it can be shown both as a small card
+/// and, when tapped, as an enlarged hero overlay.
+private struct SponsorQRModel: Identifiable, Equatable {
+    let id: String
+    let resource: String
+    let fileExtension: String
+    let title: String
+    let subtitle: String
+
+    var image: NSImage? {
+        guard let url = Bundle.main.url(forResource: resource, withExtension: fileExtension) else { return nil }
+        return NSImage(contentsOf: url)
     }
 }
 
