@@ -68,13 +68,6 @@ static AVLayerVideoGravity VRLayerGravityForFillMode(VRVideoFillMode mode) {
     }
 }
 
-static float VRClampVolume(float value) {
-    if (!isfinite(value)) return 1.0f;
-    if (value < 0.0f) return 0.0f;
-    if (value > 1.0f) return 1.0f;
-    return value;
-}
-
 static float VRClampPlaybackRate(float value) {
     if (!isfinite(value)) return 1.0f;
     if (value < 0.0f) return 0.0f;
@@ -161,14 +154,7 @@ static BOOL VREncodeSnapshot(CGImageRef image, NSString *path) {
 @implementation VRVideoRendererEngine
 
 + (VRVideoEngineConfig)defaultConfig {
-    VRVideoEngineConfig config;
-    config.fillMode = VRVideoFillModeCover;
-    config.initialVolume = 1.0f;
-    config.muted = NO;
-    config.autoplay = YES;
-    config.loadFromMemory = NO;
-    config.hdrEnabled = NO;
-    return config;
+    return VRDefaultVideoEngineConfig();
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect config:(VRVideoEngineConfig)config {
@@ -182,7 +168,7 @@ static BOOL VREncodeSnapshot(CGImageRef image, NSString *path) {
         _player = [AVQueuePlayer queuePlayerWithItems:@[]];
         _player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
         _player.automaticallyWaitsToMinimizeStalling = !config.loadFromMemory;
-        _player.volume = VRClampVolume(config.initialVolume);
+        _player.volume = VRClampVideoVolume(config.initialVolume);
         _player.muted = config.muted;
 
         _playerLayer = [AVPlayerLayer playerLayerWithPlayer:_player];
@@ -787,7 +773,7 @@ static BOOL VREncodeSnapshot(CGImageRef image, NSString *path) {
 }
 
 - (void)setVolume:(float)volume {
-    _volume = VRClampVolume(volume);
+    _volume = VRClampVideoVolume(volume);
     self.player.volume = _volume;
 }
 
