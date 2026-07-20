@@ -1,8 +1,8 @@
 add_executable(VideoRendererTypesTests
     VideoRendererTypesTests.cpp
-    ../Sources/Common/VideoRenderer/VideoRendererTypes.cpp)
+    ../Sources/VideoRenderer/Common/VideoRendererTypes.cpp)
 target_include_directories(VideoRendererTypesTests PRIVATE
-    ../Sources/Common/VideoRenderer)
+    ../Sources/VideoRenderer/Common)
 target_compile_features(VideoRendererTypesTests PRIVATE cxx_std_20)
 add_test(NAME VideoRendererTypes COMMAND VideoRendererTypesTests)
 
