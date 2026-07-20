@@ -1,5 +1,8 @@
 #import "ControlChannel.h"
 
+#include <errno.h>
+#include <unistd.h>
+
 @implementation MirageControlChannel {
     void (^_handler)(NSDictionary *);
     void (^_onEOF)(void);
@@ -27,6 +30,7 @@
         char chunk[4096];
         for (;;) {
             ssize_t n = read(STDIN_FILENO, chunk, sizeof(chunk));
+            if (n < 0 && errno == EINTR) continue;
             if (n <= 0) break; // EOF or error
             [buffer appendBytes:chunk length:(NSUInteger)n];
 

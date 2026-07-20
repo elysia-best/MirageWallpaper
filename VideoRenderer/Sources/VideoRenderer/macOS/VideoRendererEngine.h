@@ -3,8 +3,9 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 
-#import "VideoManifest.h"
 #include "VideoRendererTypes.h"
+
+@class VRVideoManifest;
 
 NS_ASSUME_NONNULL_BEGIN
 

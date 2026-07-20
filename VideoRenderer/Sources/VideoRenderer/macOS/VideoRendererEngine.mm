@@ -1,4 +1,6 @@
 #import "VideoRendererEngine.h"
+
+#import "VideoManifest.h"
 #import "VRMemoryAssetLoader.h"
 
 #import <QuartzCore/QuartzCore.h>

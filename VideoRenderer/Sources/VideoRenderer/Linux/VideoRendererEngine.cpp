@@ -1,5 +1,7 @@
 #include "VideoRendererEngine.h"
 
+#include "VideoManifest.h"
+
 #include <QAudioOutput>
 #include <QMediaPlayer>
 #include <QPalette>

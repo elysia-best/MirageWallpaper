@@ -7,8 +7,19 @@ if(APPLE)
         OBJCXX_STANDARD_REQUIRED ON)
     target_compile_options(VideoWallpaper PRIVATE -Wno-deprecated-declarations)
 elseif(UNIX AND NOT APPLE)
-    add_executable(VideoWallpaper Linux/VideoWallpaper.cpp)
-    target_link_libraries(VideoWallpaper PRIVATE VideoRendererEngine)
+    find_package(X11 REQUIRED COMPONENTS Xfixes Xext)
+
+    add_executable(VideoWallpaper
+        Linux/VideoWallpaper.cpp
+        Linux/ControlChannel.h
+        Linux/ControlChannel.cpp
+        Linux/X11DesktopWindow.h
+        Linux/X11DesktopWindow.cpp)
+    target_link_libraries(VideoWallpaper PRIVATE
+        VideoRendererEngine
+        X11::X11
+        X11::Xfixes
+        X11::Xext)
     target_compile_features(VideoWallpaper PRIVATE cxx_std_20)
 else()
     message(FATAL_ERROR "VideoWallpaper has no platform backend for this system")

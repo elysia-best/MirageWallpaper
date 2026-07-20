@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QString>
 
 #include <functional>
 

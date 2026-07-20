@@ -45,8 +45,12 @@ static NSSet<NSString *> *VRVideoExtensions(void) {
 
 static NSString *VRFindFirstVideoFile(NSString *directory) {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSArray<NSString *> *children = [fm contentsOfDirectoryAtPath:directory error:nil];
+    NSArray<NSString *> *children = [[fm contentsOfDirectoryAtPath:directory error:nil]
+        sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
     for (NSString *name in children) {
+        BOOL isDirectory = NO;
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        if (![fm fileExistsAtPath:path isDirectory:&isDirectory] || isDirectory) continue;
         if ([VRVideoExtensions() containsObject:name.pathExtension.lowercaseString]) {
             return name;
         }

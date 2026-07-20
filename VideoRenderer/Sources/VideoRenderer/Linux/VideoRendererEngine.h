@@ -1,13 +1,14 @@
 #pragma once
 
-#include "VideoManifest.h"
 #include "VideoRendererTypes.h"
 
+#include <QString>
 #include <QWidget>
 
 class QAudioOutput;
 class QMediaPlayer;
 class QVideoWidget;
+class VRVideoManifest;
 
 class VRVideoRendererEngine final : public QWidget {
     Q_OBJECT
