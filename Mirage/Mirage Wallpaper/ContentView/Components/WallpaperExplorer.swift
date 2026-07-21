@@ -9,14 +9,15 @@ import SwiftUI
 struct WallpaperExplorer: SubviewOfContentView {
     @ObservedObject var viewModel: ContentViewModel
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
-    
+
     init(contentViewModel viewModel: ContentViewModel, wallpaperViewModel: WallpaperViewModel) {
         self.viewModel = viewModel
         self.wallpaperViewModel = wallpaperViewModel
     }
-    
+
     var body: some View {
         let page = viewModel.wallpaperPage
+        let selectedDirectory = wallpaperViewModel.currentWallpaper.wallpaperDirectory
         ScrollView {
             if page.items.isEmpty {
                 HStack {
@@ -36,16 +37,16 @@ struct WallpaperExplorer: SubviewOfContentView {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 50)
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: viewModel.explorerIconSize, 
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: viewModel.explorerIconSize,
                                                        maximum: viewModel.explorerIconSize * 2)
                 )], alignment: .leading) {
-                    ForEach(Array(page.items.enumerated()), id: \.element.id) { (index, wallpaper) in
-                        ExplorerItem(viewModel: viewModel, wallpaperViewModel: wallpaperViewModel, wallpaper: wallpaper, index: index)
+                    ForEach(page.items) { wallpaper in
+                        ExplorerItem(wallpaper: wallpaper,
+                                     isSelected: wallpaper.wallpaperDirectory == selectedDirectory)
                             .contextMenu {
                                 ExplorerItemMenu(contentViewModel: viewModel, wallpaperViewModel: wallpaperViewModel, current: wallpaper)
                                 ExplorerGlobalMenu(contentViewModel: viewModel, wallpaperViewModel: wallpaperViewModel)
                             }
-                            .animation(.spring(), value: viewModel.imageScaleIndex)
                     }
                 }
                 .padding(.trailing)
@@ -64,24 +65,5 @@ struct WallpaperExplorer: SubviewOfContentView {
                 .padding(.bottom)
             }
         }
-    }
-}
-
-struct SelectedItem: ViewModifier {
-    var selected: Bool
-    
-    init(_ selected: Bool) {
-        self.selected = selected
-    }
-    
-    func body(content: Content) -> some View {
-        content
-            .border(Color.accentColor, width: selected ? 3 : 0)
-    }
-}
-
-extension View {
-    func selected(_ selected: Bool = true) -> some View {
-        modifier(SelectedItem(selected))
     }
 }
