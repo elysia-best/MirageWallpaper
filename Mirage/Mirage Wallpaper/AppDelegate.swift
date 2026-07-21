@@ -96,8 +96,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wallpaperViewModel.saveRuntime()
         wallpaperViewModel.renderer.stopAll()
 
-        if let wallpaper = UserDefaults.standard.url(forKey: "OSWallpaper") {
-            try? NSWorkspace.shared.setDesktopImageURL(wallpaper, for: .main!)
+        // NSScreen.main can be nil (all displays asleep / disconnected / app in
+        // background). Never force-unwrap it or the app crashes on quit.
+        if let wallpaper = UserDefaults.standard.url(forKey: "OSWallpaper"),
+           let screen = NSScreen.main {
+            try? NSWorkspace.shared.setDesktopImageURL(wallpaper, for: screen)
         }
     }
 

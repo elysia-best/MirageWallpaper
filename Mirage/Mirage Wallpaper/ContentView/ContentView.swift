@@ -74,7 +74,7 @@ struct ContentView: View {
                             }
                             .animation(.default, value: viewModel.isFilterReveal)
                         default:
-                            fatalError()
+                            EmptyView()
                         }
                         ExplorerBottomBar()
                     }
