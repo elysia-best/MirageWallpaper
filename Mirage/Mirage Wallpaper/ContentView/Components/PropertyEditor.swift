@@ -123,7 +123,7 @@ struct PropertyRow: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                Slider(
+                MirageSlider(
                     value: Binding(
                         get: { currentValue.doubleValue },
                         set: { newVal in

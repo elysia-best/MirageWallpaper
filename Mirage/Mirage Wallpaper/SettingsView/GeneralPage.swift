@@ -169,7 +169,7 @@ struct GeneralPage: SettingsPage {
             Section {
                 HStack {
                     Text("全局音量")
-                    Slider(value: $viewModel.settings.masterVolume, in: 0...1)
+                    MirageSlider(value: $viewModel.settings.masterVolume, in: 0...1)
                         .onChange(of: viewModel.settings.masterVolume) { _, _ in
                             AppDelegate.shared.wallpaperViewModel.reapplyVolume()
                         }
