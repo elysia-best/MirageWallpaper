@@ -649,9 +649,10 @@ class GlobalSettingsViewModel: ObservableObject {
         let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
         let rendererPIDs = AppDelegate.shared.wallpaperViewModel.renderer.processIdentifiers
         let selfPID = ProcessInfo.processInfo.processIdentifier
-        let applications = Dictionary(uniqueKeysWithValues: NSWorkspace.shared.runningApplications.map {
-            ($0.processIdentifier, $0)
-        })
+        let applications = Dictionary(
+            NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         var displayCount: UInt32 = 0
         CGGetActiveDisplayList(0, nil, &displayCount)
