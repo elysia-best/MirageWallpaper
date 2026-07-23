@@ -489,7 +489,7 @@ auto VideoDecoder::open_with_vk(const std::string& path,
             Error err;
             auto  p = build_internal(InputSpec { path, nullptr },
                                      target_w, target_h, loop,
-                                     hwd, FrameKind::VideoToolboxSw, &err);
+                                     hwd, FrameKind::VideoToolboxVk, &err);
             if (p) return rstd::Ok(std::move(p));
             rstd::log::info(
                 "VideoDecoder: hwaccel videotoolbox build_internal failed: {} — trying fallback",
@@ -584,7 +584,7 @@ auto VideoDecoder::open_from_stream(InputStreamFactory make_stream,
             }
             auto p = build_internal(InputSpec { {}, std::move(s) },
                                     target_w, target_h, loop,
-                                    hwd, FrameKind::VideoToolboxSw, &err);
+                                    hwd, FrameKind::VideoToolboxVk, &err);
             if (p) return rstd::Ok(std::move(p));
             rstd::log::info(
                 "VideoDecoder: hwaccel videotoolbox build_internal failed: {} — trying fallback",
@@ -810,7 +810,8 @@ VideoDecoder::build_internal(InputSpec input,
         }
 #endif
 #if defined(__APPLE__)
-        else if (requested_kind == FrameKind::VideoToolboxSw) {
+        else if (requested_kind == FrameKind::VideoToolboxSw ||
+                 requested_kind == FrameKind::VideoToolboxVk) {
             self->st_->cctx->get_format = get_format_prefer_videotoolbox;
             rstd::log::info(
                 "VideoDecoder: AV_HWDEVICE_TYPE_VIDEOTOOLBOX attached for codec {}.",
@@ -863,7 +864,8 @@ VideoDecoder::build_internal(InputSpec input,
     }
 #endif
 #if defined(__APPLE__)
-    else if (requested_kind == FrameKind::VideoToolboxSw) {
+    else if (requested_kind == FrameKind::VideoToolboxSw ||
+             requested_kind == FrameKind::VideoToolboxVk) {
         want_pix_fmt = AV_PIX_FMT_VIDEOTOOLBOX;
         hw_label     = "videotoolbox";
     }
@@ -998,6 +1000,86 @@ int VideoDecoder::next_vk_frame_(VkFrameView& out, Error* err) {
         }
     }
 }
+
+#if defined(__APPLE__)
+int VideoDecoder::next_metal_frame_(MetalFrameView& out, Error* err) {
+    if (kind_ != FrameKind::VideoToolboxVk) {
+        fail(err, "next_metal_frame called on non-videotoolbox-vk decoder");
+        return -1;
+    }
+    State& st = *st_;
+    bool   looped = false;
+
+    /* Release the prior frame's CVPixelBuffer (held via src_frame) now
+     * that the caller's GPU work referencing it was submitted last pull. */
+    av_frame_unref(st.src_frame.get());
+
+    while (true) {
+        int rc = avcodec_receive_frame(st.cctx.get(), st.src_frame.get());
+        if (rc == 0) {
+            if (st.src_frame->format != AV_PIX_FMT_VIDEOTOOLBOX) {
+                fail(err, "next_metal_frame: decoder produced non-videotoolbox frame");
+                return -1;
+            }
+            /* VideoToolbox frames carry the CVPixelBufferRef in data[3]. */
+            out.pixel_buffer = reinterpret_cast<void*>(st.src_frame->data[3]);
+            if (! out.pixel_buffer) {
+                fail(err, "next_metal_frame: null CVPixelBuffer");
+                return -1;
+            }
+            out.width       = static_cast<uint32_t>(st.src_frame->width);
+            out.height      = static_cast<uint32_t>(st.src_frame->height);
+            out.colorspace  = map_colorspace(st.src_frame->colorspace);
+            out.color_range = map_range(st.src_frame->color_range);
+            out.bit_depth   = 8;
+            const int64_t pts = (st.src_frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                ? st.src_frame->best_effort_timestamp
+                : st.src_frame->pts;
+            out.pts_seconds = (pts == AV_NOPTS_VALUE)
+                ? -1.0
+                : static_cast<double>(pts) * ffi::av_q2d(st.stream_tb);
+            return looped ? 2 : 0;
+        }
+        if (rc == AVERROR_EOF) {
+            if (loop_) {
+                if (!seek_to_start(st)) {
+                    fail(err, "loop seek-to-zero failed");
+                    return -1;
+                }
+                looped = true;
+                continue;
+            }
+            return 1;
+        }
+        if (rc != AVERROR(rstd::sys::libc::EAGAIN)) {
+            fail(err, "avcodec_receive_frame: " + av_err_str(rc));
+            return -1;
+        }
+        if (st.flushing) continue;
+
+        rc = av_read_frame(st.fmt.get(), st.pkt.get());
+        if (rc == AVERROR_EOF) {
+            avcodec_send_packet(st.cctx.get(), nullptr);
+            st.flushing = true;
+            continue;
+        }
+        if (rc < 0) {
+            fail(err, "av_read_frame: " + av_err_str(rc));
+            return -1;
+        }
+        if (st.pkt->stream_index != st.video_idx) {
+            av_packet_unref(st.pkt.get());
+            continue;
+        }
+        rc = avcodec_send_packet(st.cctx.get(), st.pkt.get());
+        av_packet_unref(st.pkt.get());
+        if (rc < 0 && rc != AVERROR(rstd::sys::libc::EAGAIN)) {
+            fail(err, "avcodec_send_packet: " + av_err_str(rc));
+            return -1;
+        }
+    }
+}
+#endif
 
 int VideoDecoder::next_drm_frame_(DrmFrameView& out, Error* err) {
     if (kind_ != FrameKind::VaapiDrm) {
@@ -1317,6 +1399,15 @@ auto VideoDecoder::next_vk_frame(VkFrameView& out) -> rstd::Result<NextFrame, Er
 auto VideoDecoder::next_drm_frame(DrmFrameView& out) -> rstd::Result<NextFrame, Error> {
     Error err;
     int   rc = next_drm_frame_(out, &err);
+    if (rc < 0) return rstd::Err(std::move(err));
+    if (rc == 1) return rstd::Ok(NextFrame::Eof);
+    if (rc == 2) return rstd::Ok(NextFrame::Looped);
+    return rstd::Ok(NextFrame::Ok);
+}
+
+auto VideoDecoder::next_metal_frame(MetalFrameView& out) -> rstd::Result<NextFrame, Error> {
+    Error err;
+    int   rc = next_metal_frame_(out, &err);
     if (rc < 0) return rstd::Err(std::move(err));
     if (rc == 1) return rstd::Ok(NextFrame::Eof);
     if (rc == 2) return rstd::Ok(NextFrame::Looped);
