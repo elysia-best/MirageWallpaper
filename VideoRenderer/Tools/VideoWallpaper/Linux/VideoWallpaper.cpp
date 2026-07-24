@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -21,6 +22,7 @@ struct WallpaperArgs {
     int runSeconds = 0;
     VRVideoFillMode fillMode = VRVideoFillModeCover;
     bool controlStdin = false;
+    bool loadFromMemory = false;
 };
 
 void printUsage(const char* argv0) {
@@ -32,6 +34,7 @@ void printUsage(const char* argv0) {
                  "  --muted                start muted\n"
                  "  --fill MODE            cover | contain | stretch (default cover)\n"
                  "  --control-stdin        accept live JSON control commands on stdin\n"
+                 "  --load-from-memory     keep the video bytes in memory\n"
                  "  --run-seconds N        exit after N seconds (test helper)\n"
                  "  -h, --help             show this help\n",
                  argv0);
@@ -67,6 +70,8 @@ bool parseArgs(int argc, char** argv, WallpaperArgs& out) {
             if (!value || !VRParseVideoFillMode(value, out.fillMode)) return false;
         } else if (std::strcmp(argument, "--control-stdin") == 0) {
             out.controlStdin = true;
+        } else if (std::strcmp(argument, "--load-from-memory") == 0) {
+            out.loadFromMemory = true;
         } else if (std::strcmp(argument, "--run-seconds") == 0) {
             const char* value = takeValue(index, argc, argv, argument);
             if (!value) return false;
@@ -128,6 +133,7 @@ int main(int argc, char** argv) {
     config.initialVolume = args.volume;
     config.muted = args.muted;
     config.autoplay = true;
+    config.loadFromMemory = args.loadFromMemory;
     VRVideoRendererEngine engine(config, &window);
     layout->addWidget(&engine);
 
@@ -141,6 +147,11 @@ int main(int argc, char** argv) {
                          std::fprintf(stderr, "VideoWallpaper: %s\n", message.toLocal8Bit().constData());
                          app.exit(3);
                      });
+    QObject::connect(&engine, &VRVideoRendererEngine::videoDidEnd, &app, [] {
+        const QByteArray payload = QByteArrayLiteral("{\"event\":\"video-did-end\"}\n");
+        std::fwrite(payload.constData(), 1, static_cast<size_t>(payload.size()), stdout);
+        std::fflush(stdout);
+    });
 
     QString windowError;
     if (!VRConfigureX11DesktopWindow(&window, args.screen, &windowError)) {

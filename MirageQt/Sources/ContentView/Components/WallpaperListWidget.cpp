@@ -200,6 +200,8 @@ WallpaperListWidget::WallpaperListWidget(WallpaperLibrary* library,
                                emit favoriteToggled(wallpaper);
                                rebuildList();
                            });
+            menu.addAction(QIcon::fromTheme(QStringLiteral("list-add")), QStringLiteral("加入播放列表"), this,
+                           [this, wallpaper] { emit addToPlaylistRequested(wallpaper); });
             menu.addSeparator();
         }
         menu.addAction(QIcon::fromTheme(QStringLiteral("view-refresh")), QStringLiteral("刷新"), this, &WallpaperListWidget::reload);

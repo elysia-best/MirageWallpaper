@@ -17,6 +17,8 @@ struct GlobalSettings {
     QString textureResolution = QStringLiteral("automatic");
     bool reflections = false;
     int fps = 30;
+    // disk | memory — match macOS GSWallpaperLoadSource
+    QString wallpaperLoadSource = QStringLiteral("disk");
 
     bool autoStart = false;
     bool safeMode = false;

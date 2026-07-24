@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTimer>
@@ -106,6 +107,7 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
              << "--screen" << QString::number(screenIndex)
              << "--control-stdin";
         if (options.muted) args << "--muted";
+        if (options.loadFromMemory) args << "--load-from-memory";
         const QString propsFile = writeUserPropertiesFile(options.userProperties, wallpaper);
         if (!propsFile.isEmpty()) {
             args << "--user-properties" << propsFile;
@@ -119,6 +121,7 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
              << "--volume" << number(options.volume)
              << "--fill" << fillModeKey(options.fillMode);
         if (options.muted) args << "--muted";
+        if (options.loadFromMemory) args << "--load-from-memory";
         args << "--control-stdin";
         break;
     case WallpaperKind::Web:
@@ -131,6 +134,9 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
     connect(process, &QProcess::readyReadStandardError, this, [this, process] {
         const QString text = QString::fromUtf8(process->readAllStandardError()).trimmed();
         if (!text.isEmpty()) emit rendererMessage(text);
+    });
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, running, process] {
+        consumeStdout(running, process->readAllStandardOutput());
     });
 
     connect(process,
@@ -349,4 +355,23 @@ void RendererController::forEachTarget(int screenIndex, const std::function<void
     for (RunningProcess* running : m_running) body(running);
 }
 
+void RendererController::consumeStdout(RunningProcess* running, const QByteArray& chunk) {
+    if (!running || chunk.isEmpty()) return;
+    running->stdoutBuffer.append(chunk);
+    while (true) {
+        const int newline = running->stdoutBuffer.indexOf('\n');
+        if (newline < 0) break;
+        const QByteArray line = running->stdoutBuffer.left(newline).trimmed();
+        running->stdoutBuffer.remove(0, newline + 1);
+        if (line.isEmpty()) continue;
+        const auto doc = QJsonDocument::fromJson(line);
+        if (!doc.isObject()) continue;
+        const QJsonObject object = doc.object();
+        if (object.value(QStringLiteral("event")).toString() == QStringLiteral("video-did-end")) {
+            emit videoDidEnd(running->screenIndex);
+        }
+    }
+}
+
 } // namespace Mirage
+

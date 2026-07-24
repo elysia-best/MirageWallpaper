@@ -2,10 +2,12 @@
 
 #include "VideoRendererTypes.h"
 
+#include <QByteArray>
 #include <QString>
 #include <QWidget>
 
 class QAudioOutput;
+class QBuffer;
 class QMediaPlayer;
 class QVideoWidget;
 class VRVideoManifest;
@@ -35,14 +37,20 @@ public:
 
 signals:
     void playbackError(const QString& message);
+    void videoDidEnd();
 
 private:
+    void clearMemorySource();
+
     QMediaPlayer* m_player = nullptr;
     QAudioOutput* m_audioOutput = nullptr;
     QVideoWidget* m_videoWidget = nullptr;
+    QByteArray m_memoryBytes;
+    QBuffer* m_memoryBuffer = nullptr;
     bool m_loaded = false;
     float m_volume = 1.0f;
     bool m_muted = false;
     VRVideoFillMode m_fillMode = VRVideoFillModeCover;
     bool m_autoplay = true;
+    bool m_loadFromMemory = false;
 };

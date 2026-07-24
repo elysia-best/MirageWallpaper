@@ -45,6 +45,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_steamAPI = new SteamWebAPI(m_settings, this);
     m_workshopViewModel = new WorkshopViewModel(m_steamAPI, m_steamCMD, m_library, this);
     m_renderer = new RendererController(m_settings, this);
+    m_playlist = new PlaylistManager(m_library, m_renderer, this);
 
     m_topTabs = new TopTabBarWidget(this);
     m_contentStack = new QStackedWidget(this);
@@ -66,8 +67,8 @@ MainWindow::MainWindow(QWidget* parent)
     leftLayout->addWidget(m_topTabs);
     leftLayout->addWidget(new ProjectFeedbackBannerWidget(left));
     leftLayout->addWidget(m_contentStack, 1);
-    auto* bottom = new ExplorerBottomBarWidget(left);
-    leftLayout->addWidget(bottom);
+    m_bottomBar = new ExplorerBottomBarWidget(m_playlist, m_library, left);
+    leftLayout->addWidget(m_bottomBar);
 
     m_splitter = new QSplitter(Qt::Horizontal, this);
     m_splitter->setObjectName(QStringLiteral("mainSplitter"));
@@ -128,7 +129,35 @@ MainWindow::MainWindow(QWidget* parent)
     });
     connect(m_preview, &WallpaperPreviewWidget::stopRequested, m_renderer, &RendererController::stopAll);
     connect(m_preview, &WallpaperPreviewWidget::closeRequested, this, &QWidget::hide);
-    connect(bottom, &ExplorerBottomBarWidget::importRequested, this, &MainWindow::importWallpaper);
+    connect(m_bottomBar, &ExplorerBottomBarWidget::importRequested, this, &MainWindow::importWallpaper);
+    connect(m_bottomBar, &ExplorerBottomBarWidget::playItemRequested, this,
+            [this](const Wallpaper& wallpaper, int screen) {
+        QString error;
+        if (!m_renderer->render(wallpaper, screen, currentRenderOptions(), &error) && !error.isEmpty()) {
+            QMessageBox::warning(this, QStringLiteral("应用壁纸"), error);
+        } else {
+            m_playlist->setCurrentWallpaper(screen, wallpaper);
+            m_bottomBar->setPlayingWallpaper(screen, wallpaper);
+        }
+    });
+    connect(m_playlist, &PlaylistManager::applyWallpaperRequested, this,
+            [this](const Wallpaper& wallpaper, int screen) {
+        QString error;
+        if (!m_renderer->render(wallpaper, screen, currentRenderOptions(), &error) && !error.isEmpty()) {
+            showMessage(error);
+        } else {
+            m_playlist->setCurrentWallpaper(screen, wallpaper);
+            m_bottomBar->setPlayingWallpaper(screen, wallpaper);
+        }
+    });
+    connect(m_wallpaperList, &WallpaperListWidget::wallpaperSelected, m_bottomBar,
+            &ExplorerBottomBarWidget::setSelectedWallpaper);
+    connect(m_wallpaperList, &WallpaperListWidget::addToPlaylistRequested, this,
+            [this](const Wallpaper& wallpaper) {
+        m_playlist->add(wallpaper, 0);
+        m_bottomBar->setSelectedWallpaper(wallpaper);
+        showMessage(QStringLiteral("已加入播放列表"));
+    });
     connect(m_workshop, &WorkshopView::steamSetupRequested, this, &MainWindow::openSteamSetup);
     connect(m_workshopDetail, &WorkshopItemDetail::steamSetupRequested, this, &MainWindow::openSteamSetup);
     connect(m_workshopDetail, &WorkshopItemDetail::closeRequested, this, &QWidget::hide);
@@ -188,6 +217,7 @@ MainWindow::MainWindow(QWidget* parent)
     if (m_wallpaperList->currentWallpaper().isValid()) {
         m_preview->setWallpaper(m_wallpaperList->currentWallpaper());
     }
+    m_playlist->startRotators();
     setupTray();
 }
 
@@ -210,11 +240,21 @@ void MainWindow::applyWallpaper(const Wallpaper& wallpaper, bool allScreens) {
         const QList<QScreen*> screens = QGuiApplication::screens();
         for (int i = 0; i < qMax(1, screens.size()); ++i) {
             QString screenError;
-            ok = m_renderer->render(wallpaper, i, options, &screenError) || ok;
+            if (m_renderer->render(wallpaper, i, options, &screenError)) {
+                ok = true;
+                m_playlist->setCurrentWallpaper(i, wallpaper);
+                m_bottomBar->setPlayingWallpaper(i, wallpaper);
+                m_playlist->kickRotator(i);
+            }
             if (!screenError.isEmpty()) error = screenError;
         }
     } else {
         ok = m_renderer->render(wallpaper, 0, options, &error);
+        if (ok) {
+            m_playlist->setCurrentWallpaper(0, wallpaper);
+            m_bottomBar->setPlayingWallpaper(0, wallpaper);
+            m_playlist->kickRotator(0);
+        }
     }
     if (!ok && !error.isEmpty()) QMessageBox::warning(this, QStringLiteral("应用壁纸"), error);
 }
@@ -363,6 +403,7 @@ RenderOptions MainWindow::currentRenderOptions() const {
     options.volume = s.masterVolume;
     options.muted = s.globalMuted;
     options.enableSpectrum = s.enableSpectrum;
+    options.loadFromMemory = s.wallpaperLoadSource == QStringLiteral("memory");
     return options;
 }
 

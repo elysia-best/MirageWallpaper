@@ -32,6 +32,7 @@ private:
     QComboBox* m_displayAsleep = nullptr;
     QComboBox* m_battery = nullptr;
     QComboBox* m_antiAliasing = nullptr;
+    QComboBox* m_loadSource = nullptr;
     QSlider* m_fps = nullptr;
     QLabel* m_fpsValue = nullptr;
     QLabel* m_fpsWarning = nullptr;

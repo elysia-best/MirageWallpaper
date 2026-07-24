@@ -34,6 +34,14 @@ add_library(MirageQtCore STATIC
     Sources/Services/LinuxSystemIntegration.h
     Sources/Services/Paths.cpp
     Sources/Services/Paths.h
+    Sources/Services/PlaylistModels.cpp
+    Sources/Services/PlaylistModels.h
+    Sources/Services/PlaylistManager.cpp
+    Sources/Services/PlaylistManager.h
+    Sources/Services/PlaylistRotator.cpp
+    Sources/Services/PlaylistRotator.h
+    Sources/Services/PlaylistTransitionOverlay.cpp
+    Sources/Services/PlaylistTransitionOverlay.h
     Sources/Services/RendererController.cpp
     Sources/Services/RendererController.h
     Sources/Services/SteamCMDManager.cpp
@@ -58,6 +66,7 @@ target_compile_definitions(MirageQtCore PUBLIC
 target_link_libraries(MirageQtCore PUBLIC
     Qt6::Core
     Qt6::Gui
+    Qt6::Widgets
     Qt6::Network
     Qt6::DBus
     X11::X11)
@@ -76,6 +85,12 @@ qt_add_executable(MirageQt
     Sources/ContentView/MainWindow.h
     Sources/ContentView/Components/ExplorerBottomBarWidget.cpp
     Sources/ContentView/Components/ExplorerBottomBarWidget.h
+    Sources/ContentView/Components/Playlist/PlaylistOpenDialog.cpp
+    Sources/ContentView/Components/Playlist/PlaylistOpenDialog.h
+    Sources/ContentView/Components/Playlist/PlaylistSaveDialog.cpp
+    Sources/ContentView/Components/Playlist/PlaylistSaveDialog.h
+    Sources/ContentView/Components/Playlist/PlaylistSettingsDialog.cpp
+    Sources/ContentView/Components/Playlist/PlaylistSettingsDialog.h
     Sources/ContentView/Components/ExplorerTopBarWidget.cpp
     Sources/ContentView/Components/ExplorerTopBarWidget.h
     Sources/ContentView/Components/FilterResultsWidget.cpp
