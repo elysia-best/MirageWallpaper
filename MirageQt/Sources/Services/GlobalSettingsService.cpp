@@ -44,6 +44,7 @@ QJsonObject toJson(const GlobalSettings& s) {
     object["textureResolution"] = s.textureResolution;
     object["reflections"] = s.reflections;
     object["fps"] = s.fps;
+    object["wallpaperLoadSource"] = s.wallpaperLoadSource;
     object["autoStart"] = s.autoStart;
     object["safeMode"] = s.safeMode;
     object["language"] = s.language;
@@ -79,6 +80,7 @@ GlobalSettings fromJson(const QJsonObject& object) {
     s.textureResolution = value(object, "textureResolution", s.textureResolution);
     s.reflections = value(object, "reflections", s.reflections);
     s.fps = value(object, "fps", s.fps);
+    s.wallpaperLoadSource = value(object, "wallpaperLoadSource", s.wallpaperLoadSource);
     s.autoStart = value(object, "autoStart", s.autoStart);
     s.safeMode = value(object, "safeMode", s.safeMode);
     s.language = value(object, "language", s.language);
@@ -123,6 +125,9 @@ GlobalSettings sanitized(GlobalSettings settings) {
                                         {QStringLiteral("official"), QStringLiteral("mirror")},
                                         QStringLiteral("official"));
     settings.fps = qBound(10, settings.fps, 120);
+    settings.wallpaperLoadSource = validOr(settings.wallpaperLoadSource,
+                                           {QStringLiteral("disk"), QStringLiteral("memory")},
+                                           QStringLiteral("disk"));
     settings.masterVolume = qBound(0.0, settings.masterVolume, 1.0);
     settings.steamAPIKey = settings.steamAPIKey.trimmed();
     return settings;

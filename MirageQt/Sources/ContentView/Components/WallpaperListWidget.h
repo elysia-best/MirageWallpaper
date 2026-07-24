@@ -31,6 +31,7 @@ signals:
     void applyRequested(const Mirage::Wallpaper& wallpaper, bool allScreens);
     void importRequested();
     void favoriteToggled(const Mirage::Wallpaper& wallpaper);
+    void addToPlaylistRequested(const Mirage::Wallpaper& wallpaper);
 
 private:
     void rebuildList();

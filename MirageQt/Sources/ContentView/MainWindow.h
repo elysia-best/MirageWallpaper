@@ -11,6 +11,7 @@
 #include "ContentView/Components/Workshop/WorkshopItemDetail.h"
 #include "ContentView/Components/Workshop/WorkshopView.h"
 #include "Services/FavoritesManager.h"
+#include "Services/PlaylistManager.h"
 #include "Services/GlobalSettingsService.h"
 #include "Services/RendererController.h"
 #include "Services/SteamCMDManager.h"
@@ -60,6 +61,8 @@ private:
     SteamWebAPI* m_steamAPI = nullptr;
     WorkshopViewModel* m_workshopViewModel = nullptr;
     RendererController* m_renderer = nullptr;
+    PlaylistManager* m_playlist = nullptr;
+    ExplorerBottomBarWidget* m_bottomBar = nullptr;
 
     TopTabBarWidget* m_topTabs = nullptr;
     ExplorerTopBarWidget* m_installedTop = nullptr;
