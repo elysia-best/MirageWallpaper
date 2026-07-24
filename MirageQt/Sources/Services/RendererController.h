@@ -22,6 +22,7 @@ struct RenderOptions {
     double speed = 1.0;
     FillMode fillMode = FillMode::Cover;
     bool enableSpectrum = true;
+    bool loadFromMemory = false;
     QHash<QString, ProjectProperty> userProperties;
 };
 
@@ -54,6 +55,7 @@ public slots:
 signals:
     void rendererExited(int screenIndex, bool abnormal);
     void rendererMessage(const QString& message);
+    void videoDidEnd(int screenIndex);
 
 private:
     struct RunningProcess {
@@ -62,6 +64,7 @@ private:
         int screenIndex = 0;
         bool stopping = false;
         QStringList tempFiles;
+        QByteArray stdoutBuffer;
     };
 
     QString binaryForKind(WallpaperKind kind) const;
@@ -72,6 +75,7 @@ private:
     QJsonObject propertyCommand(const QString& key, const ProjectProperty& property) const;
     void sendCommand(RunningProcess* running, const QJsonObject& command);
     void forEachTarget(int screenIndex, const std::function<void(RunningProcess*)>& body);
+    void consumeStdout(RunningProcess* running, const QByteArray& chunk);
 
     GlobalSettingsService* m_settings = nullptr;
     QHash<int, RunningProcess*> m_running;

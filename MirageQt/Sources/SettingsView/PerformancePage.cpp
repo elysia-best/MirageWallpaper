@@ -84,6 +84,11 @@ PerformancePage::PerformancePage(GlobalSettings* draft, QWidget* parent)
     m_antiAliasing->addItem(QStringLiteral("MSAA ×8"), QStringLiteral("msaa_x8"));
     qualityForm->addRow(QStringLiteral("抗锯齿"), m_antiAliasing);
 
+    m_loadSource = new QComboBox(quality);
+    m_loadSource->addItem(QStringLiteral("从磁盘加载（较低内存占用）"), QStringLiteral("disk"));
+    m_loadSource->addItem(QStringLiteral("从内存加载（减少磁盘读取）"), QStringLiteral("memory"));
+    qualityForm->addRow(QStringLiteral("壁纸加载方式"), m_loadSource);
+
     auto* fpsRow = new QWidget(quality);
     m_fps = new QSlider(Qt::Horizontal, fpsRow);
     m_fps->setRange(10, 120);
@@ -103,7 +108,7 @@ PerformancePage::PerformancePage(GlobalSettings* draft, QWidget* parent)
 
     m_spectrum = new QCheckBox(QStringLiteral("启用音频频谱（网页壁纸）"), quality);
     qualityLayout->addWidget(m_spectrum);
-    auto* footer = new QLabel(QStringLiteral("抗锯齿在切换壁纸后生效；帧率调节实时生效。质量选项主要作用于场景壁纸。"), quality);
+    auto* footer = new QLabel(QStringLiteral("抗锯齿和壁纸加载方式在切换壁纸后生效；内存模式会增加内存占用，但可避免播放期间反复读取壁纸文件。帧率调节实时生效。质量选项主要作用于场景壁纸。"), quality);
     footer->setWordWrap(true);
     footer->setProperty("secondary", true);
     qualityLayout->addWidget(footer);
@@ -130,6 +135,10 @@ PerformancePage::PerformancePage(GlobalSettings* draft, QWidget* parent)
         m_draft->antiAliasing = m_antiAliasing->currentData().toString();
         emit changed();
     });
+    connect(m_loadSource, &QComboBox::currentIndexChanged, this, [this] {
+        m_draft->wallpaperLoadSource = m_loadSource->currentData().toString();
+        emit changed();
+    });
     connect(m_fps, &QSlider::valueChanged, this, [this](int fps) {
         m_draft->fps = fps;
         updateFPSLabel(fps);
@@ -149,6 +158,7 @@ void PerformancePage::load() {
     const QSignalBlocker d(m_displayAsleep);
     const QSignalBlocker e(m_battery);
     const QSignalBlocker f(m_antiAliasing);
+    const QSignalBlocker loadSource(m_loadSource);
     const QSignalBlocker g(m_fps);
     const QSignalBlocker h(m_spectrum);
     setCurrentData(m_focused, m_draft->otherApplicationFocused);
@@ -157,6 +167,7 @@ void PerformancePage::load() {
     setCurrentData(m_displayAsleep, m_draft->displayAsleep);
     setCurrentData(m_battery, m_draft->laptopOnBattery);
     setCurrentData(m_antiAliasing, m_draft->antiAliasing);
+    setCurrentData(m_loadSource, m_draft->wallpaperLoadSource);
     m_fps->setValue(m_draft->fps);
     m_spectrum->setChecked(m_draft->enableSpectrum);
     updateFPSLabel(m_draft->fps);
