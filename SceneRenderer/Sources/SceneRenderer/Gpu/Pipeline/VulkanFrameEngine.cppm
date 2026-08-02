@@ -22,10 +22,16 @@ export namespace sr
 {
 
 using ReDrawCB = std::function<void()>;
+// 4-argument Metal frame callback (texture, Metal command queue, w, h): the
+// command queue is required for MetalFX scaling on macOS. Linux never sets it.
 using MetalFrameCB =
     std::function<void(void* mtl_texture, void* mtl_command_queue, uint32_t width,
                        uint32_t height)>;
 using RenderFailureCB = std::function<void(VkResult)>;
+// External swapchain factory: produces the mirage-display protocol swapchain
+// that renders into the Linux desktop compositor (Linux only).
+using ExSwapchainFactory = std::function<std::unique_ptr<ExSwapchain>(
+    VkInstance, VkPhysicalDevice, VkDevice, VkQueue, uint32_t, unsigned, unsigned)>;
 
 struct VulkanSurfaceInfo {
     std::function<VkResult(VkInstance, VkSurfaceKHR*)> createSurfaceOp;
@@ -49,6 +55,7 @@ struct RenderInitInfo {
     ReDrawCB redraw_callback;
     MetalFrameCB metal_frame_callback;
     RenderFailureCB failure_callback;
+    ExSwapchainFactory ex_swapchain_factory;
 };
 
 std::unique_ptr<rg::RenderGraph> sceneToRenderGraph(Scene&);
