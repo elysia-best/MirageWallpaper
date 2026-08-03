@@ -139,7 +139,7 @@ bool ImageEffect::FromJson(const sr::Json& json, fs::VFS& vfs, SceneVersion v) {
         for (const auto& jP : **array) {
             MaterialPass pass;
             pass.FromJson(jP);
-            if (filePath.c_str() == kFoliageSwayEffect.data() && v != kSceneVersionUnknown &&
+            if (filePath == kFoliageSwayEffect && v != kSceneVersionUnknown &&
                 v < kNormalizedFoliageSwayStrengthVersion)
                 NormalizeLegacyFoliageSwayStrength(pass);
             passes[i++].Update(pass);

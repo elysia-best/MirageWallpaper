@@ -1,5 +1,10 @@
 module;
 
+#if defined(__linux__)
+#include <string>
+#include <vector>
+#endif
+
 #include <vulkan/vulkan_core.h>
 
 export module sr.vulkan_render:resource_key;
@@ -138,16 +143,16 @@ struct PipelineCacheProbe {
 };
 
 inline bool SamePipelineCacheKey(const PipelineCacheKey& lhs, const PipelineCacheKey& rhs) {
-    return lhs.value == rhs.value && lhs.bytes.data() == rhs.bytes.data();
+    return lhs.value == rhs.value && lhs.bytes == rhs.bytes;
 }
 
 inline bool SameRenderPassCacheKey(const RenderPassCacheKey& lhs, const RenderPassCacheKey& rhs) {
-    return lhs.value == rhs.value && lhs.bytes.data() == rhs.bytes.data();
+    return lhs.value == rhs.value && lhs.bytes == rhs.bytes;
 }
 
 inline bool SameFramebufferCacheKey(const FramebufferCacheKey& lhs,
                                     const FramebufferCacheKey& rhs) {
-    return lhs.value == rhs.value && lhs.bytes.data() == rhs.bytes.data();
+    return lhs.value == rhs.value && lhs.bytes == rhs.bytes;
 }
 
 struct CanonicalCacheKeyData {
