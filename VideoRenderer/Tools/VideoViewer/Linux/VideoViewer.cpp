@@ -652,11 +652,13 @@ struct Viewer {
 
     bool createQuadBuffers() {
         const std::array<float, 16> vertices {
-            // position (NDC unit quad) + uv (row0=top)
-            0.0f, 0.0f, 0.0f, 1.0f,
-            1.0f, 0.0f, 1.0f, 1.0f,
-            1.0f, 1.0f, 1.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
+            // position (NDC unit quad) + uv. Vulkan's clip space Y points
+            // down, so pos(0,0) lands at the top of the framebuffer; keep
+            // v=0 (image row 0 = video top) there to avoid vertical flip.
+            0.0f, 0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 1.0f, 0.0f,
+            1.0f, 1.0f, 1.0f, 1.0f,
+            0.0f, 1.0f, 0.0f, 1.0f,
         };
         const std::array<std::uint16_t, 6> indices { 0, 1, 2, 2, 3, 0 };
         return createBuffer(vertices.size() * sizeof(float), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
