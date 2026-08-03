@@ -417,7 +417,6 @@ bool ParseArgs(int argc, char** argv, Options& out) {
         } else if (arg.compare("--display-id") == 0) {
             const char* value = require_value(i, arg);
             if (value == nullptr || ! ParseUInt(value, out.display_id) || out.display_id == 0) return false;
-        } else if (arg.compare("-f") == 0 || arg.compare("--fps") == 0) {
         } else if (arg == "--display-output-id") {
             const char* value = require_value(i, arg);
             if (value == nullptr || *value == '\0') return false;
