@@ -2,6 +2,8 @@
 
 #include "VideoManifest.h"
 
+#include <SDL.h>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -10,8 +12,6 @@ extern "C" {
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
-#include <pulse/error.h>
-#include <pulse/simple.h>
 }
 
 #include <atomic>
@@ -53,15 +53,30 @@ public:
         openAudioOutput();
         m_opened = true;
         m_playing.store(m_config.autoplay);
+        m_play_start = std::chrono::steady_clock::now();
         m_thread = std::thread([this] { decodeLoop(); });
         return true;
     }
 
     void play() {
-        m_playing.store(true);
+        {
+            std::lock_guard<std::mutex> lock(m_control_mutex);
+            if (! m_playing.exchange(true)) {
+                const auto now = std::chrono::steady_clock::now();
+                if (m_pause_begin != std::chrono::steady_clock::time_point {}) {
+                    m_play_start += now - m_pause_begin;
+                    m_pause_begin = std::chrono::steady_clock::time_point {};
+                }
+            }
+        }
         m_cv.notify_all();
     }
-    void pause() { m_playing.store(false); }
+    void pause() {
+        std::lock_guard<std::mutex> lock(m_control_mutex);
+        if (m_playing.exchange(false)) {
+            m_pause_begin = std::chrono::steady_clock::now();
+        }
+    }
     void setVolume(float value) { m_volume.store(VRClampVideoVolume(value)); }
     void setMuted(bool value) { m_muted.store(value); }
     void setFillMode(VRVideoFillMode mode) { m_fill_mode.store(mode); }
@@ -145,19 +160,25 @@ private:
 
     void openAudioOutput() {
         if (m_audio_codec == nullptr) return;
-        int error = 0;
-        const pa_sample_spec spec {
-            .format = PA_SAMPLE_S16LE,
-            .rate = kOutputSampleRate,
-            .channels = kOutputChannels,
-        };
-        m_pulse = pa_simple_new(nullptr, "VideoRenderer", PA_STREAM_PLAYBACK, nullptr,
-                                "video", &spec, nullptr, nullptr, &error);
-        if (m_pulse == nullptr) {
-            std::fprintf(stderr, "VideoRenderer: audio output unavailable (%s)\n",
-                         pa_strerror(error));
+        if (SDL_WasInit(SDL_INIT_AUDIO) == 0 && SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+            std::fprintf(stderr, "VideoRenderer: SDL audio init failed: %s\n", SDL_GetError());
             return;
         }
+        SDL_AudioSpec desired {};
+        desired.freq = kOutputSampleRate;
+        desired.format = AUDIO_S16LSB;
+        desired.channels = kOutputChannels;
+        desired.samples = 2048;
+        SDL_AudioSpec obtained {};
+        m_audio_device = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained,
+                                             SDL_AUDIO_ALLOW_FREQUENCY_CHANGE |
+                                                 SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
+        if (m_audio_device == 0) {
+            std::fprintf(stderr, "VideoRenderer: SDL_OpenAudioDevice failed: %s\n",
+                         SDL_GetError());
+            return;
+        }
+        SDL_PauseAudioDevice(m_audio_device, 0);
         m_swr = swr_alloc();
         av_opt_set_int(m_swr, "in_channel_layout",
                        m_audio_codec->ch_layout.order == AV_CHANNEL_ORDER_NATIVE
@@ -171,13 +192,13 @@ private:
         av_opt_set_sample_fmt(m_swr, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);
         if (swr_init(m_swr) < 0) {
             swr_free(&m_swr);
-            pa_simple_free(m_pulse);
-            m_pulse = nullptr;
+            SDL_CloseAudioDevice(m_audio_device);
+            m_audio_device = 0;
         }
     }
 
     void writeAudio(const AVFrame* frame) {
-        if (m_pulse == nullptr || m_swr == nullptr) return;
+        if (m_audio_device == 0 || m_swr == nullptr) return;
         const int out_samples = av_rescale_rnd(
             swr_get_delay(m_swr, frame->sample_rate) + frame->nb_samples,
             kOutputSampleRate,
@@ -199,12 +220,32 @@ private:
                          : scaled < -32768.0f ? -32768
                          : static_cast<std::int16_t>(scaled);
         }
-        int error = 0;
-        if (pa_simple_write(m_pulse, m_pcm.data(),
-                            static_cast<std::size_t>(converted) * kOutputChannels * 2u,
-                            &error) < 0) {
-            /* Pulse hiccup; keep decoding. */
+        SDL_QueueAudio(m_audio_device, m_pcm.data(),
+                       static_cast<std::uint32_t>(converted) * kOutputChannels * 2u);
+    }
+
+    // Sleep until this video frame's presentation time so playback follows
+    // the video timeline instead of decoding as fast as the CPU allows
+    // (which would fast-forward and lose audio sync). Falls back to the
+    // average frame rate when the stream carries no PTS.
+    void paceToPresentationTime(const AVFrame* frame) {
+        if (m_video_stream == nullptr) return;
+        double presentSeconds = -1.0;
+        if (frame->pts != AV_NOPTS_VALUE) {
+            if (m_first_pts == AV_NOPTS_VALUE) m_first_pts = frame->pts;
+            const double delta = static_cast<double>(frame->pts - m_first_pts);
+            presentSeconds = delta * av_q2d(m_video_stream->time_base);
+        } else if (m_video_stream->avg_frame_rate.den > 0 &&
+                   m_video_stream->avg_frame_rate.num > 0) {
+            presentSeconds = static_cast<double>(m_frame_count) /
+                             av_q2d(m_video_stream->avg_frame_rate);
+            ++m_frame_count;
         }
+        if (presentSeconds < 0.0) return;
+        const auto target =
+            m_play_start + std::chrono::duration<double>(presentSeconds);
+        std::unique_lock<std::mutex> lock(m_control_mutex);
+        m_cv.wait_until(lock, target, [this] { return m_stop.load() || !m_playing.load(); });
     }
 
     void decodeLoop() {
@@ -227,6 +268,14 @@ private:
                     if (m_config.autoplay) {
                         avformat_seek_file(m_format, -1, INT64_MIN, 0, 0, 0);
                         avcodec_flush_buffers(m_video_codec);
+                        if (m_audio_device != 0) SDL_ClearQueuedAudio(m_audio_device);
+                        {
+                            std::lock_guard<std::mutex> lock(m_control_mutex);
+                            m_play_start = std::chrono::steady_clock::now();
+                            m_pause_begin = std::chrono::steady_clock::time_point {};
+                            m_first_pts = AV_NOPTS_VALUE;
+                            m_frame_count = 0;
+                        }
                         continue;
                     }
                     m_ended.store(true);
@@ -276,6 +325,7 @@ private:
                                 m_frame_stride = stride;
                                 m_frame_serial += 1;
                             }
+                            paceToPresentationTime(frame);
                         }
                         av_frame_unref(frame);
                     }
@@ -299,9 +349,12 @@ private:
         m_cv.notify_all();
         if (m_thread.joinable()) m_thread.join();
 
-        if (m_pulse != nullptr) {
-            pa_simple_free(m_pulse);
-            m_pulse = nullptr;
+        if (m_audio_device != 0) {
+            SDL_CloseAudioDevice(m_audio_device);
+            m_audio_device = 0;
+        }
+        if (SDL_WasInit(SDL_INIT_AUDIO) != 0) {
+            SDL_QuitSubSystem(SDL_INIT_AUDIO);
         }
         if (m_swr != nullptr) {
             swr_free(&m_swr);
@@ -350,8 +403,14 @@ private:
     SwrContext* m_swr { nullptr };
     std::vector<std::uint8_t> m_pcm;
 
-    // PulseAudio
-    pa_simple* m_pulse { nullptr };
+    // SDL audio
+    SDL_AudioDeviceID m_audio_device { 0 };
+
+    // Playback clock for PTS-based pacing
+    std::chrono::steady_clock::time_point m_play_start {};
+    std::chrono::steady_clock::time_point m_pause_begin {};
+    std::int64_t m_first_pts { AV_NOPTS_VALUE };
+    std::uint64_t m_frame_count { 0 };
 
     // Frame handoff (decode thread -> viewer)
     mutable std::mutex m_frame_mutex;

@@ -8,6 +8,7 @@ if(APPLE)
     target_compile_options(VideoWallpaper PRIVATE -Wno-deprecated-declarations)
 elseif(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
+    find_package(SDL2 REQUIRED)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
     pkg_check_modules(MIRAGE_FFMPEG REQUIRED IMPORTED_TARGET
         libavformat>=58 libavcodec>=58 libavutil>=56 libswscale>=5 libswresample>=3)
