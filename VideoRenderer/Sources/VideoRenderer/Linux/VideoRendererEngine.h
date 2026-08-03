@@ -2,26 +2,44 @@
 
 #include "VideoRendererTypes.h"
 
-#include <QByteArray>
-#include <QString>
-#include <QWidget>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
 
-class QAudioOutput;
-class QBuffer;
-class QMediaPlayer;
-class QVideoWidget;
 class VRVideoManifest;
 
-class VRVideoRendererEngine final : public QWidget {
-    Q_OBJECT
-
+// Linux playback engine: FFmpeg decodes the video, PulseAudio plays the audio.
+// Decoded RGB frames are handed to the viewer (GLFW/OpenGL, mirroring
+// SceneViewer) via currentFrame(). Deliberately free of Qt Widgets and
+// Qt Multimedia.
+class VRVideoRendererEngine final {
 public:
+    struct Callbacks {
+        std::function<void(const std::string&)> playbackError;
+        std::function<void()> videoDidEnd;
+    };
+
+    struct Frame {
+        const std::uint8_t* rgb { nullptr };
+        int width { 0 };
+        int height { 0 };
+        int stride { 0 };
+        std::uint64_t serial { 0 };
+    };
+
     explicit VRVideoRendererEngine(
-        VRVideoEngineConfig config = VRDefaultVideoEngineConfig(), QWidget* parent = nullptr);
-    ~VRVideoRendererEngine() override;
+        VRVideoEngineConfig config = VRDefaultVideoEngineConfig(),
+        Callbacks callbacks = {});
+    ~VRVideoRendererEngine();
+
+    VRVideoRendererEngine(const VRVideoRendererEngine&) = delete;
+    VRVideoRendererEngine& operator=(const VRVideoRendererEngine&) = delete;
 
     [[nodiscard]] static VRVideoEngineConfig defaultConfig() noexcept;
-    [[nodiscard]] bool openWallpaper(const VRVideoManifest& manifest, QString* error = nullptr);
+
+    [[nodiscard]] bool openWallpaper(const VRVideoManifest& manifest,
+                                     std::string* error = nullptr);
 
     void play();
     void pause();
@@ -29,28 +47,16 @@ public:
     void setMuted(bool muted);
     void setFillMode(VRVideoFillMode fillMode);
 
-    [[nodiscard]] QMediaPlayer* player() const noexcept { return m_player; }
-    [[nodiscard]] bool loaded() const noexcept { return m_loaded; }
-    [[nodiscard]] float volume() const noexcept { return m_volume; }
-    [[nodiscard]] bool muted() const noexcept { return m_muted; }
-    [[nodiscard]] VRVideoFillMode fillMode() const noexcept { return m_fillMode; }
+    [[nodiscard]] bool loaded() const noexcept;
+    [[nodiscard]] float volume() const noexcept;
+    [[nodiscard]] bool muted() const noexcept;
+    [[nodiscard]] VRVideoFillMode fillMode() const noexcept;
 
-signals:
-    void playbackError(const QString& message);
-    void videoDidEnd();
+    // Latest decoded frame (RGB24). The buffer stays valid until the next
+    // decode step swaps it; callers should upload it before calling again.
+    [[nodiscard]] bool currentFrame(Frame& out) const;
 
 private:
-    void clearMemorySource();
-
-    QMediaPlayer* m_player = nullptr;
-    QAudioOutput* m_audioOutput = nullptr;
-    QVideoWidget* m_videoWidget = nullptr;
-    QByteArray m_memoryBytes;
-    QBuffer* m_memoryBuffer = nullptr;
-    bool m_loaded = false;
-    float m_volume = 1.0f;
-    bool m_muted = false;
-    VRVideoFillMode m_fillMode = VRVideoFillModeCover;
-    bool m_autoplay = true;
-    bool m_loadFromMemory = false;
+    class Impl;
+    std::unique_ptr<Impl> m_impl;
 };

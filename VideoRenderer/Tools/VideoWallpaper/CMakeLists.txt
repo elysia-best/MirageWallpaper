@@ -8,6 +8,7 @@ if(APPLE)
     target_compile_options(VideoWallpaper PRIVATE -Wno-deprecated-declarations)
 elseif(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
     pkg_check_modules(MIRAGE_FFMPEG REQUIRED IMPORTED_TARGET
         libavformat>=58 libavcodec>=58 libavutil>=56 libswscale>=5 libswresample>=3)
     pkg_check_modules(MIRAGE_PULSE REQUIRED IMPORTED_TARGET libpulse-simple>=1.0)
@@ -28,6 +29,7 @@ elseif(UNIX AND NOT APPLE)
         PkgConfig::MIRAGE_FFMPEG
         PkgConfig::MIRAGE_PULSE
         Threads::Threads
+        Qt6::Core
         VideoRendererEngine)
     target_compile_features(VideoWallpaper PRIVATE cxx_std_20)
 else()

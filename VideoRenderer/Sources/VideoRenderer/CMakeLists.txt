@@ -15,7 +15,11 @@ if(APPLE)
         VRTranscoder.h
         VRTranscoder.mm)
 elseif(UNIX AND NOT APPLE)
-    find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(MIRAGE_FFMPEG REQUIRED IMPORTED_TARGET
+        libavformat>=58 libavcodec>=58 libavutil>=56 libswscale>=5 libswresample>=3)
+    pkg_check_modules(MIRAGE_PULSE REQUIRED IMPORTED_TARGET libpulse-simple>=1.0)
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
 
     set(VR_PLATFORM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Linux")
     set(VR_PLATFORM_SOURCES
@@ -45,11 +49,8 @@ if(APPLE)
         -Wno-deprecated-declarations
         -Wno-unused-function)
 else()
-    set_target_properties(VideoRendererEngine PROPERTIES AUTOMOC ON)
     target_link_libraries(VideoRendererEngine PUBLIC
         Qt6::Core
-        Qt6::Gui
-        Qt6::Widgets
-        Qt6::Multimedia
-        Qt6::MultimediaWidgets)
+        PkgConfig::MIRAGE_FFMPEG
+        PkgConfig::MIRAGE_PULSE)
 endif()

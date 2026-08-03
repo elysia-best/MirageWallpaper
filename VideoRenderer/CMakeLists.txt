@@ -96,6 +96,7 @@ set(VR_FFMPEG_LIBS
     PkgConfig::VR_AVUTIL
     PkgConfig::VR_SWSCALE
     PkgConfig::VR_SWRESAMPLE)
+endif()
 
 add_subdirectory(Sources/VideoRenderer)
 
