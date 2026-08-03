@@ -10,11 +10,6 @@
 #include <mirage_display_vulkan_export.h>
 #endif
 
-#if defined(__APPLE__)
-#define VK_USE_PLATFORM_METAL_EXT
-#endif
-#include <vulkan/vulkan.h>
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -27,7 +22,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <execinfo.h>
-#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -36,9 +30,13 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#if defined(__APPLE__)
+#include <sys/event.h>
+#endif
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
 #include <poll.h>
@@ -46,35 +44,35 @@
 #include <unistd.h>
 #endif
 #if defined(__APPLE__)
-#include <sys/event.h>
 #include <xlocale.h>
 #else
 #include <locale.h>
 #endif
 
-import sr.json;
 import rstd.cppstd;
 import rstd.log;
+import sr.json;
 import sr.scene_wallpaper;
 import sr.utils;
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
 import sr.vulkan;
 #endif
 
-// Crash handler: print backtrace on fatal signals
-namespace {
+namespace
+{
+
 void CrashHandler(int sig) {
     const char* name = "UNKNOWN";
     switch (sig) {
     case SIGSEGV: name = "SIGSEGV"; break;
     case SIGABRT: name = "SIGABRT"; break;
-    case SIGBUS:  name = "SIGBUS";  break;
-    case SIGILL:  name = "SIGILL";  break;
-    case SIGFPE:  name = "SIGFPE";  break;
+    case SIGBUS:  name = "SIGBUS"; break;
+    case SIGILL:  name = "SIGILL"; break;
+    case SIGFPE:  name = "SIGFPE"; break;
     }
     std::cerr << "[SceneWallpaper] CRASH: signal " << sig << " (" << name << ")" << std::endl;
     void* callstack[64];
-    int frames = backtrace(callstack, 64);
+    int   frames = backtrace(callstack, 64);
     char** symbols = backtrace_symbols(callstack, frames);
     std::cerr << "[SceneWallpaper] Backtrace (" << frames << " frames):" << std::endl;
     for (int i = 0; i < frames; ++i) {
@@ -84,6 +82,7 @@ void CrashHandler(int sig) {
     std::cerr << std::flush;
     std::_Exit(128 + sig);
 }
+
 void InstallCrashHandler() {
     signal(SIGSEGV, CrashHandler);
     signal(SIGABRT, CrashHandler);
@@ -91,7 +90,7 @@ void InstallCrashHandler() {
     signal(SIGILL,  CrashHandler);
     signal(SIGFPE,  CrashHandler);
 }
-
+#if defined(__APPLE__)
 // Terminate when the parent dies.
 //
 // This renderer is spawned as a child of Mirage.app and driven over stdin. If
@@ -128,7 +127,6 @@ void ParentDeathWatchdogLoop(pid_t parent) {
     }
 }
 
-#if defined(__APPLE__)
 void StartParentDeathWatchdog() {
     const pid_t parent = ::getppid();
     // Already reparented to launchd (or launched directly by it): there is no
@@ -146,7 +144,7 @@ void StartParentDeathWatchdog() {
         std::_Exit(0);
     }).detach();
 }
-#endif // defined(__APPLE__)
+#endif
 } // namespace
 
 namespace
@@ -181,7 +179,6 @@ struct Options {
     bool                      spectrum_enabled { true };
     bool                      external_spectrum { false };
     bool                      load_from_memory { false };
-    bool                      metalfx { false };
 };
 
 struct AppState {
@@ -303,8 +300,6 @@ void PrintUsage(const char* argv0) {
         << "Options:\n"
         << "  -f, --fps N                 Render FPS (default 30)\n"
         << "  -R, --resolution WxH        Override render resolution\n"
-        << "      --render-scale S        Render scale 0.25..1.0 (default 1.0)\n"
-        << "      --metalfx               Enable MetalFX Spatial scaling\n"
         << "  -C, --cache-path DIR        Cache directory\n"
         << "  -M, --msaa N                MSAA samples for screen RT\n"
         << "  -P, --user-properties FILE  JSON object of WE user properties\n"
@@ -321,7 +316,6 @@ void PrintUsage(const char* argv0) {
         << "      --deferred-show         Keep the window transparent until activated\n"
         << "      --no-spectrum           Disable audio response\n"
         << "      --external-spectrum     Receive spectrum from stdin\n"
-        << "      --load-from-memory      Keep the wallpaper package in memory\n"
         << "      --run-seconds N         Exit after N seconds (test helper)\n";
 }
 
@@ -349,7 +343,6 @@ bool ParseDouble(std::string_view text, double& out) {
     char*       parsed_end = nullptr;
     errno = 0;
 #if defined(__APPLE__)
-    // macOS lacks a thread-safe C-locale strtod without newlocale/strtod_l.
     static locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
     const double value = c_locale != nullptr
                              ? strtod_l(value_text.c_str(), &parsed_end, c_locale)
@@ -418,14 +411,13 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             out.external_spectrum = true;
         } else if (arg == "--load-from-memory") {
             out.load_from_memory = true;
-        } else if (arg == "--metalfx") {
-            out.metalfx = true;
         } else if (arg == "--screen") {
             const char* value = require_value(i, arg);
             if (value == nullptr || ! ParseUInt(value, out.screen)) return false;
-        } else if (arg == "--display-id") {
+        } else if (arg.compare("--display-id") == 0) {
             const char* value = require_value(i, arg);
             if (value == nullptr || ! ParseUInt(value, out.display_id) || out.display_id == 0) return false;
+        } else if (arg.compare("-f") == 0 || arg.compare("--fps") == 0) {
         } else if (arg == "--display-output-id") {
             const char* value = require_value(i, arg);
             if (value == nullptr || *value == '\0') return false;
@@ -558,16 +550,6 @@ void FirstFramePresentedCallback(void* userdata) {
 void ActivatedCallback(void* userdata) {
     auto* state = static_cast<AppState*>(userdata);
     EmitLifecycleEvent(state, "activated");
-}
-
-void ActivationFailedCallback(void* userdata) {
-    auto* state = static_cast<AppState*>(userdata);
-    EmitLifecycleEvent(state, "activation-failed");
-}
-
-void DeactivatedCallback(void* userdata) {
-    auto* state = static_cast<AppState*>(userdata);
-    EmitLifecycleEvent(state, "deactivated");
 }
 
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
@@ -1120,15 +1102,13 @@ int main(int argc, char** argv) {
     state.wallpaper = &wallpaper;
 
     sr::host::DesktopCallbacks callbacks {
-        .mouse_move   = MouseMoveCallback,
-        .mouse_button = MouseButtonCallback,
-        .mouse_enter  = MouseEnterCallback,
-        .closed       = nullptr,
+        .mouse_move            = MouseMoveCallback,
+        .mouse_button          = MouseButtonCallback,
+        .mouse_enter           = MouseEnterCallback,
+        .closed                = nullptr,
         .first_frame_presented = FirstFramePresentedCallback,
-        .activated    = ActivatedCallback,
-        .activation_failed = ActivationFailedCallback,
-        .deactivated  = DeactivatedCallback,
-        .userdata     = &state,
+        .activated             = ActivatedCallback,
+        .userdata              = &state,
     };
     std::uint32_t render_width = 0;
     std::uint32_t render_height = 0;
@@ -1189,18 +1169,19 @@ int main(int argc, char** argv) {
     }
 
     sr::SceneWallpaperConfig config;
-    config.assets_dir      = options.assets_dir;
-    config.source_pkg_path = options.scene_pkg;
-    config.graphviz        = options.graphviz;
-    config.fps             = options.fps;
-    config.muted           = options.muted;
+    config.assets_dir        = options.assets_dir;
+    config.source_pkg_path   = options.scene_pkg;
+    config.graphviz          = options.graphviz;
+    config.fps               = options.fps;
+    config.muted             = options.muted;
     config.spectrum_enabled = options.spectrum_enabled;
     config.external_spectrum = options.external_spectrum;
     config.load_from_memory = options.load_from_memory;
-    if (options.cache_dir.empty())
+    if (options.cache_dir.empty()) {
         config.cache_dir = sr::platform::GetCachePath("SceneRenderer");
-    else
+    } else {
         config.cache_dir = options.cache_dir;
+    }
 
     if (! LoadUserProperties(options.user_properties, config)) {
         return 1;
@@ -1213,15 +1194,9 @@ int main(int argc, char** argv) {
 
     sr::RenderInitInfo info;
     info.enable_valid_layer = options.valid_layer;
-#if defined(__APPLE__)
-    const bool use_metalfx = options.metalfx &&
-                             sr::host::DesktopPrepareMetalFX(state.desktop);
-    info.offscreen          = use_metalfx;
-#else
     // Both the macOS desktop host and the Linux mirage-display producer render
     // offscreen; only macOS presents through the live Metal frame callback.
     info.offscreen = true;
-#endif
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
     MirageProtocolHost* host = protocol_host.get();
     info.ex_swapchain_factory =
@@ -1306,7 +1281,7 @@ int main(int argc, char** argv) {
     // stops the run loop so the wallpaper never outlives its owner.
     //
     // Wait for Vulkan init AND scene load to finish before starting the stdin
-    // control thread — otherwise a race between RenderInit/LoadScene message
+    // control thread; otherwise a race between RenderInit/LoadScene message
     // dispatch and a premature stdin EOF (triggering NSApp stop / cleanup) can
     // cause "Sender::acquire on null" panics in the mpsc channel layer.
     if (! wallpaper.waitVulkanInited(30000)) {
@@ -1342,7 +1317,6 @@ int main(int argc, char** argv) {
             [desktop_handle]() { sr::host::DesktopActivate(desktop_handle); }
 #if defined(__APPLE__)
             ,
-            [desktop_handle]() { sr::host::DesktopDeactivate(desktop_handle); },
             [](const std::string& path, const std::string& token) {
                 const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(path);
                 EmitSnapshotDone(token, ok);
