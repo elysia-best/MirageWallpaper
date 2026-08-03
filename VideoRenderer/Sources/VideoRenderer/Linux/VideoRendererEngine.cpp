@@ -50,6 +50,13 @@ public:
         m_video_path = path;
 
         if (! openMedia(error)) return false;
+        if (m_video_stream != nullptr) {
+            std::fprintf(stderr, "VideoRenderer: video stream %dx%d (avg %d/%d fps)\n",
+                         m_video_codec->width, m_video_codec->height,
+                         m_video_stream->avg_frame_rate.num, m_video_stream->avg_frame_rate.den);
+        }
+        std::fprintf(stderr, "VideoRenderer: audio stream: %s\n",
+                     m_audio_codec != nullptr ? "yes" : "none");
         openAudioOutput();
         m_opened = true;
         m_playing.store(m_config.autoplay);
@@ -160,6 +167,8 @@ private:
 
     void openAudioOutput() {
         if (m_audio_codec == nullptr) return;
+        SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "pipewire,pulseaudio,alsa",
+                                SDL_HINT_OVERRIDE);
         if (SDL_WasInit(SDL_INIT_AUDIO) == 0 && SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
             std::fprintf(stderr, "VideoRenderer: SDL audio init failed: %s\n", SDL_GetError());
             return;
@@ -178,16 +187,24 @@ private:
                          SDL_GetError());
             return;
         }
+        const char* driver = SDL_GetCurrentAudioDriver();
+        std::fprintf(stderr, "VideoRenderer: SDL audio driver=%s device opened: freq=%d fmt=0x%x ch=%d\n",
+                     driver != nullptr ? driver : "?",
+                     obtained.freq, obtained.format, obtained.channels);
         SDL_PauseAudioDevice(m_audio_device, 0);
         m_swr = swr_alloc();
-        av_opt_set_int(m_swr, "in_channel_layout",
-                       m_audio_codec->ch_layout.order == AV_CHANNEL_ORDER_NATIVE
-                           ? static_cast<std::int64_t>(m_audio_codec->ch_layout.u.mask)
-                           : AV_CH_LAYOUT_STEREO,
-                       0);
+        AVChannelLayout in_layout = m_audio_codec->ch_layout;
+        if (in_layout.order != AV_CHANNEL_ORDER_NATIVE &&
+            in_layout.order != AV_CHANNEL_ORDER_AMBISONIC) {
+            av_channel_layout_default(&in_layout, kOutputChannels);
+        }
+        av_opt_set_chlayout(m_swr, "in_chlayout", &in_layout, 0);
         av_opt_set_int(m_swr, "in_sample_rate", m_audio_codec->sample_rate, 0);
-        av_opt_set_sample_fmt(m_swr, "in_sample_fmt", m_audio_codec->sample_fmt, 0);
-        av_opt_set_int(m_swr, "out_channel_layout", AV_CH_LAYOUT_STEREO, 0);
+        if (m_audio_codec->sample_fmt != AV_SAMPLE_FMT_NONE) {
+            av_opt_set_sample_fmt(m_swr, "in_sample_fmt", m_audio_codec->sample_fmt, 0);
+        }
+        AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_STEREO;
+        av_opt_set_chlayout(m_swr, "out_chlayout", &out_layout, 0);
         av_opt_set_int(m_swr, "out_sample_rate", kOutputSampleRate, 0);
         av_opt_set_sample_fmt(m_swr, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);
         if (swr_init(m_swr) < 0) {
@@ -220,8 +237,20 @@ private:
                          : scaled < -32768.0f ? -32768
                          : static_cast<std::int16_t>(scaled);
         }
-        SDL_QueueAudio(m_audio_device, m_pcm.data(),
-                       static_cast<std::uint32_t>(converted) * kOutputChannels * 2u);
+        const std::uint32_t bytes = static_cast<std::uint32_t>(converted) *
+                                     kOutputChannels * 2u;
+        SDL_QueueAudio(m_audio_device, m_pcm.data(), bytes);
+        m_audio_frames += 1;
+        m_audio_bytes += bytes;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - m_last_audio_report >= std::chrono::seconds(2)) {
+            std::fprintf(stderr,
+                         "VideoRenderer: audio frames=%llu bytes=%llu queued=%u\n",
+                         static_cast<unsigned long long>(m_audio_frames),
+                         static_cast<unsigned long long>(m_audio_bytes),
+                         static_cast<unsigned>(SDL_GetQueuedAudioSize(m_audio_device)));
+            m_last_audio_report = now;
+        }
     }
 
     // Sleep until this video frame's presentation time so playback follows
@@ -405,6 +434,9 @@ private:
 
     // SDL audio
     SDL_AudioDeviceID m_audio_device { 0 };
+    std::uint64_t m_audio_frames { 0 };
+    std::uint64_t m_audio_bytes { 0 };
+    std::chrono::steady_clock::time_point m_last_audio_report {};
 
     // Playback clock for PTS-based pacing
     std::chrono::steady_clock::time_point m_play_start {};

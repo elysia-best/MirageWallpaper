@@ -1004,12 +1004,18 @@ private:
             return false;
         }
         m_swr = swr_alloc();
-        av_opt_set_int(m_swr, "in_channel_layout", m_audio_codec->ch_layout.order == AV_CHANNEL_ORDER_NATIVE
-                                                     ? static_cast<std::int64_t>(m_audio_codec->ch_layout.u.mask)
-                                                     : AV_CH_LAYOUT_STEREO, 0);
+        AVChannelLayout in_layout = m_audio_codec->ch_layout;
+        if (in_layout.order != AV_CHANNEL_ORDER_NATIVE &&
+            in_layout.order != AV_CHANNEL_ORDER_AMBISONIC) {
+            av_channel_layout_default(&in_layout, 2);
+        }
+        av_opt_set_chlayout(m_swr, "in_chlayout", &in_layout, 0);
         av_opt_set_int(m_swr, "in_sample_rate", m_audio_codec->sample_rate, 0);
-        av_opt_set_sample_fmt(m_swr, "in_sample_fmt", m_audio_codec->sample_fmt, 0);
-        av_opt_set_int(m_swr, "out_channel_layout", AV_CH_LAYOUT_STEREO, 0);
+        if (m_audio_codec->sample_fmt != AV_SAMPLE_FMT_NONE) {
+            av_opt_set_sample_fmt(m_swr, "in_sample_fmt", m_audio_codec->sample_fmt, 0);
+        }
+        AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_STEREO;
+        av_opt_set_chlayout(m_swr, "out_chlayout", &out_layout, 0);
         av_opt_set_int(m_swr, "out_sample_rate", 48000, 0);
         av_opt_set_sample_fmt(m_swr, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);
         if (swr_init(m_swr) < 0) {
