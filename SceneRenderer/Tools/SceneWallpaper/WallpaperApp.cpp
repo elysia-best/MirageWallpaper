@@ -30,7 +30,9 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#if defined(__APPLE__)
 #include <sys/event.h>
+#endif
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
@@ -185,20 +187,24 @@ struct AppState {
     std::chrono::steady_clock::time_point started_at { std::chrono::steady_clock::now() };
 };
 
+std::mutex& LifecycleOutputMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 void EmitLifecycleEvent(const AppState* state, std::string_view event) {
-    static std::mutex output_mutex;
     const auto elapsed = state == nullptr
                              ? 0
                              : std::chrono::duration_cast<std::chrono::milliseconds>(
                                    std::chrono::steady_clock::now() - state->started_at)
                                    .count();
-    std::lock_guard lock(output_mutex);
+    std::lock_guard lock(LifecycleOutputMutex());
     std::cout << "{\"event\":\"" << event << "\",\"elapsed_ms\":" << elapsed << "}\n"
               << std::flush;
 }
 
 void EmitAudioDemand(bool needed) {
-    std::lock_guard lock(output_mutex);
+    std::lock_guard lock(LifecycleOutputMutex());
     std::cout << "{\"event\":\"audio-demand\",\"needed\":"
               << (needed ? "true" : "false") << "}\n" << std::flush;
 }
@@ -215,7 +221,7 @@ void EmitSnapshotDone(const std::string& token, bool ok) {
         if (static_cast<unsigned char>(c) < 0x20) continue;
         escaped.push_back(c);
     }
-    std::lock_guard lock(output_mutex);
+    std::lock_guard lock(LifecycleOutputMutex());
     std::cout << "{\"event\":\"snapshot-done\",\"token\":\"" << escaped
               << "\",\"ok\":" << (ok ? "true" : "false") << "}\n" << std::flush;
 }
@@ -1268,7 +1274,8 @@ int main(int argc, char** argv) {
         control.emplace(
             wallpaper,
             [desktop_handle]() { sr::host::DesktopStop(desktop_handle); },
-            [desktop_handle]() { sr::host::DesktopActivate(desktop_handle); }#if defined(__APPLE__)
+            [desktop_handle]() { sr::host::DesktopActivate(desktop_handle); }
+#if defined(__APPLE__)
             ,
             [](const std::string& path, const std::string& token) {
                 const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(path);

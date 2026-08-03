@@ -3023,7 +3023,122 @@ void InitTexAnimClass(JSContext* ctx, JSRuntime* rt) {
     JS_SetClassProto(ctx, s_texanim_class_id, proto);
 }
 
-0, VideoTextureStop),
+JSValue NodeGetTextureAnimation(JSContext* ctx, JSValueConst this_val, int, JSValueConst*) {
+    auto* n = GetLayerNode(this_val);
+    if (! n) {
+        // Unbound (default) layer — fall back to the JS-side stub so reads
+        // like .getFrame() don't TypeError.
+        JSValue g = JS_GetGlobalObject(ctx);
+        JSValue f = JS_GetPropertyStr(ctx, g, "__wwCreateTexAnimStub");
+        JSValue r = JS_Call(ctx, f, JS_UNDEFINED, 0, nullptr);
+        JS_FreeValue(ctx, f);
+        JS_FreeValue(ctx, g);
+        return r;
+    }
+    JSValue obj = JS_NewObjectClass(ctx, s_texanim_class_id);
+    if (JS_IsException(obj)) return obj;
+    JS_SetOpaque(obj, n);
+    return obj;
+}
+
+// Sprite-image .getAnimation() and puppet-bone .getAnimationLayer(name).
+// Renderer doesn't yet expose either through the C-class, so route both
+// through the JS-side __wwCreateAnimationStub which gives scripts a
+// no-op handle with `rate` / play / stop / isPlaying.
+JSValue NodeGetAnimationStub(JSContext* ctx, JSValueConst, int, JSValueConst*) {
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue f = JS_GetPropertyStr(ctx, g, "__wwCreateAnimationStub");
+    JSValue r = JS_Call(ctx, f, JS_UNDEFINED, 0, nullptr);
+    JS_FreeValue(ctx, f);
+    JS_FreeValue(ctx, g);
+    return r;
+}
+
+static JSClassID s_video_texture_class_id = 0;
+
+struct VideoTextureHandle {
+    std::shared_ptr<VideoPlaybackState> playback;
+};
+
+void VideoTextureFinalizer(JSRuntime*, JSValue value) {
+    delete static_cast<VideoTextureHandle*>(JS_GetOpaque(value, s_video_texture_class_id));
+}
+
+JSClassDef s_video_texture_class_def {
+    .class_name = "WWVideoTexture",
+    .finalizer  = VideoTextureFinalizer,
+};
+
+VideoPlaybackState* GetVideoPlayback(JSValueConst value) {
+    auto* handle = static_cast<VideoTextureHandle*>(JS_GetOpaque(value, s_video_texture_class_id));
+    return handle != nullptr ? handle->playback.get() : nullptr;
+}
+
+JSValue VideoTextureGetDuration(JSContext* ctx, JSValueConst this_val) {
+    auto* playback = GetVideoPlayback(this_val);
+    auto  duration = playback != nullptr ? playback->Duration() : std::nullopt;
+    return JS_NewFloat64(ctx, duration.value_or(0.0));
+}
+
+JSValue VideoTextureGetRate(JSContext* ctx, JSValueConst this_val) {
+    auto* playback = GetVideoPlayback(this_val);
+    return JS_NewFloat64(ctx, playback != nullptr ? playback->Snapshot().rate : 1.0);
+}
+
+JSValue VideoTextureSetRate(JSContext* ctx, JSValueConst this_val, JSValueConst value) {
+    double rate = 1.0;
+    if (JS_ToFloat64(ctx, &rate, value) != 0) return JS_UNDEFINED;
+    if (std::isfinite(rate) && rate > 0.0) {
+        if (auto* playback = GetVideoPlayback(this_val)) playback->SetRate(rate);
+    }
+    return JS_UNDEFINED;
+}
+
+JSValue VideoTextureGetVolume(JSContext* ctx, JSValueConst) { return JS_NewFloat64(ctx, 1.0); }
+JSValue VideoTextureSetVolume(JSContext*, JSValueConst, JSValueConst) { return JS_UNDEFINED; }
+
+JSValue VideoTexturePlay(JSContext*, JSValueConst this_val, int, JSValueConst*) {
+    if (auto* playback = GetVideoPlayback(this_val)) playback->Play();
+    return JS_UNDEFINED;
+}
+
+JSValue VideoTextureStop(JSContext*, JSValueConst this_val, int, JSValueConst*) {
+    if (auto* playback = GetVideoPlayback(this_val)) playback->Stop();
+    return JS_UNDEFINED;
+}
+
+JSValue VideoTexturePause(JSContext*, JSValueConst this_val, int, JSValueConst*) {
+    if (auto* playback = GetVideoPlayback(this_val)) playback->Pause();
+    return JS_UNDEFINED;
+}
+
+JSValue VideoTextureSetCurrentTime(JSContext* ctx, JSValueConst this_val, int argc,
+                                   JSValueConst* argv) {
+    if (argc < 1) return JS_UNDEFINED;
+    double seconds = 0.0;
+    if (JS_ToFloat64(ctx, &seconds, argv[0]) != 0) return JS_UNDEFINED;
+    if (std::isfinite(seconds) && seconds >= 0.0) {
+        if (auto* playback = GetVideoPlayback(this_val)) playback->Seek(seconds);
+    }
+    return JS_UNDEFINED;
+}
+
+JSValue VideoTextureGetCurrentTime(JSContext* ctx, JSValueConst this_val, int, JSValueConst*) {
+    auto* playback = GetVideoPlayback(this_val);
+    return JS_NewFloat64(ctx, playback != nullptr ? playback->CurrentTime() : 0.0);
+}
+
+JSValue VideoTextureIsPlaying(JSContext* ctx, JSValueConst this_val, int, JSValueConst*) {
+    auto* playback = GetVideoPlayback(this_val);
+    return JS_NewBool(ctx, playback != nullptr && playback->Snapshot().playing);
+}
+
+const JSCFunctionListEntry s_video_texture_proto_funcs[] = {
+    JS_CGETSET_DEF("duration", VideoTextureGetDuration, NodeSetIgnore),
+    JS_CGETSET_DEF("rate", VideoTextureGetRate, VideoTextureSetRate),
+    JS_CGETSET_DEF("volume", VideoTextureGetVolume, VideoTextureSetVolume),
+    JS_CFUNC_DEF("play", 0, VideoTexturePlay),
+    JS_CFUNC_DEF("stop", 0, VideoTextureStop),
     JS_CFUNC_DEF("pause", 0, VideoTexturePause),
     JS_CFUNC_DEF("setCurrentTime", 1, VideoTextureSetCurrentTime),
     JS_CFUNC_DEF("getCurrentTime", 0, VideoTextureGetCurrentTime),

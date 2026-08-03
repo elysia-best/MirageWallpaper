@@ -267,6 +267,7 @@ int main(int argc, char** argv) {
     // Synchronous queue submits are deliberately left off — see the matching
     // note in WallpaperApp.cpp. Explicit fences/semaphores already order the
     // frame; blocking inside vkQueueSubmit only removes CPU/GPU overlap.
+#endif
 #if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4)
     glfwInitVulkanLoader(vkGetInstanceProcAddr);
 #endif
