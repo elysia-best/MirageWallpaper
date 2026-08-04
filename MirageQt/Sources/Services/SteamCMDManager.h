@@ -61,6 +61,7 @@ public slots:
     void cancelInstallation();
     void login(const QString& username, const QString& password);
     void submitGuardCode(const QString& code);
+    void cancelLogin();
     void logout();
     void downloadItem(const QString& workshopId);
     void cancelDownload(const QString& workshopId);
@@ -80,7 +81,9 @@ private:
     QString preferredLauncher(const QString& path) const;
     void record(const QString& category, const QString& message, const QStringList& secrets = {});
     QString redact(QString text, const QStringList& secrets = {}) const;
-    QProcess* startSteamCMD(const QStringList& arguments, QObject* owner);
+    QProcess* createSteamCMDProcess(const QStringList& arguments, QObject* owner);
+    bool hasSessionArtifacts() const;
+    bool isLoginSuccessful(const QString& output) const;
     void finishLoginProcess(int exitCode, QProcess::ExitStatus status, const QString& username, QString output);
     void publishDownloadState(const QString& workshopId, DownloadStateKind kind, double percent, const QString& message);
 
@@ -88,6 +91,7 @@ private:
     QString m_savedUsername;
     bool m_loggedIn = false;
     bool m_installCancelled = false;
+    bool m_loginCancelled = false;
     QNetworkReply* m_installReply = nullptr;
     QProcess* m_installProcess = nullptr;
     QProcess* m_loginProcess = nullptr;

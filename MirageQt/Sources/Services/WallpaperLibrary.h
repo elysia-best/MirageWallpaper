@@ -23,7 +23,10 @@ public:
     Wallpaper loadWallpaper(const QString& directory) const;
     QString importWallpaperFolder(const QString& directory, QString* error = nullptr) const;
     QString importVideoFile(const QString& filePath, QString* error = nullptr) const;
-    QString importAny(const QString& path, QString* error = nullptr) const;
+    QString importAny(const QString& path, QString* error = nullptr);
+
+signals:
+    void libraryChanged();
 
 private:
     Wallpaper loadWallpaper(const QString& directory, QSet<QString> visited) const;

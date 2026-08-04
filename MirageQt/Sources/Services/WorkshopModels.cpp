@@ -59,6 +59,51 @@ QString workshopSortLabel(WorkshopSortOrder order) {
     case WorkshopSortOrder::MostRecent: return QStringLiteral("最新发布");
     case WorkshopSortOrder::MostSubscribed: return QStringLiteral("订阅最多");
     case WorkshopSortOrder::TopRated: return QStringLiteral("评分最高");
+    case WorkshopSortOrder::MostUpvoted: return QStringLiteral("最多投票");
+    case WorkshopSortOrder::PlaytimeTrend: return QStringLiteral("播放时长最多");
+    case WorkshopSortOrder::TotalPlaytime: return QStringLiteral("总播放时长最多");
+    case WorkshopSortOrder::AveragePlaytimeTrend: return QStringLiteral("平均播放时长最长");
+    case WorkshopSortOrder::LifetimeAveragePlaytime: return QStringLiteral("终身平均播放时长");
+    case WorkshopSortOrder::SessionsTrend: return QStringLiteral("播放次数最多");
+    case WorkshopSortOrder::LifetimeSessions: return QStringLiteral("总播放次数最多");
+    case WorkshopSortOrder::LastUpdated: return QStringLiteral("最近更新");
+    }
+    return {};
+}
+
+bool workshopSortUsesTrendPeriod(WorkshopSortOrder order) {
+    return order == WorkshopSortOrder::Trending ||
+           order == WorkshopSortOrder::PlaytimeTrend ||
+           order == WorkshopSortOrder::AveragePlaytimeTrend ||
+           order == WorkshopSortOrder::SessionsTrend;
+}
+
+QString workshopAgeRatingLabel(WorkshopAgeRating rating) {
+    switch (rating) {
+    case WorkshopAgeRating::Everyone: return QStringLiteral("所有人");
+    case WorkshopAgeRating::Questionable: return QStringLiteral("轻度裸露");
+    case WorkshopAgeRating::Mature: return QStringLiteral("成人");
+    }
+    return {};
+}
+
+QString workshopAgeRatingTag(WorkshopAgeRating rating) {
+    switch (rating) {
+    case WorkshopAgeRating::Everyone: return QStringLiteral("Everyone");
+    case WorkshopAgeRating::Questionable: return QStringLiteral("Questionable");
+    case WorkshopAgeRating::Mature: return QStringLiteral("Mature");
+    }
+    return {};
+}
+
+QString workshopTrendPeriodLabel(WorkshopTrendPeriod period) {
+    switch (period) {
+    case WorkshopTrendPeriod::Day: return QStringLiteral("今日");
+    case WorkshopTrendPeriod::Week: return QStringLiteral("本周");
+    case WorkshopTrendPeriod::Month: return QStringLiteral("本月");
+    case WorkshopTrendPeriod::ThreeMonths: return QStringLiteral("三个月");
+    case WorkshopTrendPeriod::SixMonths: return QStringLiteral("半年");
+    case WorkshopTrendPeriod::Year: return QStringLiteral("一年");
     }
     return {};
 }

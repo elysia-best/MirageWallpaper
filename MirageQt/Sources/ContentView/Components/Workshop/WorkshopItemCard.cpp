@@ -1,8 +1,13 @@
 #include "ContentView/Components/Workshop/WorkshopItemCard.h"
 
+#include <QAbstractItemView>
+#include <QAbstractItemModel>
+#include <QBuffer>
+#include <QEvent>
 #include <QIcon>
 #include <QLinearGradient>
 #include <QListWidgetItem>
+#include <QMovie>
 #include <QPainter>
 #include <QPainterPath>
 
@@ -69,7 +74,8 @@ QColor downloadBadgeColor(const DownloadState& state) {
 } // namespace
 
 WorkshopItemCard::WorkshopItemCard(QObject* parent)
-    : QStyledItemDelegate(parent) {
+    : QStyledItemDelegate(parent)
+    , m_previewAnimator(qobject_cast<QAbstractItemView*>(parent)) {
 }
 
 QSize WorkshopItemCard::sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const {
@@ -94,7 +100,7 @@ void WorkshopItemCard::paint(QPainter* painter,
     painter->setClipPath(clip);
     painter->fillPath(clip, QColor(QStringLiteral("#292622")));
 
-    const QPixmap preview = index.data(WorkshopPreviewRole).value<QPixmap>();
+    const QPixmap preview = m_previewAnimator.pixmapFor(index, hovered);
     if (!preview.isNull()) {
         const qreal sourceRatio = qreal(preview.width()) / qMax(1, preview.height());
         const qreal targetRatio = card.width() / qMax<qreal>(1.0, card.height());
@@ -174,6 +180,69 @@ void WorkshopItemCard::paint(QPainter* painter,
         painter->drawRoundedRect(card.adjusted(1, 1, -1, -1), 8, 8);
     }
     painter->restore();
+}
+
+WorkshopPreviewAnimator::WorkshopPreviewAnimator(QAbstractItemView* view)
+    : m_view(view) {
+    if (m_view && m_view->viewport()) m_view->viewport()->installEventFilter(this);
+    if (m_view && m_view->model()) {
+        connect(m_view->model(), &QAbstractItemModel::modelReset, this, [this] { stopAllExcept({}); });
+    }
+}
+
+QPixmap WorkshopPreviewAnimator::pixmapFor(const QModelIndex& index, bool hovered) {
+    const QPixmap fallback = index.data(WorkshopPreviewRole).value<QPixmap>();
+    const QByteArray bytes = index.data(WorkshopPreviewBytesRole).toByteArray();
+    if (!hovered || (!bytes.startsWith("GIF87a") && !bytes.startsWith("GIF89a"))) {
+        return fallback;
+    }
+
+    const WorkshopItem item = index.data(WorkshopItemRole).value<WorkshopItem>();
+    const QString key = item.previewImageUrl.toString();
+    if (key.isEmpty()) return fallback;
+    stopAllExcept(key);
+    QMovie* movie = movieFor(key, bytes);
+    if (!movie) return fallback;
+    m_activeKey = key;
+    if (movie->state() != QMovie::Running) movie->start();
+    const QPixmap frame = movie->currentPixmap();
+    return frame.isNull() ? fallback : frame;
+}
+
+QMovie* WorkshopPreviewAnimator::movieFor(const QString& key, const QByteArray& bytes) {
+    if (QPointer<QMovie> existing = m_movies.value(key)) return existing;
+    if (!m_view) return nullptr;
+
+    auto* movie = new QMovie(m_view);
+    auto* buffer = new QBuffer(movie);
+    buffer->setData(bytes);
+    if (!buffer->open(QIODevice::ReadOnly)) {
+        movie->deleteLater();
+        return nullptr;
+    }
+    movie->setDevice(buffer);
+    movie->setFormat("gif");
+    movie->setCacheMode(QMovie::CacheNone);
+    connect(movie, &QMovie::frameChanged, m_view, [view = m_view] {
+        if (view && view->viewport()) view->viewport()->update();
+    });
+    m_movies.insert(key, movie);
+    return movie;
+}
+
+bool WorkshopPreviewAnimator::eventFilter(QObject* watched, QEvent* event) {
+    if (m_view && watched == m_view->viewport() &&
+        (event->type() == QEvent::Leave || event->type() == QEvent::Hide)) {
+        stopAllExcept({});
+    }
+    return QObject::eventFilter(watched, event);
+}
+
+void WorkshopPreviewAnimator::stopAllExcept(const QString& key) {
+    for (auto it = m_movies.begin(); it != m_movies.end(); ++it) {
+        if (it.key() != key && it.value() && it.value()->state() == QMovie::Running) it.value()->stop();
+    }
+    if (key.isEmpty()) m_activeKey.clear();
 }
 
 void setWorkshopCardData(QListWidgetItem* row,

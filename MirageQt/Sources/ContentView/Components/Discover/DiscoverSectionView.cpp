@@ -17,7 +17,8 @@ namespace {
 class DiscoverCardDelegate final : public QStyledItemDelegate {
 public:
     explicit DiscoverCardDelegate(QObject* parent)
-        : QStyledItemDelegate(parent) {
+        : QStyledItemDelegate(parent)
+        , m_previewAnimator(qobject_cast<QAbstractItemView*>(parent)) {
     }
 
     QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const override {
@@ -38,7 +39,8 @@ public:
         clip.addRoundedRect(card, 8, 8);
         painter->setClipPath(clip);
         painter->fillPath(clip, option.palette.color(QPalette::Base));
-        const QPixmap preview = index.data(WorkshopPreviewRole).value<QPixmap>();
+        const bool hovered = option.state.testFlag(QStyle::State_MouseOver);
+        const QPixmap preview = m_previewAnimator.pixmapFor(index, hovered);
         if (!preview.isNull()) {
             const qreal targetRatio = previewRect.width() / previewRect.height();
             QRectF source = preview.rect();
@@ -100,7 +102,7 @@ public:
                           Qt::AlignLeft | Qt::AlignVCenter,
                           QStringLiteral("↓ %1     ◆ %2").arg(item.formattedSubscriptions(), item.displayTypeName()));
 
-        if (option.state.testFlag(QStyle::State_Selected) || option.state.testFlag(QStyle::State_MouseOver)) {
+        if (option.state.testFlag(QStyle::State_Selected) || hovered) {
             painter->setPen(QPen(QColor(QStringLiteral("#0a84ff")),
                                  option.state.testFlag(QStyle::State_Selected) ? 2.5 : 1.0));
             painter->setBrush(Qt::NoBrush);
@@ -108,6 +110,9 @@ public:
         }
         painter->restore();
     }
+
+private:
+    mutable WorkshopPreviewAnimator m_previewAnimator;
 };
 
 } // namespace
@@ -168,6 +173,7 @@ DiscoverSectionView::DiscoverSectionView(const QString& title,
         m_viewModel->selectWorkshopItem(row->data(WorkshopItemRole).value<WorkshopItem>());
     });
     connect(m_viewModel, &WorkshopViewModel::discoverChanged, this, &DiscoverSectionView::rebuild);
+    connect(m_viewModel, &WorkshopViewModel::installedStateChanged, this, &DiscoverSectionView::rebuild);
     connect(m_viewModel, &WorkshopViewModel::downloadQueueChanged, this, &DiscoverSectionView::rebuild);
     connect(m_viewModel, &WorkshopViewModel::selectedItemChanged, this, &DiscoverSectionView::selectCurrentModelItem);
     connect(m_api, &SteamWebAPI::previewImageFinished, this,
@@ -180,6 +186,7 @@ DiscoverSectionView::DiscoverSectionView(const QString& title,
             QListWidgetItem* row = m_list->item(i);
             if (row->data(WorkshopItemRole).value<WorkshopItem>().previewImageUrl == url) {
                 row->setData(WorkshopPreviewRole, pixmap);
+                row->setData(WorkshopPreviewBytesRole, bytes);
             }
         }
         m_list->viewport()->update();
@@ -206,9 +213,17 @@ void DiscoverSectionView::rebuild() {
 void DiscoverSectionView::showAll() {
     switch (m_collection) {
     case DiscoverCollection::Trending: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::Trending); break;
+    case DiscoverCollection::MostUpvoted: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::MostUpvoted); break;
     case DiscoverCollection::MostRecent: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::MostRecent); break;
     case DiscoverCollection::MostSubscribed: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::MostSubscribed); break;
     case DiscoverCollection::TopRated: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::TopRated); break;
+    case DiscoverCollection::LastUpdated: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::LastUpdated); break;
+    case DiscoverCollection::PlaytimeTrend: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::PlaytimeTrend); break;
+    case DiscoverCollection::AveragePlaytimeTrend: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::AveragePlaytimeTrend); break;
+    case DiscoverCollection::SessionsTrend: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::SessionsTrend); break;
+    case DiscoverCollection::TotalPlaytime: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::TotalPlaytime); break;
+    case DiscoverCollection::LifetimeAveragePlaytime: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::LifetimeAveragePlaytime); break;
+    case DiscoverCollection::LifetimeSessions: m_viewModel->navigateToWorkshopWithSort(WorkshopSortOrder::LifetimeSessions); break;
     case DiscoverCollection::Anime: m_viewModel->navigateToWorkshopWithTag(QStringLiteral("Anime")); break;
     case DiscoverCollection::Nature: m_viewModel->navigateToWorkshopWithTag(QStringLiteral("Nature")); break;
     case DiscoverCollection::Abstract: m_viewModel->navigateToWorkshopWithTag(QStringLiteral("Abstract")); break;

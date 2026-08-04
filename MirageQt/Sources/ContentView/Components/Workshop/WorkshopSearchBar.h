@@ -20,6 +20,7 @@ private:
     WorkshopViewModel* m_viewModel = nullptr;
     QLineEdit* m_search = nullptr;
     QComboBox* m_sort = nullptr;
+    QComboBox* m_trendPeriod = nullptr;
 };
 
 } // namespace Mirage

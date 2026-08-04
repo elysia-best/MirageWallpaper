@@ -1,17 +1,55 @@
 #include "Services/WorkshopViewModel.h"
 
+#include <QtConcurrent/QtConcurrentRun>
+
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QSettings>
 #include <QTimer>
 
 namespace Mirage {
 namespace {
 
-constexpr int kItemsPerPage = 30;
+constexpr int kItemsPerPage = 50;
 
 bool isActive(const DownloadState& state) {
     return state.kind == DownloadStateKind::Starting ||
            state.kind == DownloadStateKind::Downloading ||
            state.kind == DownloadStateKind::Validating;
+}
+
+InstalledWorkshopState scanInstalledWorkshopState(const QStringList& sources) {
+    InstalledWorkshopState state;
+    QHash<QString, Project> projects;
+
+    for (const QString& source : sources) {
+        const QDir directory(source);
+        if (!directory.exists()) continue;
+        const QFileInfoList entries = directory.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
+        for (const QFileInfo& entry : entries) {
+            QFile file(entry.filePath() + "/project.json");
+            if (!file.open(QIODevice::ReadOnly)) continue;
+            const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+            if (!document.isObject()) continue;
+
+            const Project project = Project::fromJson(document.object());
+            const QString id = project.workshopId.isEmpty() ? entry.fileName() : project.workshopId;
+            if (id.isEmpty() || projects.contains(id)) continue;
+            projects.insert(id, project);
+            state.installedIds.insert(id);
+        }
+    }
+
+    for (auto it = projects.cbegin(); it != projects.cend(); ++it) {
+        const Project& project = it.value();
+        if (project.isWorkshopPreset() &&
+            (project.dependency.isEmpty() || !state.installedIds.contains(project.dependency))) {
+            state.presetsNeedingDependency.insert(it.key());
+        }
+    }
+    return state;
 }
 
 } // namespace
@@ -30,6 +68,7 @@ WorkshopViewModel::WorkshopViewModel(SteamWebAPI* api,
 
     m_searchDebounce.setSingleShot(true);
     m_searchDebounce.setInterval(500);
+    m_ageRatingMask = QSettings().value(QStringLiteral("Workshop/AgeRatingMask"), 1).toInt() & 0x7;
     connect(&m_searchDebounce, &QTimer::timeout, this, &WorkshopViewModel::search);
     connect(m_api, &SteamWebAPI::queryFinished, this, &WorkshopViewModel::handleQueryFinished);
     connect(m_api, &SteamWebAPI::detailsFinished, this, &WorkshopViewModel::handleDetailsFinished);
@@ -41,7 +80,21 @@ WorkshopViewModel::WorkshopViewModel(SteamWebAPI* api,
     connect(m_steamCMD, &SteamCMDManager::steamCMDPathChanged, this, [this] {
         refreshSteamSetupState();
     });
+    connect(m_library, &WallpaperLibrary::libraryChanged, this, &WorkshopViewModel::refreshInstalledState);
+    connect(&m_installedStateWatcher, &QFutureWatcher<InstalledWorkshopState>::finished, this, [this] {
+        const InstalledWorkshopState state = m_installedStateWatcher.result();
+        const bool changed = m_installedWorkshopIds != state.installedIds ||
+                             m_presetsNeedingDependency != state.presetsNeedingDependency;
+        m_installedWorkshopIds = state.installedIds;
+        m_presetsNeedingDependency = state.presetsNeedingDependency;
+        if (changed) emit installedStateChanged();
+        if (m_installedStateRefreshPending) {
+            m_installedStateRefreshPending = false;
+            refreshInstalledState();
+        }
+    });
     refreshSteamSetupState();
+    refreshInstalledState();
 }
 
 const QVector<WorkshopItem>& WorkshopViewModel::items() const { return m_items; }
@@ -59,6 +112,9 @@ QString WorkshopViewModel::searchText() const { return m_searchText; }
 const QSet<QString>& WorkshopViewModel::selectedTags() const { return m_selectedTags; }
 WorkshopSortOrder WorkshopViewModel::sortOrder() const { return m_sortOrder; }
 WorkshopTypeFilter WorkshopViewModel::typeFilter() const { return m_typeFilter; }
+int WorkshopViewModel::ageRatingMask() const { return m_ageRatingMask; }
+int WorkshopViewModel::trendDays() const { return m_trendDays; }
+int WorkshopViewModel::discoverTrendDays() const { return m_discoverTrendDays; }
 int WorkshopViewModel::currentPage() const { return m_currentPage; }
 int WorkshopViewModel::totalPages() const { return qMax(1, (m_totalItems + kItemsPerPage - 1) / kItemsPerPage); }
 bool WorkshopViewModel::isLoading() const { return m_isLoading; }
@@ -97,12 +153,11 @@ std::optional<Wallpaper> WorkshopViewModel::installedItem(const QString& worksho
 }
 
 bool WorkshopViewModel::isItemDownloaded(const QString& workshopId) const {
-    return installedItem(workshopId).has_value();
+    return m_installedWorkshopIds.contains(workshopId);
 }
 
 bool WorkshopViewModel::presetNeedsDependency(const QString& workshopId) const {
-    const auto wallpaper = installedItem(workshopId);
-    return wallpaper && wallpaper->isPreset() && !wallpaper->isValid();
+    return m_presetsNeedingDependency.contains(workshopId);
 }
 
 std::optional<DownloadState> WorkshopViewModel::downloadStateFor(const QString& workshopId) const {
@@ -134,9 +189,36 @@ void WorkshopViewModel::setSortOrder(WorkshopSortOrder order) {
     search();
 }
 
+void WorkshopViewModel::setTrendDays(int days) {
+    const int bounded = qBound(1, days, 365);
+    if (m_trendDays == bounded) return;
+    m_trendDays = bounded;
+    m_currentPage = 1;
+    emit filtersChanged();
+    if (workshopSortUsesTrendPeriod(m_sortOrder)) search();
+}
+
+void WorkshopViewModel::setDiscoverTrendDays(int days) {
+    const int bounded = qBound(1, days, 365);
+    if (m_discoverTrendDays == bounded) return;
+    m_discoverTrendDays = bounded;
+    refreshDiscover();
+}
+
 void WorkshopViewModel::setTypeFilter(WorkshopTypeFilter filter) {
     if (m_typeFilter == filter) return;
     m_typeFilter = filter;
+    m_currentPage = 1;
+    emit filtersChanged();
+    search();
+}
+
+void WorkshopViewModel::setAgeRatingEnabled(WorkshopAgeRating rating, bool enabled) {
+    const int bit = 1 << static_cast<int>(rating);
+    const int updated = enabled ? (m_ageRatingMask | bit) : (m_ageRatingMask & ~bit);
+    if (updated == m_ageRatingMask) return;
+    m_ageRatingMask = updated;
+    QSettings().setValue(QStringLiteral("Workshop/AgeRatingMask"), m_ageRatingMask);
     m_currentPage = 1;
     emit filtersChanged();
     search();
@@ -172,6 +254,9 @@ void WorkshopViewModel::clearFilters() {
     m_selectedTags.clear();
     m_sortOrder = WorkshopSortOrder::Trending;
     m_typeFilter = WorkshopTypeFilter::All;
+    m_ageRatingMask = 1;
+    m_trendDays = 7;
+    QSettings().setValue(QStringLiteral("Workshop/AgeRatingMask"), m_ageRatingMask);
     m_currentPage = 1;
     emit filtersChanged();
     search();
@@ -197,9 +282,12 @@ void WorkshopViewModel::search() {
     query.tags = m_selectedTags.values();
     query.sortOrder = m_sortOrder;
     query.typeFilter = m_typeFilter;
+    query.trendDays = m_trendDays;
+    query.ageRatingMask = m_ageRatingMask;
     query.page = m_currentPage;
     query.perPage = kItemsPerPage;
 
+    if (m_searchRequestId != 0) m_api->cancelQuery(m_searchRequestId);
     m_isLoading = true;
     m_error.clear();
     emit browseChanged();
@@ -210,12 +298,21 @@ void WorkshopViewModel::loadDiscover() {
     if (m_isDiscoverLoading) return;
     m_isDiscoverLoading = true;
     m_discoverRequests.clear();
+    m_pendingDiscoverItems.clear();
     emit discoverChanged();
 
-    issueDiscoverRequest(DiscoverCollection::Trending, WorkshopSortOrder::Trending, {}, 15);
+    issueDiscoverRequest(DiscoverCollection::Trending, WorkshopSortOrder::Trending, {}, 15, m_discoverTrendDays);
+    issueDiscoverRequest(DiscoverCollection::MostUpvoted, WorkshopSortOrder::MostUpvoted, {}, 10);
     issueDiscoverRequest(DiscoverCollection::MostRecent, WorkshopSortOrder::MostRecent, {}, 10);
     issueDiscoverRequest(DiscoverCollection::MostSubscribed, WorkshopSortOrder::MostSubscribed, {}, 10);
     issueDiscoverRequest(DiscoverCollection::TopRated, WorkshopSortOrder::TopRated, {}, 10);
+    issueDiscoverRequest(DiscoverCollection::LastUpdated, WorkshopSortOrder::LastUpdated, {}, 10);
+    issueDiscoverRequest(DiscoverCollection::PlaytimeTrend, WorkshopSortOrder::PlaytimeTrend, {}, 10, m_discoverTrendDays);
+    issueDiscoverRequest(DiscoverCollection::AveragePlaytimeTrend, WorkshopSortOrder::AveragePlaytimeTrend, {}, 10, m_discoverTrendDays);
+    issueDiscoverRequest(DiscoverCollection::SessionsTrend, WorkshopSortOrder::SessionsTrend, {}, 10, m_discoverTrendDays);
+    issueDiscoverRequest(DiscoverCollection::TotalPlaytime, WorkshopSortOrder::TotalPlaytime, {}, 10);
+    issueDiscoverRequest(DiscoverCollection::LifetimeAveragePlaytime, WorkshopSortOrder::LifetimeAveragePlaytime, {}, 10);
+    issueDiscoverRequest(DiscoverCollection::LifetimeSessions, WorkshopSortOrder::LifetimeSessions, {}, 10);
     issueDiscoverRequest(DiscoverCollection::Anime, WorkshopSortOrder::Trending, QStringLiteral("Anime"), 10);
     issueDiscoverRequest(DiscoverCollection::Nature, WorkshopSortOrder::Trending, QStringLiteral("Nature"), 10);
     issueDiscoverRequest(DiscoverCollection::Abstract, WorkshopSortOrder::Trending, QStringLiteral("Abstract"), 10);
@@ -223,8 +320,9 @@ void WorkshopViewModel::loadDiscover() {
 }
 
 void WorkshopViewModel::reloadOnlineContent() {
-    m_discoverRequests.clear();
+    cancelDiscoverRequests();
     m_discoverItems.clear();
+    m_pendingDiscoverItems.clear();
     m_bannerItems.clear();
     m_isDiscoverLoading = false;
     emit discoverChanged();
@@ -232,13 +330,23 @@ void WorkshopViewModel::reloadOnlineContent() {
     search();
 }
 
+void WorkshopViewModel::refreshDiscover() {
+    cancelDiscoverRequests();
+    m_pendingDiscoverItems.clear();
+    m_isDiscoverLoading = false;
+    loadDiscover();
+}
+
 void WorkshopViewModel::issueDiscoverRequest(DiscoverCollection collection,
                                              WorkshopSortOrder order,
                                              const QString& tag,
-                                             int count) {
+                                             int count,
+                                             int trendDays) {
     WorkshopQuery query;
     query.sortOrder = order;
     query.perPage = count;
+    query.trendDays = trendDays;
+    query.ageRatingMask = m_ageRatingMask;
     if (!tag.isEmpty()) query.tags = {tag};
     const quint64 requestId = m_api->queryFiles(query);
     m_discoverRequests.insert(requestId, collection);
@@ -263,12 +371,13 @@ void WorkshopViewModel::handleQueryFinished(quint64 requestId, const WorkshopQue
     if (it == m_discoverRequests.end()) return;
     const DiscoverCollection collection = it.value();
     m_discoverRequests.erase(it);
-    if (result.error.isEmpty()) m_discoverItems[collection] = result.items;
+    if (result.error.isEmpty()) m_pendingDiscoverItems[collection] = result.items;
+    if (!m_discoverRequests.isEmpty()) return;
 
-    if (collection == DiscoverCollection::Trending && result.error.isEmpty()) {
-        m_bannerItems = result.items.mid(0, qMin(5, result.items.size()));
-    }
-    if (m_discoverRequests.isEmpty()) m_isDiscoverLoading = false;
+    m_discoverItems = std::move(m_pendingDiscoverItems);
+    m_bannerItems = m_discoverItems.value(DiscoverCollection::Trending).mid(
+        0, qMin(5, m_discoverItems.value(DiscoverCollection::Trending).size()));
+    m_isDiscoverLoading = false;
     emit discoverChanged();
 }
 
@@ -402,7 +511,10 @@ void WorkshopViewModel::handleDownloadState(const QString& workshopId, const Dow
         if (state.kind == DownloadStateKind::Completed) {
             task.completedAt = QDateTime::currentDateTime();
             emit workshopItemDownloaded(workshopId);
-            QTimer::singleShot(500, this, [this, workshopId] { handleCompletedDownload(workshopId); });
+            QTimer::singleShot(500, this, [this, workshopId] {
+                refreshInstalledState();
+                handleCompletedDownload(workshopId);
+            });
         }
         emit downloadQueueChanged();
         if (state.kind == DownloadStateKind::Completed || state.kind == DownloadStateKind::Failed) {
@@ -482,6 +594,22 @@ void WorkshopViewModel::handleCompletedDownload(const QString& workshopId) {
     } else if (wallpaper->isValid()) {
         emit installedWallpaperRequested(*wallpaper);
     }
+}
+
+void WorkshopViewModel::refreshInstalledState() {
+    if (m_installedStateWatcher.isRunning()) {
+        m_installedStateRefreshPending = true;
+        return;
+    }
+    const QStringList sources = m_library ? m_library->sourceDirectories() : QStringList();
+    m_installedStateWatcher.setFuture(QtConcurrent::run(scanInstalledWorkshopState, sources));
+}
+
+void WorkshopViewModel::cancelDiscoverRequests() {
+    for (auto it = m_discoverRequests.cbegin(); it != m_discoverRequests.cend(); ++it) {
+        m_api->cancelQuery(it.key());
+    }
+    m_discoverRequests.clear();
 }
 
 void WorkshopViewModel::navigateToWorkshopWithTag(const QString& tag) {

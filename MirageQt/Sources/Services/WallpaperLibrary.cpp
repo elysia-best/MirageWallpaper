@@ -173,10 +173,13 @@ QString WallpaperLibrary::importVideoFile(const QString& filePath, QString* erro
     return destination;
 }
 
-QString WallpaperLibrary::importAny(const QString& path, QString* error) const {
+QString WallpaperLibrary::importAny(const QString& path, QString* error) {
     const QFileInfo info(path);
-    if (info.isDir()) return importWallpaperFolder(path, error);
-    return importVideoFile(path, error);
+    const QString imported = info.isDir()
+        ? importWallpaperFolder(path, error)
+        : importVideoFile(path, error);
+    if (!imported.isEmpty()) emit libraryChanged();
+    return imported;
 }
 
 Wallpaper WallpaperLibrary::loadWallpaper(const QString& directory, QSet<QString> visited) const {

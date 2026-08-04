@@ -214,6 +214,7 @@ WorkshopView::WorkshopView(WorkshopViewModel* viewModel,
         m_downloadBadge->setText(QString::number(active));
         m_downloadBadge->setVisible(active > 0);
     });
+    connect(m_viewModel, &WorkshopViewModel::installedStateChanged, this, &WorkshopView::rebuildList);
     connect(m_viewModel, &WorkshopViewModel::steamSetupChanged, this, &WorkshopView::updateSteamState);
     connect(m_viewModel, &WorkshopViewModel::selectedItemChanged, this, &WorkshopView::selectCurrentModelItem);
     connect(m_settings, &GlobalSettingsService::settingsChanged, this, &WorkshopView::updateAPIKeyBanner);
@@ -227,6 +228,7 @@ WorkshopView::WorkshopView(WorkshopViewModel* viewModel,
             QListWidgetItem* row = m_list->item(i);
             if (row->data(WorkshopItemRole).value<WorkshopItem>().previewImageUrl == url) {
                 row->setData(WorkshopPreviewRole, pixmap);
+                row->setData(WorkshopPreviewBytesRole, bytes);
             }
         }
         m_list->viewport()->update();

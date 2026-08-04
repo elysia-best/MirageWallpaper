@@ -4,6 +4,7 @@
 #include "Services/WallpaperLibrary.h"
 
 #include <QObject>
+#include <QFutureWatcher>
 #include <QHash>
 #include <QSet>
 #include <QTimer>
@@ -17,6 +18,14 @@ enum class DiscoverCollection {
     MostRecent,
     MostSubscribed,
     TopRated,
+    MostUpvoted,
+    LastUpdated,
+    PlaytimeTrend,
+    AveragePlaytimeTrend,
+    SessionsTrend,
+    TotalPlaytime,
+    LifetimeAveragePlaytime,
+    LifetimeSessions,
     Anime,
     Nature,
     Abstract,
@@ -27,6 +36,11 @@ enum class SteamSetupState {
     SteamCMDMissing,
     NeedsLogin,
     Ready,
+};
+
+struct InstalledWorkshopState {
+    QSet<QString> installedIds;
+    QSet<QString> presetsNeedingDependency;
 };
 
 class WorkshopViewModel : public QObject {
@@ -48,6 +62,9 @@ public:
     const QSet<QString>& selectedTags() const;
     WorkshopSortOrder sortOrder() const;
     WorkshopTypeFilter typeFilter() const;
+    int ageRatingMask() const;
+    int trendDays() const;
+    int discoverTrendDays() const;
     int currentPage() const;
     int totalPages() const;
     bool isLoading() const;
@@ -66,7 +83,10 @@ public slots:
     void setSearchText(const QString& text);
     void submitSearch();
     void setSortOrder(Mirage::WorkshopSortOrder order);
+    void setTrendDays(int days);
+    void setDiscoverTrendDays(int days);
     void setTypeFilter(Mirage::WorkshopTypeFilter filter);
+    void setAgeRatingEnabled(Mirage::WorkshopAgeRating rating, bool enabled);
     void toggleTag(const QString& tag);
     void selectAllTags();
     void clearTags();
@@ -75,6 +95,7 @@ public slots:
     void loadNextPage();
     void search();
     void loadDiscover();
+    void refreshDiscover();
     void reloadOnlineContent();
     void checkSteamSetup();
     void logout();
@@ -104,6 +125,7 @@ signals:
                                    const QString& dependencyId,
                                    const Mirage::WorkshopItem& dependencyItem);
     void downloadQueueChanged();
+    void installedStateChanged();
     void steamSetupChanged();
     void steamSetupRequested();
     void navigateToWorkshopRequested();
@@ -124,11 +146,14 @@ private:
     void refreshSteamSetupState();
     void processDownloadQueue();
     void handleCompletedDownload(const QString& workshopId);
+    void refreshInstalledState();
+    void cancelDiscoverRequests();
     void setSelectedItem(const std::optional<WorkshopItem>& item);
     void issueDiscoverRequest(DiscoverCollection collection,
                               WorkshopSortOrder order,
                               const QString& tag,
-                              int count);
+                              int count,
+                              int trendDays = 7);
 
     SteamWebAPI* m_api = nullptr;
     SteamCMDManager* m_steamCMD = nullptr;
@@ -136,6 +161,7 @@ private:
 
     QVector<WorkshopItem> m_items;
     QHash<DiscoverCollection, QVector<WorkshopItem>> m_discoverItems;
+    QHash<DiscoverCollection, QVector<WorkshopItem>> m_pendingDiscoverItems;
     QVector<WorkshopItem> m_bannerItems;
     QVector<WorkshopDownloadTask> m_downloadQueue;
     std::optional<WorkshopItem> m_selectedItem;
@@ -144,6 +170,9 @@ private:
     QSet<QString> m_selectedTags;
     WorkshopSortOrder m_sortOrder = WorkshopSortOrder::Trending;
     WorkshopTypeFilter m_typeFilter = WorkshopTypeFilter::All;
+    int m_ageRatingMask = 1;
+    int m_trendDays = 7;
+    int m_discoverTrendDays = 7;
     int m_currentPage = 1;
     int m_totalItems = 0;
     bool m_isLoading = false;
@@ -152,6 +181,10 @@ private:
     SteamSetupState m_steamSetupState = SteamSetupState::SteamCMDMissing;
 
     QTimer m_searchDebounce;
+    QFutureWatcher<InstalledWorkshopState> m_installedStateWatcher;
+    QSet<QString> m_installedWorkshopIds;
+    QSet<QString> m_presetsNeedingDependency;
+    bool m_installedStateRefreshPending = false;
     quint64 m_searchRequestId = 0;
     QHash<quint64, DiscoverCollection> m_discoverRequests;
     QHash<quint64, PendingDependency> m_dependencyRequests;

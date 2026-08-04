@@ -378,6 +378,7 @@ QWidget* MainWindow::buildInstalledPage() {
     connect(m_wallpaperList, &WallpaperListWidget::wallpaperSelected, this, &MainWindow::selectWallpaper);
     connect(m_wallpaperList, &WallpaperListWidget::applyRequested, this, &MainWindow::applyWallpaper);
     connect(m_wallpaperList, &WallpaperListWidget::importRequested, this, &MainWindow::importWallpaper);
+    connect(m_library, &WallpaperLibrary::libraryChanged, m_wallpaperList, &WallpaperListWidget::reload);
     m_wallpaperList->setFilterState(m_filter->filterState());
     return page;
 }

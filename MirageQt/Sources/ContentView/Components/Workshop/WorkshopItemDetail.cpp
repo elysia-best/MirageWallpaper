@@ -164,6 +164,7 @@ WorkshopItemDetail::WorkshopItemDetail(WorkshopViewModel* viewModel,
     connect(confirm, &QPushButton::clicked, this, &WorkshopItemDetail::closeRequested);
     connect(cancel, &QPushButton::clicked, this, &WorkshopItemDetail::closeRequested);
     connect(m_viewModel, &WorkshopViewModel::downloadQueueChanged, this, &WorkshopItemDetail::rebuildDownloadSection);
+    connect(m_viewModel, &WorkshopViewModel::installedStateChanged, this, &WorkshopItemDetail::rebuildDownloadSection);
     connect(m_viewModel, &WorkshopViewModel::steamSetupChanged, this, &WorkshopItemDetail::rebuildDownloadSection);
     connect(m_api, &SteamWebAPI::previewImageFinished, this,
             [this](const QUrl& url, const QByteArray& bytes, const QString&) {
