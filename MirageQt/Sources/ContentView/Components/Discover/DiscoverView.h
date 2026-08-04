@@ -6,6 +6,7 @@
 #include <QWidget>
 
 class QStackedWidget;
+class QComboBox;
 
 namespace Mirage {
 
@@ -32,6 +33,7 @@ private:
     GlobalSettingsService* m_settings = nullptr;
     QWidget* m_apiKeyBanner = nullptr;
     QStackedWidget* m_stack = nullptr;
+    QComboBox* m_trendPeriod = nullptr;
 };
 
 } // namespace Mirage

@@ -252,6 +252,47 @@ QString styleSheet(const StyleColors& color) {
             color: #bf5af2; background-color: rgba(191, 90, 242, 28);
             border: 1px solid rgba(191, 90, 242, 80); border-radius: 8px; padding: 7px;
         }
+        QLabel#steamSetupSteps {
+            color: @SECONDARY@;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 0;
+        }
+        QLabel#steamSetupTitle { font-size: 20px; font-weight: 600; }
+        QLabel#steamSetupStateTitle { font-size: 16px; font-weight: 600; }
+        QLabel#steamSetupSubtitle { color: @SECONDARY@; font-size: 12px; }
+        QLabel#steamSetupSuccess { color: #30b653; font-size: 13px; font-weight: 600; }
+        QFrame#steamSetupNotice {
+            background-color: rgba(255, 159, 10, 24);
+            border: 1px solid rgba(255, 159, 10, 78);
+            border-radius: 8px;
+        }
+        QLabel#steamSetupInfo {
+            color: @SECONDARY@;
+            background-color: @ALTERNATE@;
+            border-radius: 7px;
+            padding: 8px;
+            font-size: 12px;
+        }
+        QLabel#steamSetupDivider { color: @TERTIARY@; font-size: 11px; padding: 1px; }
+        QPlainTextEdit#steamSetupLog {
+            color: #30b653;
+            background-color: #1d1b18;
+            border: 1px solid @BORDER@;
+            border-radius: 6px;
+            font-family: "Noto Sans Mono", monospace;
+            font-size: 10px;
+            padding: 5px;
+        }
+        QProgressBar#steamLoginSpinner {
+            border: 0;
+            border-radius: 4px;
+            background-color: @BORDER@;
+        }
+        QProgressBar#steamLoginSpinner::chunk {
+            border-radius: 4px;
+            background-color: #0a84ff;
+        }
         QLabel#sectionHeader { border-bottom: 1px solid #0a84ff; padding-bottom: 3px; }
         QWidget#discoverBanner { background-color: @ALTERNATE@; border-radius: 8px; }
         QLabel#bannerCaption { color: white; background-color: rgba(0, 0, 0, 145); padding: 8px 14px; }

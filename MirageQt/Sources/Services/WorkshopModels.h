@@ -24,6 +24,7 @@ struct WorkshopItem {
     QDateTime timeUpdated;
     QString creatorSteamId;
     QString wallpaperType = QStringLiteral("scene");
+    QString ageRating;
 
     WallpaperKind kind() const;
     bool isPreset() const;
@@ -41,6 +42,29 @@ enum class WorkshopSortOrder {
     MostRecent,
     MostSubscribed,
     TopRated,
+    MostUpvoted,
+    PlaytimeTrend,
+    TotalPlaytime,
+    AveragePlaytimeTrend,
+    LifetimeAveragePlaytime,
+    SessionsTrend,
+    LifetimeSessions,
+    LastUpdated,
+};
+
+enum class WorkshopAgeRating {
+    Everyone,
+    Questionable,
+    Mature,
+};
+
+enum class WorkshopTrendPeriod {
+    Day = 1,
+    Week = 7,
+    Month = 30,
+    ThreeMonths = 90,
+    SixMonths = 180,
+    Year = 365,
 };
 
 enum class WorkshopTypeFilter {
@@ -62,6 +86,8 @@ struct WorkshopQuery {
     QStringList tags;
     WorkshopSortOrder sortOrder = WorkshopSortOrder::Trending;
     WorkshopTypeFilter typeFilter = WorkshopTypeFilter::All;
+    int trendDays = 7;
+    int ageRatingMask = 1;
     int page = 1;
     int perPage = 30;
 };
@@ -86,6 +112,10 @@ struct WorkshopDownloadTask {
 };
 
 QString workshopSortLabel(WorkshopSortOrder order);
+bool workshopSortUsesTrendPeriod(WorkshopSortOrder order);
+QString workshopAgeRatingLabel(WorkshopAgeRating rating);
+QString workshopAgeRatingTag(WorkshopAgeRating rating);
+QString workshopTrendPeriodLabel(WorkshopTrendPeriod period);
 QString workshopTypeLabel(WorkshopTypeFilter filter);
 QVector<WorkshopTag> workshopTags();
 

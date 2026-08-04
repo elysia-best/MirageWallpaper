@@ -82,6 +82,7 @@ QStringList Paths::steamCMDContentDirs() {
     const QString root = steamCMDDir();
     return {
         QDir::cleanPath(root + "/steamapps/workshop/content/431960"),
+        QDir::cleanPath(root + "/home/Steam/steamapps/workshop/content/431960"),
         QDir::cleanPath(root + "/home/.steam/steam/steamapps/workshop/content/431960"),
         QDir::cleanPath(root + "/home/.local/share/Steam/steamapps/workshop/content/431960"),
     };

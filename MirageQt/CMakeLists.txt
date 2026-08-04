@@ -11,6 +11,7 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS
     Gui
     Widgets
     Network
+    Concurrent
     Qml
     WebEngineCore
     WebEngineWidgets
@@ -88,6 +89,7 @@ target_link_libraries(MirageQtCore PUBLIC
     Qt6::Gui
     Qt6::Widgets
     Qt6::Network
+    Qt6::Concurrent
     Qt6::Qml
     Qt6::DBus
     mirage_display_static

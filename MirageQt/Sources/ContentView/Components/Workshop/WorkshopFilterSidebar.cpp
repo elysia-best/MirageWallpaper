@@ -40,6 +40,21 @@ WorkshopFilterSidebar::WorkshopFilterSidebar(WorkshopViewModel* viewModel, QWidg
     }
     contentLayout->addWidget(types);
 
+    auto* ratings = new QGroupBox(QStringLiteral("分级"), content);
+    auto* ratingLayout = new QVBoxLayout(ratings);
+    for (WorkshopAgeRating rating : {WorkshopAgeRating::Everyone,
+                                     WorkshopAgeRating::Questionable,
+                                     WorkshopAgeRating::Mature}) {
+        auto* check = new QCheckBox(workshopAgeRatingLabel(rating), ratings);
+        const int value = static_cast<int>(rating);
+        m_ratingChecks.insert(value, check);
+        ratingLayout->addWidget(check);
+        connect(check, &QCheckBox::toggled, this, [this, rating](bool checked) {
+            m_viewModel->setAgeRatingEnabled(rating, checked);
+        });
+    }
+    contentLayout->addWidget(ratings);
+
     auto* tags = new QGroupBox(QStringLiteral("标签"), content);
     auto* tagLayout = new QVBoxLayout(tags);
     auto* tagActions = new QHBoxLayout;
@@ -88,6 +103,10 @@ void WorkshopFilterSidebar::syncFromViewModel() {
     for (auto it = m_tagChecks.begin(); it != m_tagChecks.end(); ++it) {
         const QSignalBlocker blocker(it.value());
         it.value()->setChecked(m_viewModel->selectedTags().contains(it.key()));
+    }
+    for (auto it = m_ratingChecks.begin(); it != m_ratingChecks.end(); ++it) {
+        const QSignalBlocker blocker(it.value());
+        it.value()->setChecked((m_viewModel->ageRatingMask() & (1 << it.key())) != 0);
     }
 }
 

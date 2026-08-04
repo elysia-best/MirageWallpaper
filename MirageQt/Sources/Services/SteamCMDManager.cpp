@@ -63,6 +63,27 @@ bool containsAny(const QString& haystack, const QStringList& needles) {
     return false;
 }
 
+QString normalizedSteamOutput(QString text) {
+    // SteamCMD mixes carriage-return progress updates and ANSI control codes
+    // into its output. Normalize those before looking for protocol markers.
+    static const QRegularExpression ansi(QStringLiteral("\\x1b\\[[0-?]*[ -/]*[@-~]"));
+    text.remove(ansi);
+    text.replace(QChar('\r'), QChar('\n'));
+    text.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    return text.trimmed().toLower();
+}
+
+QString guardPromptMessage(const QString& output) {
+    const QString lower = normalizedSteamOutput(output);
+    if (containsAny(lower, {"steam guard code", "two-factor code", "two factor code", "enter the code", "验证码"})) {
+        return QStringLiteral("请输入 Steam Guard 验证码");
+    }
+    if (containsAny(lower, {"please confirm the login in the steam mobile app", "confirm the login in the steam mobile"})) {
+        return QStringLiteral("请在手机上确认登录");
+    }
+    return {};
+}
+
 } // namespace
 
 SteamCMDManager::SteamCMDManager(QObject* parent)
@@ -78,8 +99,7 @@ SteamCMDManager::SteamCMDManager(QObject* parent)
         m_steamCMDPath = preferredLauncher(storedPath);
     }
     m_loggedIn = !m_savedUsername.isEmpty() &&
-                 (QFileInfo::exists(Paths::steamCMDDir() + "/config/config.vdf") ||
-                  QFileInfo::exists(Paths::steamCMDDir() + "/steam/config/config.vdf"));
+                 hasSessionArtifacts();
 }
 
 QString SteamCMDManager::steamCMDPath() const {
@@ -227,6 +247,11 @@ void SteamCMDManager::cancelInstallation() {
 }
 
 void SteamCMDManager::login(const QString& username, const QString& password) {
+    const QString account = username.trimmed();
+    if (account.isEmpty()) {
+        emit loginStateChanged(SteamLoginState::Failed, QStringLiteral("请输入 Steam 账户名"));
+        return;
+    }
     if (m_steamCMDPath.isEmpty() && detectSteamCMD().isEmpty()) {
         emit loginStateChanged(SteamLoginState::Failed, QStringLiteral("SteamCMD 未安装"));
         return;
@@ -236,53 +261,106 @@ void SteamCMDManager::login(const QString& username, const QString& password) {
         return;
     }
 
-    m_loginProcess = startSteamCMD({"+login", username, "+quit"}, this);
+    m_loginCancelled = false;
+    m_loginProcess = createSteamCMDProcess({"+login", account, "+quit"}, this);
     if (!m_loginProcess) {
         emit loginStateChanged(SteamLoginState::Failed, QStringLiteral("启动 SteamCMD 失败"));
         return;
     }
 
+    QProcess* process = m_loginProcess;
     QString* output = new QString;
     bool* passwordSent = new bool(false);
     emit loginStateChanged(SteamLoginState::LoggingIn, QStringLiteral("正在登录 Steam"));
 
-    connect(m_loginProcess, &QProcess::readyReadStandardOutput, this, [this, username, password, output, passwordSent] {
-        const QString chunk = QString::fromUtf8(m_loginProcess->readAllStandardOutput());
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process, account, password, output, passwordSent] {
+        if (m_loginProcess != process) return;
+        const QString chunk = QString::fromUtf8(process->readAllStandardOutput());
         *output += chunk;
-        record(QStringLiteral("Steam 登录"), chunk, {username, password});
+        record(QStringLiteral("Steam 登录"), chunk, {account, password});
         if (!*passwordSent && containsAny(*output, {"password", "passwort", "密码"})) {
-            m_loginProcess->write((password + "\n").toUtf8());
+            process->write((password + "\n").toUtf8());
             *passwordSent = true;
         }
-        if (containsAny(*output, {"steam guard", "two-factor", "authenticator", "令牌", "验证码"})) {
-            emit loginStateChanged(SteamLoginState::WaitingForGuard, QStringLiteral("请输入 Steam Guard 验证码"));
+        if (const QString guardPrompt = guardPromptMessage(*output); !guardPrompt.isEmpty()) {
+            emit loginStateChanged(SteamLoginState::WaitingForGuard, guardPrompt);
         }
     });
-    connect(m_loginProcess, &QProcess::readyReadStandardError, this, [this, username, password, output] {
-        const QString chunk = QString::fromUtf8(m_loginProcess->readAllStandardError());
+    connect(process, &QProcess::readyReadStandardError, this, [this, process, account, password, output] {
+        if (m_loginProcess != process) return;
+        const QString chunk = QString::fromUtf8(process->readAllStandardError());
         *output += chunk;
-        record(QStringLiteral("Steam 登录"), chunk, {username, password});
+        record(QStringLiteral("Steam 登录"), chunk, {account, password});
+        if (const QString guardPrompt = guardPromptMessage(*output); !guardPrompt.isEmpty()) {
+            emit loginStateChanged(SteamLoginState::WaitingForGuard, guardPrompt);
+        }
     });
-    connect(m_loginProcess, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
-            [this, username, output, passwordSent](int exitCode, QProcess::ExitStatus status) {
-                finishLoginProcess(exitCode, status, username, *output);
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, account, output, passwordSent](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart || m_loginProcess != process) return;
+                *output += QString::fromUtf8(process->readAllStandardOutput());
+                *output += QString::fromUtf8(process->readAllStandardError());
+                record(QStringLiteral("Steam 登录"), QStringLiteral("SteamCMD 启动失败：%1").arg(process->errorString()), {account});
+                finishLoginProcess(-1, QProcess::CrashExit, account, *output);
                 delete output;
                 delete passwordSent;
             });
+    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            [this, process, account, output, passwordSent](int exitCode, QProcess::ExitStatus status) {
+                if (m_loginProcess != process) return;
+                *output += QString::fromUtf8(process->readAllStandardOutput());
+                *output += QString::fromUtf8(process->readAllStandardError());
+                finishLoginProcess(exitCode, status, account, *output);
+                delete output;
+                delete passwordSent;
+            });
+    process->start();
 }
 
 void SteamCMDManager::submitGuardCode(const QString& code) {
+    const QString trimmed = code.trimmed();
+    if (trimmed.isEmpty()) return;
+    if (!m_loginProcess || m_loginProcess->state() == QProcess::NotRunning) {
+        emit loginStateChanged(SteamLoginState::Failed, QStringLiteral("Steam Guard 会话已结束，请重新登录"));
+        return;
+    }
+    m_loginProcess->write((trimmed + "\n").toUtf8());
+    record(QStringLiteral("Steam 登录"), QStringLiteral("已安全提交 Steam Guard 验证码"));
+    emit loginStateChanged(SteamLoginState::LoggingIn, QStringLiteral("正在验证 Steam Guard 验证码"));
+}
+
+void SteamCMDManager::cancelLogin() {
     if (m_loginProcess && m_loginProcess->state() != QProcess::NotRunning) {
-        m_loginProcess->write((code.trimmed() + "\n").toUtf8());
-        record(QStringLiteral("Steam 登录"), QStringLiteral("已提交 Steam Guard 验证码"));
+        m_loginCancelled = true;
+        record(QStringLiteral("Steam 登录"), QStringLiteral("登录已取消"));
+        m_loginProcess->kill();
     }
 }
 
 void SteamCMDManager::logout() {
     m_savedUsername.clear();
     m_loggedIn = false;
-    QDir(Paths::steamCMDDir() + "/config").removeRecursively();
-    QDir(Paths::steamCMDDir() + "/steam/config").removeRecursively();
+    const QString root = Paths::steamCMDDir();
+    const QStringList sessionDirectories = {
+        root + "/config",
+        root + "/steam/config",
+        root + "/steam/userdata",
+        root + "/home/Steam/config",
+        root + "/home/Steam/userdata",
+        root + "/home/.steam/steam/config",
+        root + "/home/.steam/steam/userdata",
+        root + "/home/.local/share/Steam/config",
+        root + "/home/.local/share/Steam/userdata",
+    };
+    for (const QString& directory : sessionDirectories) QDir(directory).removeRecursively();
+
+    for (const QString& directory : {root, root + "/steam", root + "/home/Steam",
+                                     root + "/home/.steam/steam", root + "/home/.local/share/Steam"}) {
+        QDir dir(directory);
+        for (const QString& file : dir.entryList({QStringLiteral("ssfn*")}, QDir::Files)) {
+            QFile::remove(dir.filePath(file));
+        }
+    }
     writeState(m_steamCMDPath, {});
     emit authenticationChanged(false, QStringLiteral("未登录"));
 }
@@ -302,19 +380,23 @@ void SteamCMDManager::downloadItem(const QString& workshopId) {
         return;
     }
 
-    auto* process = startSteamCMD({"+login", m_savedUsername,
-                                   "+workshop_download_item", "431960", workshopId,
-                                   "+quit"},
-                                  this);
+    auto* process = createSteamCMDProcess({"+login", m_savedUsername,
+                                           "+workshop_download_item", "431960", workshopId,
+                                           "+quit"},
+                                          this);
     if (!process) {
         publishDownloadState(workshopId, DownloadStateKind::Failed, -1.0, QStringLiteral("启动 SteamCMD 失败"));
         return;
     }
 
     m_downloadProcesses.insert(workshopId, process);
-    publishDownloadState(workshopId, DownloadStateKind::Starting, -1.0, QStringLiteral("开始下载"));
+    connect(process, &QProcess::started, this, [this, process, workshopId] {
+        if (m_downloadProcesses.value(workshopId) != process) return;
+        publishDownloadState(workshopId, DownloadStateKind::Starting, -1.0, QStringLiteral("开始下载"));
+    });
 
     connect(process, &QProcess::readyReadStandardOutput, this, [this, process, workshopId] {
+        if (m_downloadProcesses.value(workshopId) != process) return;
         const QString chunk = QString::fromUtf8(process->readAllStandardOutput());
         record(QStringLiteral("创意工坊下载"), chunk, {m_savedUsername});
         const QRegularExpression percentRe(QStringLiteral("(\\d+(?:\\.\\d+)?)\\s*%"));
@@ -325,11 +407,25 @@ void SteamCMDManager::downloadItem(const QString& workshopId) {
             publishDownloadState(workshopId, DownloadStateKind::Validating, -1.0, QStringLiteral("校验中"));
         }
     });
-    connect(process, &QProcess::readyReadStandardError, this, [this, process] {
+    connect(process, &QProcess::readyReadStandardError, this, [this, process, workshopId] {
+        if (m_downloadProcesses.value(workshopId) != process) return;
         record(QStringLiteral("创意工坊下载"), QString::fromUtf8(process->readAllStandardError()), {m_savedUsername});
     });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, workshopId](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart || m_downloadProcesses.value(workshopId) != process) return;
+                m_downloadProcesses.remove(workshopId);
+                const QString message = QStringLiteral("无法启动 SteamCMD：%1").arg(process->errorString());
+                process->deleteLater();
+                if (m_cancelledDownloads.remove(workshopId)) {
+                    publishDownloadState(workshopId, DownloadStateKind::Cancelled, -1.0, QStringLiteral("已取消"));
+                } else {
+                    publishDownloadState(workshopId, DownloadStateKind::Failed, -1.0, message);
+                }
+            });
     connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
             [this, process, workshopId](int exitCode, QProcess::ExitStatus status) {
+                if (m_downloadProcesses.value(workshopId) != process) return;
                 m_downloadProcesses.remove(workshopId);
                 process->deleteLater();
                 if (m_cancelledDownloads.remove(workshopId)) {
@@ -340,6 +436,7 @@ void SteamCMDManager::downloadItem(const QString& workshopId) {
                     publishDownloadState(workshopId, DownloadStateKind::Failed, -1.0, QStringLiteral("下载失败"));
                 }
             });
+    process->start();
 }
 
 void SteamCMDManager::cancelDownload(const QString& workshopId) {
@@ -397,7 +494,7 @@ QString SteamCMDManager::redact(QString text, const QStringList& secrets) const 
     return text;
 }
 
-QProcess* SteamCMDManager::startSteamCMD(const QStringList& arguments, QObject* owner) {
+QProcess* SteamCMDManager::createSteamCMDProcess(const QStringList& arguments, QObject* owner) {
     if (m_steamCMDPath.isEmpty()) return nullptr;
     auto* process = new QProcess(owner);
     process->setProgram(m_steamCMDPath);
@@ -408,12 +505,30 @@ QProcess* SteamCMDManager::startSteamCMD(const QStringList& arguments, QObject* 
     env.insert("STEAMEXE", m_steamCMDPath);
     process->setProcessEnvironment(env);
     process->setProcessChannelMode(QProcess::SeparateChannels);
-    process->start();
-    if (!process->waitForStarted(5000)) {
-        process->deleteLater();
-        return nullptr;
-    }
     return process;
+}
+
+bool SteamCMDManager::hasSessionArtifacts() const {
+    const QString root = Paths::steamCMDDir();
+    return QFileInfo::exists(root + "/config/config.vdf") ||
+           QFileInfo::exists(root + "/steam/config/config.vdf") ||
+           QFileInfo::exists(root + "/home/Steam/config/config.vdf") ||
+           QFileInfo::exists(root + "/home/.steam/steam/config/config.vdf") ||
+           QFileInfo::exists(root + "/home/.local/share/Steam/config/config.vdf");
+}
+
+bool SteamCMDManager::isLoginSuccessful(const QString& output) const {
+    const QString lower = normalizedSteamOutput(output);
+    const bool hasFailure = containsAny(lower, {"login failure", "invalid password", "account logon denied", "access denied"});
+    if (hasFailure) return false;
+
+    const bool loggedIn = lower.contains(QStringLiteral("logging in user"));
+    const bool reachedPostLogon = lower.contains(QStringLiteral("waiting for client config")) ||
+                                  lower.contains(QStringLiteral("waiting for user info")) ||
+                                  lower.contains(QStringLiteral("waiting for compat in post-logon")) ||
+                                  lower.contains(QStringLiteral("logged in ok")) ||
+                                  lower.contains(QStringLiteral("login successful"));
+    return loggedIn && reachedPostLogon;
 }
 
 void SteamCMDManager::finishLoginProcess(int exitCode, QProcess::ExitStatus status, const QString& username, QString output) {
@@ -422,10 +537,12 @@ void SteamCMDManager::finishLoginProcess(int exitCode, QProcess::ExitStatus stat
         m_loginProcess = nullptr;
     }
 
-    const bool success = status == QProcess::NormalExit &&
-                         exitCode == 0 &&
-                         (containsAny(output, {"success", "waiting for user info...ok", "logged in ok"}) ||
-                          !containsAny(output, {"login failure", "failed", "incorrect"}));
+    const bool cancelled = m_loginCancelled;
+    m_loginCancelled = false;
+    const QString normalized = normalizedSteamOutput(output);
+    const bool success = !cancelled && status == QProcess::NormalExit && exitCode == 0 &&
+                         (isLoginSuccessful(output) ||
+                          (hasSessionArtifacts() && !containsAny(normalized, {"login failure", "invalid password", "account logon denied", "access denied"})));
     if (success) {
         m_savedUsername = username;
         m_loggedIn = true;
@@ -434,8 +551,9 @@ void SteamCMDManager::finishLoginProcess(int exitCode, QProcess::ExitStatus stat
         emit loginStateChanged(SteamLoginState::Success, QStringLiteral("登录成功"));
     } else {
         m_loggedIn = false;
-        emit authenticationChanged(false, QStringLiteral("登录失败"));
-        emit loginStateChanged(SteamLoginState::Failed, QStringLiteral("登录失败或需要重新验证"));
+        const QString message = cancelled ? QStringLiteral("登录已取消") : QStringLiteral("登录失败或需要重新验证");
+        emit authenticationChanged(false, message);
+        emit loginStateChanged(SteamLoginState::Failed, message);
     }
 }
 

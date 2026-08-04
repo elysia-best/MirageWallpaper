@@ -20,6 +20,7 @@ private:
 
     WorkshopViewModel* m_viewModel = nullptr;
     QHash<WorkshopTypeFilter, QCheckBox*> m_typeChecks;
+    QHash<int, QCheckBox*> m_ratingChecks;
     QHash<QString, QCheckBox*> m_tagChecks;
 };
 
