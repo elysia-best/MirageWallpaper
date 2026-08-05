@@ -10,6 +10,8 @@
 #include <QObject>
 #include <QProcess>
 
+#include <functional>
+
 class QScreen;
 
 namespace Mirage {
@@ -38,10 +40,14 @@ public:
     explicit RendererController(GlobalSettingsService* settings, QObject* parent = nullptr);
     ~RendererController() override;
 
+    void setWallpaperTrustChecker(const std::function<bool(const Wallpaper&)>& checker);
+
     bool render(const Wallpaper& wallpaper, int screenIndex, const RenderOptions& options, QString* error = nullptr);
     void stop(int screenIndex);
     void stopAll();
     QVector<int> activeScreens() const;
+    bool isRunningOnScreen(int screenIndex) const;
+    QString wallpaperIdOnScreen(int screenIndex) const;
 
     static QString fillModeKey(FillMode mode);
     static QString stableOutputId(const QScreen* screen);
@@ -59,6 +65,7 @@ public slots:
 signals:
     void rendererExited(int screenIndex, bool abnormal);
     void rendererMessage(const QString& message);
+    void rendererStateChanged();
     void videoDidEnd(int screenIndex);
 
 private:
@@ -83,6 +90,7 @@ private:
     void consumeStdout(RunningProcess* running, const QByteArray& chunk);
 
     GlobalSettingsService* m_settings = nullptr;
+    std::function<bool(const Wallpaper&)> m_wallpaperTrustChecker;
     QHash<int, RunningProcess*> m_running;
 };
 

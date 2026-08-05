@@ -24,6 +24,9 @@ public:
     QString importWallpaperFolder(const QString& directory, QString* error = nullptr) const;
     QString importVideoFile(const QString& filePath, QString* error = nullptr) const;
     QString importAny(const QString& path, QString* error = nullptr);
+    bool updateMetadata(const Wallpaper& wallpaper, const QString& title, const QStringList& tags,
+                        bool updateTitle, bool updateTags, QString* error = nullptr);
+    bool removeImportedWallpaper(const Wallpaper& wallpaper, QString* error = nullptr);
 
 signals:
     void libraryChanged();

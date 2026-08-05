@@ -2,5 +2,6 @@
     <qresource prefix="/">
         <file alias="appicon.png">mirage.png</file>
         <file alias="icons/arrow_down.png">arrow_down.png</file>
+        <file alias="i18n/ui_zh-chs.json">../../Mirage/Mirage Wallpaper/Resources/ui_zh-chs.json</file>
     </qresource>
 </RCC>

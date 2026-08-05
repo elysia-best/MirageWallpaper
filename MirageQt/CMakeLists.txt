@@ -10,6 +10,8 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS
     Core
     Gui
     Widgets
+    Quick
+    QuickControls2
     Network
     Concurrent
     Qml
@@ -17,6 +19,10 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS
     WebEngineWidgets
     DBus)
 find_package(X11 REQUIRED)
+
+set(FLUENTUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FLUENTUI_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
+add_subdirectory(Vendor/FluentUI/src)
 
 # MirageLinuxDisplay is vendored in-tree (see Vendors/MirageLinuxDisplay/README.md).
 set(MIRAGE_DISPLAY_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../Vendors/MirageLinuxDisplay")
@@ -48,6 +54,8 @@ add_library(MirageQtCore STATIC
     Sources/Services/GlobalSettingsService.h
     Sources/Services/LinuxSystemIntegration.cpp
     Sources/Services/LinuxSystemIntegration.h
+    Sources/Services/MirageController.cpp
+    Sources/Services/MirageController.h
     Sources/Services/Paths.cpp
     Sources/Services/Paths.h
     Sources/Services/PlaylistModels.cpp
@@ -166,13 +174,27 @@ qt_add_executable(MirageQt
     Sources/SteamSetup/SteamSetupDialog.cpp
     Sources/SteamSetup/SteamSetupDialog.h)
 
+set_source_files_properties(Sources/Qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
+set_source_files_properties(Sources/Qml/PropertyLocalization.js PROPERTIES QT_RESOURCE_ALIAS PropertyLocalization.js)
+qt_add_qml_module(MirageQt
+    URI MirageQt
+    VERSION 1.0
+    QML_FILES
+        Sources/Qml/Main.qml
+        Sources/Qml/PropertyLocalization.js)
+
 target_link_libraries(MirageQt PRIVATE
     MirageQtCore
     Qt6::Widgets
+    Qt6::Quick
+    Qt6::QuickControls2
     Qt6::WebEngineWidgets)
 
+target_include_directories(MirageQt PRIVATE Vendor/FluentUI/src)
+target_link_libraries(MirageQt PRIVATE fluentuiplugin fluentuipluginplugin)
+
 set_target_properties(MirageQt PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 install(TARGETS MirageQt
     RUNTIME DESTINATION bin)

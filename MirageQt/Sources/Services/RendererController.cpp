@@ -70,9 +70,21 @@ RendererController::~RendererController() {
     stopAll();
 }
 
+void RendererController::setWallpaperTrustChecker(const std::function<bool(const Wallpaper&)>& checker) {
+    m_wallpaperTrustChecker = checker;
+}
+
 bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, const RenderOptions& options, QString* error) {
     if (!wallpaper.isValid()) {
         if (error) *error = QStringLiteral("壁纸无效或缺少预设依赖");
+        return false;
+    }
+
+    if (wallpaper.kind() == WallpaperKind::Web
+        && m_wallpaperTrustChecker
+        && !m_wallpaperTrustChecker(wallpaper)) {
+        if (error) *error = QStringLiteral("网页壁纸需要用户确认后才可运行");
+        emit rendererMessage(error ? *error : QString());
         return false;
     }
 
@@ -83,7 +95,7 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
     }
 
     if (wallpaper.kind() == WallpaperKind::Web) {
-        if (error) *error = QStringLiteral("Linux WebRenderer 尚未实现。");
+        if (error) *error = QStringLiteral("TODO: Linux WebRenderer 尚未实现。");
         emit rendererMessage(error ? *error : QString());
         return false;
     }
@@ -164,10 +176,12 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
                 const int screen = running->screenIndex;
                 const bool abnormal = !running->stopping &&
                                       (exitStatus != QProcess::NormalExit || exitCode != 0);
-                if (m_running.value(screen) == running) m_running.remove(screen);
+                const bool wasCurrent = m_running.value(screen) == running;
+                if (wasCurrent) m_running.remove(screen);
                 for (const QString& temp : running->tempFiles) QFile::remove(temp);
                 running->process->deleteLater();
                 delete running;
+                if (wasCurrent) emit rendererStateChanged();
                 emit rendererExited(screen, abnormal);
             });
 
@@ -187,6 +201,7 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
     }
 
     m_running.insert(screenIndex, running);
+    emit rendererStateChanged();
     return true;
 }
 
@@ -206,6 +221,7 @@ void RendererController::stop(int screenIndex) {
     QTimer::singleShot(3000, running->process, [process = running->process] {
         if (process->state() != QProcess::NotRunning) process->kill();
     });
+    emit rendererStateChanged();
 }
 
 void RendererController::stopAll() {
@@ -218,6 +234,15 @@ QVector<int> RendererController::activeScreens() const {
     for (auto it = m_running.constBegin(); it != m_running.constEnd(); ++it) screens.push_back(it.key());
     std::sort(screens.begin(), screens.end());
     return screens;
+}
+
+bool RendererController::isRunningOnScreen(int screenIndex) const {
+    return m_running.contains(screenIndex);
+}
+
+QString RendererController::wallpaperIdOnScreen(int screenIndex) const {
+    const RunningProcess* running = m_running.value(screenIndex);
+    return running ? running->wallpaper.id() : QString();
 }
 
 QString RendererController::fillModeKey(FillMode mode) {
