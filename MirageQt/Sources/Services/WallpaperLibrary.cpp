@@ -182,6 +182,68 @@ QString WallpaperLibrary::importAny(const QString& path, QString* error) {
     return imported;
 }
 
+bool WallpaperLibrary::updateMetadata(const Wallpaper& wallpaper, const QString& title, const QStringList& tags,
+                                      bool updateTitle, bool updateTags, QString* error) {
+    if (!wallpaper.isValid()) {
+        if (error) *error = QStringLiteral("壁纸无效");
+        return false;
+    }
+
+    QFile file(QDir(wallpaper.wallpaperDirectory).filePath(QStringLiteral("project.json")));
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error) *error = QStringLiteral("无法读取 project.json");
+        return false;
+    }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    file.close();
+    if (!document.isObject()) {
+        if (error) *error = QStringLiteral("project.json 格式无效");
+        return false;
+    }
+
+    QJsonObject project = document.object();
+    if (updateTitle) project.insert(QStringLiteral("title"), title.trimmed());
+    if (updateTags) {
+        QJsonArray array;
+        for (const QString& tag : tags) array.append(tag);
+        project.insert(QStringLiteral("tags"), array);
+    }
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (error) *error = QStringLiteral("无法写入 project.json");
+        return false;
+    }
+    if (file.write(QJsonDocument(project).toJson(QJsonDocument::Indented)) < 0) {
+        if (error) *error = QStringLiteral("写入 project.json 失败");
+        return false;
+    }
+    emit libraryChanged();
+    return true;
+}
+
+bool WallpaperLibrary::removeImportedWallpaper(const Wallpaper& wallpaper, QString* error) {
+    if (!wallpaper.isValid()) {
+        if (error) *error = QStringLiteral("壁纸无效");
+        return false;
+    }
+
+    const QString importedRoot = QFileInfo(importedDirectory()).canonicalFilePath();
+    const QString wallpaperPath = QFileInfo(wallpaper.wallpaperDirectory).canonicalFilePath();
+    if (importedRoot.isEmpty() || wallpaperPath.isEmpty()
+        || wallpaperPath == importedRoot
+        || !wallpaperPath.startsWith(importedRoot + QLatin1Char('/'))) {
+        if (error) *error = QStringLiteral("TODO: 只能删除 Mirage 导入目录中的壁纸");
+        return false;
+    }
+
+    if (!QDir(wallpaperPath).removeRecursively()) {
+        if (error) *error = QStringLiteral("删除壁纸失败");
+        return false;
+    }
+    emit libraryChanged();
+    return true;
+}
+
 Wallpaper WallpaperLibrary::loadWallpaper(const QString& directory, QSet<QString> visited) const {
     QFile file(QDir(directory).filePath(QStringLiteral("project.json")));
     if (!file.open(QIODevice::ReadOnly)) {
