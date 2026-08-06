@@ -1,7 +1,9 @@
 #include "Services/MirageController.h"
 
 #include <QDir>
+#include <QDesktopServices>
 #include <QFileInfo>
+#include <QClipboard>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QSettings>
@@ -232,6 +234,16 @@ QString steamLoginStateKey(SteamLoginState state) {
     return {};
 }
 
+QString steamGuardTypeKey(SteamGuardType type) {
+    switch (type) {
+    case SteamGuardType::None: return QStringLiteral("");
+    case SteamGuardType::Email: return QStringLiteral("email");
+    case SteamGuardType::Mobile: return QStringLiteral("mobile");
+    case SteamGuardType::MobileConfirm: return QStringLiteral("mobileConfirm");
+    }
+    return {};
+}
+
 bool isActiveDownload(DownloadStateKind kind) {
     return kind == DownloadStateKind::Starting || kind == DownloadStateKind::Downloading ||
            kind == DownloadStateKind::Validating;
@@ -336,9 +348,13 @@ MirageController::MirageController(QObject* parent)
                 m_steamLoginMessage = message;
                 emit steamChanged();
             });
+    connect(&m_steamCMD, &SteamCMDManager::guardTypeChanged, this,
+            [this](SteamGuardType) { emit steamChanged(); });
     connect(&m_steamCMD, &SteamCMDManager::diagnosticEvent, this,
             [this](const QString& line) {
                 m_steamLoginLog.append(line);
+                if (m_steamLoginLog.size() > 500)
+                    m_steamLoginLog.remove(0, m_steamLoginLog.size() - 500);
                 emit steamChanged();
             });
     connect(&m_steamCMD, &SteamCMDManager::steamCMDPathChanged, this,
@@ -348,6 +364,8 @@ MirageController::MirageController(QObject* parent)
                 emit steamChanged();
                 emit workshopStateChanged();
             });
+    connect(&m_steamCMD, &SteamCMDManager::sessionReusableChanged, this,
+            [this](bool) { emit steamChanged(); });
     connect(&m_workshop, &WorkshopViewModel::installedWallpaperRequested, this, [this](const Wallpaper& item) {
         selectWallpaper(item.id());
         emit installedWallpaperSelected();
@@ -362,6 +380,7 @@ MirageController::MirageController(QObject* parent)
         setStatusMessage(QStringLiteral("创意工坊下载完成"));
     });
 
+    if (m_steamCMD.sessionReusable()) m_steamCMD.refreshSession();
     reloadWallpapers();
     restoreStartupPlayback();
     m_playlist.startRotators();
@@ -425,6 +444,36 @@ QString MirageController::workshopError() const { return m_workshop.error(); }
 int MirageController::workshopPage() const { return m_workshop.currentPage(); }
 int MirageController::workshopPageCount() const { return m_workshop.totalPages(); }
 int MirageController::activeDownloadCount() const { return m_workshop.activeDownloadCount(); }
+QVariantList MirageController::downloadQueue() const {
+    QVariantList result;
+    for (const WorkshopDownloadTask& task : m_workshop.downloadQueue()) {
+        const DownloadState& state = task.state;
+        result.append(QVariantMap{
+            {QStringLiteral("id"), task.workshopItem.publishedFileId},
+            {QStringLiteral("title"), task.workshopItem.title},
+            {QStringLiteral("preview"), task.workshopItem.previewImageUrl},
+            {QStringLiteral("typeLabel"), task.workshopItem.displayTypeName()},
+            {QStringLiteral("purpose"), task.purpose == DownloadPurpose::PresetDependency
+                ? QStringLiteral("presetDependency") : QStringLiteral("wallpaper")},
+            {QStringLiteral("state"), downloadStateKey(state.kind)},
+            {QStringLiteral("progress"), state.percent},
+            {QStringLiteral("message"), state.message},
+            {QStringLiteral("size"), task.workshopItem.fileSize},
+            {QStringLiteral("sizeLabel"), task.workshopItem.formattedFileSize()},
+        });
+    }
+    return result;
+}
+
+bool MirageController::hasDownloadHistory() const {
+    for (const WorkshopDownloadTask& task : m_workshop.downloadQueue()) {
+        if (task.state.kind == DownloadStateKind::Completed ||
+            task.state.kind == DownloadStateKind::Failed ||
+            task.state.kind == DownloadStateKind::Cancelled) return true;
+    }
+    return false;
+}
+
 bool MirageController::steamReady() const { return m_workshop.steamSetupState() == SteamSetupState::Ready; }
 QString MirageController::steamSetupSummary() const { return m_workshop.steamSetupSummary(); }
 QString MirageController::steamCMDPath() const { return m_steamCMD.steamCMDPath(); }
@@ -436,6 +485,9 @@ QString MirageController::steamInstallMessage() const { return m_steamInstallMes
 QString MirageController::steamLoginState() const { return m_steamLoginState; }
 QString MirageController::steamLoginMessage() const { return m_steamLoginMessage; }
 QStringList MirageController::steamLoginLog() const { return m_steamLoginLog; }
+QString MirageController::steamGuardType() const { return steamGuardTypeKey(m_steamCMD.steamGuardType()); }
+bool MirageController::steamSessionReusable() const { return m_steamCMD.sessionReusable(); }
+QStringList MirageController::steamDiagnosticEvents() const { return m_steamCMD.diagnosticEvents(); }
 
 bool MirageController::firstLaunch() const {
     return m_firstLaunch;
@@ -839,6 +891,10 @@ void MirageController::downloadWorkshopItem(const QString& id) {
     if (item) m_workshop.downloadItem(*item);
 }
 
+void MirageController::requestWorkshopPresetDependency(const QString& id) {
+    m_workshop.requestPresetDependency(id);
+}
+
 void MirageController::cancelWorkshopDownload(const QString& id) {
     m_workshop.cancelDownload(id);
 }
@@ -875,12 +931,45 @@ void MirageController::submitSteamGuardCode(const QString& code) {
     m_steamCMD.submitGuardCode(code);
 }
 
+void MirageController::confirmSteamMobileLogin() {
+    m_steamCMD.confirmMobileLogin();
+}
+
+void MirageController::useSavedSteamSession() {
+    m_steamLoginState = QStringLiteral("loggingIn");
+    m_steamLoginMessage = QStringLiteral("正在验证已保存的 SteamCMD 会话");
+    emit steamChanged();
+    m_steamCMD.refreshSession();
+}
+
 void MirageController::cancelSteamLogin() {
     m_steamCMD.cancelLogin();
 }
 
+void MirageController::cancelPendingSteamWork() {
+    m_steamCMD.cancelLogin();
+    m_steamCMD.cancelInstallation();
+}
+
 void MirageController::logoutSteam() {
     m_steamCMD.logout();
+    m_steamLoginState = QStringLiteral("idle");
+    m_steamLoginMessage = QStringLiteral("未登录");
+    emit steamChanged();
+}
+
+void MirageController::copySteamLoginLog() {
+    QGuiApplication::clipboard()->setText(m_steamLoginLog.join(QStringLiteral("\n")));
+}
+
+void MirageController::revealWorkshopDownload(const QString& id) {
+    const QStringList directories = m_library.workshopItemDirectories(id);
+    for (const QString& directory : directories) {
+        if (QFileInfo::exists(directory + QStringLiteral("/project.json"))) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+            return;
+        }
+    }
 }
 
 void MirageController::pauseWallpapers() {
@@ -1051,6 +1140,7 @@ QVariantMap MirageController::workshopItemMap(const WorkshopItem& item) const {
         {QStringLiteral("subscriptions"), item.formattedSubscriptions()},
         {QStringLiteral("favorited"), item.formattedFavorited()},
         {QStringLiteral("views"), item.formattedViews()},
+        {QStringLiteral("creatorSteamId"), item.creatorSteamId},
         {QStringLiteral("size"), item.fileSize},
         {QStringLiteral("sizeLabel"), item.formattedFileSize()},
         {QStringLiteral("updatedAt"), item.timeUpdated.toString(Qt::ISODate)},

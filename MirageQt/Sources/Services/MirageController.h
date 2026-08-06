@@ -36,6 +36,8 @@ class MirageController : public QObject {
     Q_PROPERTY(int workshopPage READ workshopPage NOTIFY workshopStateChanged)
     Q_PROPERTY(int workshopPageCount READ workshopPageCount NOTIFY workshopStateChanged)
     Q_PROPERTY(int activeDownloadCount READ activeDownloadCount NOTIFY workshopStateChanged)
+    Q_PROPERTY(QVariantList downloadQueue READ downloadQueue NOTIFY workshopStateChanged)
+    Q_PROPERTY(bool hasDownloadHistory READ hasDownloadHistory NOTIFY workshopStateChanged)
     Q_PROPERTY(bool steamReady READ steamReady NOTIFY workshopStateChanged)
     Q_PROPERTY(QString steamSetupSummary READ steamSetupSummary NOTIFY workshopStateChanged)
     Q_PROPERTY(QString steamCMDPath READ steamCMDPath NOTIFY steamChanged)
@@ -47,6 +49,9 @@ class MirageController : public QObject {
     Q_PROPERTY(QString steamLoginState READ steamLoginState NOTIFY steamChanged)
     Q_PROPERTY(QString steamLoginMessage READ steamLoginMessage NOTIFY steamChanged)
     Q_PROPERTY(QStringList steamLoginLog READ steamLoginLog NOTIFY steamChanged)
+    Q_PROPERTY(QString steamGuardType READ steamGuardType NOTIFY steamChanged)
+    Q_PROPERTY(bool steamSessionReusable READ steamSessionReusable NOTIFY steamChanged)
+    Q_PROPERTY(QStringList steamDiagnosticEvents READ steamDiagnosticEvents NOTIFY steamChanged)
     Q_PROPERTY(bool firstLaunch READ firstLaunch NOTIFY firstLaunchChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
@@ -77,6 +82,8 @@ public:
     int workshopPage() const;
     int workshopPageCount() const;
     int activeDownloadCount() const;
+    QVariantList downloadQueue() const;
+    bool hasDownloadHistory() const;
     bool steamReady() const;
     QString steamSetupSummary() const;
     QString steamCMDPath() const;
@@ -88,6 +95,9 @@ public:
     QString steamLoginState() const;
     QString steamLoginMessage() const;
     QStringList steamLoginLog() const;
+    QString steamGuardType() const;
+    bool steamSessionReusable() const;
+    QStringList steamDiagnosticEvents() const;
     bool firstLaunch() const;
     QString statusMessage() const;
     QVariantMap settings() const;
@@ -143,6 +153,7 @@ public:
     Q_INVOKABLE void loadNextWorkshopPage();
     Q_INVOKABLE void selectWorkshopItem(const QString& id);
     Q_INVOKABLE void downloadWorkshopItem(const QString& id);
+    Q_INVOKABLE void requestWorkshopPresetDependency(const QString& id);
     Q_INVOKABLE void cancelWorkshopDownload(const QString& id);
     Q_INVOKABLE void retryWorkshopDownload(const QString& id);
     Q_INVOKABLE void clearCompletedDownloads();
@@ -151,8 +162,13 @@ public:
     Q_INVOKABLE void cancelSteamCMDInstallation();
     Q_INVOKABLE void loginSteam(const QString& username, const QString& password);
     Q_INVOKABLE void submitSteamGuardCode(const QString& code);
+    Q_INVOKABLE void confirmSteamMobileLogin();
+    Q_INVOKABLE void useSavedSteamSession();
     Q_INVOKABLE void cancelSteamLogin();
+    Q_INVOKABLE void cancelPendingSteamWork();
     Q_INVOKABLE void logoutSteam();
+    Q_INVOKABLE void copySteamLoginLog();
+    Q_INVOKABLE void revealWorkshopDownload(const QString& id);
     Q_INVOKABLE void pauseWallpapers();
     Q_INVOKABLE void resumeWallpapers();
     Q_INVOKABLE void muteWallpapers();
