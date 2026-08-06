@@ -1,30 +1,32 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../Workshop"
 
 ColumnLayout {
-    property string title: ""
-    property var items: []
-    Layout.fillWidth: true
+    id: root
+    required property var host
+    required property var section
+    width: parent ? parent.width : 0
+    spacing: 6
+
     FluText {
-        text: parent.title
+        text: root.section.title
         font: FluTextStyle.Subtitle
     }
     ListView {
         Layout.fillWidth: true
+        Layout.preferredWidth: Math.max(0, root.width)
         Layout.preferredHeight: 218
+        clip: true
         orientation: ListView.Horizontal
         spacing: 10
-        model: parent.items
-        delegate: FluFrame {
+        model: root.host.filterDiscoverItems(root.section.items)
+        delegate: WorkshopItemCard {
             required property var modelData
-            width: 164
-            height: 204
-            FluText {
-                anchors.centerIn: parent
-                text: modelData.title
-                elide: Text.ElideRight
-            }
+            host: root.host
+            itemData: modelData
+            compact: true
         }
     }
 }
