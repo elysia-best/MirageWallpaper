@@ -1,0 +1,48 @@
+import QtQuick
+import QtQuick.Layouts
+import FluentUI
+
+FluFrame {
+    id: banner
+    property bool showsActions: true
+    property string groupNumber: "2160040437"
+    signal copyRequested
+    Layout.fillWidth: true
+    RowLayout {
+        anchors.fill: parent
+        anchors.margins: 8
+        spacing: 10
+        FluIcon {
+            iconSource: FluentIcons.Message
+            iconSize: 18
+            iconColor: "#f59e0b"
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            FluText {
+                text: "Mirage 仍处于早期阶段"
+                font: FluTextStyle.BodyStrong
+            }
+            FluText {
+                Layout.fillWidth: true
+                text: "遇到问题请认真撰写 Issue，或加入 QQ 交流群 " + banner.groupNumber + " 反馈。"
+                wrapMode: Text.WordWrap
+            }
+        }
+        FluButton {
+            visible: banner.showsActions
+            text: "支持 Mirage"
+            onClicked: Qt.openUrlExternally("https://github.com/laobamac/MirageWallpaper")
+        }
+        FluButton {
+            visible: banner.showsActions
+            text: "提交 Issue"
+            onClicked: Qt.openUrlExternally("https://github.com/laobamac/MirageWallpaper/issues/new/choose")
+        }
+        FluFilledButton {
+            visible: banner.showsActions
+            text: "复制群号"
+            onClicked: banner.copyRequested()
+        }
+    }
+}

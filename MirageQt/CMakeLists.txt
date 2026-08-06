@@ -105,83 +105,22 @@ target_link_libraries(MirageQtCore PUBLIC
 
 qt_add_executable(MirageQt
     Sources/App/main.cpp
-    Sources/App/MirageStyle.cpp
-    Sources/App/MirageStyle.h
-    Sources/App/MirageWidgets.h
-    Resources/resources.qrc
-    Sources/ContentView/ContentView.cpp
-    Sources/ContentView/ContentView.h
-    Sources/ContentView/FirstLaunchView.cpp
-    Sources/ContentView/FirstLaunchView.h
-    Sources/ContentView/ImportPanels.cpp
-    Sources/ContentView/ImportPanels.h
-    Sources/ContentView/MainWindow.cpp
-    Sources/ContentView/MainWindow.h
-    Sources/ContentView/Components/ExplorerBottomBarWidget.cpp
-    Sources/ContentView/Components/ExplorerBottomBarWidget.h
-    Sources/ContentView/Components/Playlist/PlaylistOpenDialog.cpp
-    Sources/ContentView/Components/Playlist/PlaylistOpenDialog.h
-    Sources/ContentView/Components/Playlist/PlaylistSaveDialog.cpp
-    Sources/ContentView/Components/Playlist/PlaylistSaveDialog.h
-    Sources/ContentView/Components/Playlist/PlaylistSettingsDialog.cpp
-    Sources/ContentView/Components/Playlist/PlaylistSettingsDialog.h
-    Sources/ContentView/Components/ExplorerTopBarWidget.cpp
-    Sources/ContentView/Components/ExplorerTopBarWidget.h
-    Sources/ContentView/Components/FilterResultsWidget.cpp
-    Sources/ContentView/Components/FilterResultsWidget.h
-    Sources/ContentView/Components/PropertyEditorWidget.cpp
-    Sources/ContentView/Components/PropertyEditorWidget.h
-    Sources/ContentView/Components/ProjectFeedbackBannerWidget.cpp
-    Sources/ContentView/Components/ProjectFeedbackBannerWidget.h
-    Sources/ContentView/Components/TopTabBarWidget.cpp
-    Sources/ContentView/Components/TopTabBarWidget.h
-    Sources/ContentView/Components/WallpaperListWidget.cpp
-    Sources/ContentView/Components/WallpaperListWidget.h
-    Sources/ContentView/Components/WallpaperPreviewWidget.cpp
-    Sources/ContentView/Components/WallpaperPreviewWidget.h
-    Sources/ContentView/Components/Discover/DiscoverBannerView.cpp
-    Sources/ContentView/Components/Discover/DiscoverBannerView.h
-    Sources/ContentView/Components/Discover/DiscoverSectionView.cpp
-    Sources/ContentView/Components/Discover/DiscoverSectionView.h
-    Sources/ContentView/Components/Discover/DiscoverView.cpp
-    Sources/ContentView/Components/Discover/DiscoverView.h
-    Sources/ContentView/Components/Workshop/DownloadPopover.cpp
-    Sources/ContentView/Components/Workshop/DownloadPopover.h
-    Sources/ContentView/Components/Workshop/WorkshopFilterSidebar.cpp
-    Sources/ContentView/Components/Workshop/WorkshopFilterSidebar.h
-    Sources/ContentView/Components/Workshop/WorkshopItemCard.cpp
-    Sources/ContentView/Components/Workshop/WorkshopItemCard.h
-    Sources/ContentView/Components/Workshop/WorkshopItemDetail.cpp
-    Sources/ContentView/Components/Workshop/WorkshopItemDetail.h
-    Sources/ContentView/Components/Workshop/WorkshopSearchBar.cpp
-    Sources/ContentView/Components/Workshop/WorkshopSearchBar.h
-    Sources/ContentView/Components/Workshop/WorkshopTagBar.cpp
-    Sources/ContentView/Components/Workshop/WorkshopTagBar.h
-    Sources/ContentView/Components/Workshop/WorkshopView.cpp
-    Sources/ContentView/Components/Workshop/WorkshopView.h
-    Sources/SettingsView/AboutUsView.cpp
-    Sources/SettingsView/AboutUsView.h
-    Sources/SettingsView/GeneralPage.cpp
-    Sources/SettingsView/GeneralPage.h
-    Sources/SettingsView/PerformancePage.cpp
-    Sources/SettingsView/PerformancePage.h
-    Sources/SettingsView/PluginsPage.cpp
-    Sources/SettingsView/PluginsPage.h
-    Sources/SettingsView/ScreenSaverPage.cpp
-    Sources/SettingsView/ScreenSaverPage.h
-    Sources/SettingsView/SettingsView.cpp
-    Sources/SettingsView/SettingsView.h
-    Sources/SteamSetup/SteamSetupDialog.cpp
-    Sources/SteamSetup/SteamSetupDialog.h)
+    Resources/resources.qrc)
 
 set_source_files_properties(Sources/Qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
 set_source_files_properties(Sources/Qml/PropertyLocalization.js PROPERTIES QT_RESOURCE_ALIAS PropertyLocalization.js)
+file(GLOB_RECURSE MIRAGE_QML_FILES CONFIGURE_DEPENDS
+    Sources/Qml/*.qml
+    Sources/Qml/*.js)
+foreach(qml_file IN LISTS MIRAGE_QML_FILES)
+    file(RELATIVE_PATH qml_alias "${CMAKE_CURRENT_LIST_DIR}/Sources/Qml" "${qml_file}")
+    set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_alias}")
+endforeach()
 qt_add_qml_module(MirageQt
     URI MirageQt
     VERSION 1.0
     QML_FILES
-        Sources/Qml/Main.qml
-        Sources/Qml/PropertyLocalization.js)
+        ${MIRAGE_QML_FILES})
 
 target_link_libraries(MirageQt PRIVATE
     MirageQtCore
