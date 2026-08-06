@@ -13,6 +13,7 @@
 #include <QJsonObject>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QTextStream>
 #include <QTimer>
 
 #include <functional>
@@ -22,6 +23,11 @@ namespace {
 
 QString number(double value) {
     return QString::number(value, 'f', 3);
+}
+
+void writeRendererDiagnostic(int screenIndex, const QString& text) {
+    QTextStream stream(stdout);
+    stream << "[Renderer " << screenIndex + 1 << "] " << text << Qt::endl;
 }
 
 QString siblingBinary(const QString& name) {
@@ -161,9 +167,9 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         return false;
     }
 
-    connect(process, &QProcess::readyReadStandardError, this, [this, process] {
+    connect(process, &QProcess::readyReadStandardError, this, [running, process] {
         const QString text = QString::fromUtf8(process->readAllStandardError()).trimmed();
-        if (!text.isEmpty()) emit rendererMessage(text);
+        if (!text.isEmpty()) writeRendererDiagnostic(running->screenIndex, text);
     });
     connect(process, &QProcess::readyReadStandardOutput, this, [this, running, process] {
         consumeStdout(running, process->readAllStandardOutput());
