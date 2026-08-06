@@ -103,6 +103,13 @@ target_link_libraries(MirageQtCore PUBLIC
     mirage_display_static
     X11::X11)
 
+if (UNIX AND NOT APPLE)
+    find_library(UTIL_LIBRARY util)
+    if (UTIL_LIBRARY)
+        target_link_libraries(MirageQtCore PUBLIC "${UTIL_LIBRARY}")
+    endif()
+endif()
+
 qt_add_executable(MirageQt
     Sources/App/main.cpp
     Sources/App/StatusBar.cpp
