@@ -10,7 +10,19 @@ ColumnLayout {
     property double progress: mirage.steamInstallProgress
     property string path: mirage.steamCMDPath
     property string message: mirage.steamInstallMessage
+    property var installLog: mirage.steamLoginLog
+    property bool showLog: false
     property bool busy: ["detecting", "downloading", "extracting", "initializing"].indexOf(state) >= 0
+
+    onStateChanged: {
+        if (state === "failed")
+            showLog = true;
+    }
+
+    Component.onCompleted: {
+        if (state === "failed")
+            showLog = true;
+    }
 
     function invoke(name) {
         var fn = mirage[name];
@@ -207,5 +219,32 @@ ColumnLayout {
             visible: root.busy
             onClicked: root.invoke("cancelSteamCMDInstallation")
         }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        visible: root.installLog.length > 0
+
+        Item { Layout.fillWidth: true }
+        FluButton {
+            text: root.showLog ? qsTr("隐藏日志") : qsTr("显示 SteamCMD 日志")
+            onClicked: root.showLog = !root.showLog
+        }
+        FluIconButton {
+            iconSource: FluentIcons.Copy
+            text: qsTr("复制脱敏日志")
+            contentDescription: qsTr("复制脱敏日志")
+            onClicked: root.invoke("copySteamLoginLog")
+        }
+    }
+
+    FluMultilineTextBox {
+        Layout.fillWidth: true
+        Layout.preferredHeight: 150
+        visible: root.showLog && root.installLog.length > 0
+        readOnly: true
+        text: root.installLog.join("\n")
+        wrapMode: Text.WrapAnywhere
+        color: FluTheme.fontSecondaryColor
     }
 }

@@ -429,13 +429,26 @@ void SteamCMDManager::installSteamCMD() {
                                 m_installProcess = nullptr;
                                 const QString output = shellOutput(*init);
                                 init->deleteLater();
-                                record(QStringLiteral("SteamCMD 安装"), output);
+                                const QString status = initStatus == QProcess::NormalExit
+                                    ? QStringLiteral("正常退出") : QStringLiteral("异常退出");
+                                record(QStringLiteral("SteamCMD 安装"),
+                                       QStringLiteral("初始化进程结束：%1，退出码 %2\n%3")
+                                           .arg(status).arg(initCode).arg(output));
                                 if (m_installCancelled) {
                                     emit installStateChanged(SteamCMDInstallState::Failed, 0.0, QStringLiteral("SteamCMD 安装已取消"));
                                     return;
                                 }
                                 if (initStatus != QProcess::NormalExit || initCode != 0) {
-                                    emit installStateChanged(SteamCMDInstallState::Failed, 0.0, QStringLiteral("SteamCMD 初始化失败"));
+                                    const bool missingRuntime = initCode == 127
+                                        && containsAny(output, {QStringLiteral("no such file"),
+                                                                 QStringLiteral("cannot execute"),
+                                                                 QStringLiteral("找不到需要的文件"),
+                                                                 QStringLiteral("无法执行")});
+                                    const QString message = missingRuntime
+                                        ? QStringLiteral("SteamCMD 初始化失败：缺少 32 位运行库。AOSC OS 请安装 glibc+32 和 gcc+32 后重试。")
+                                        : QStringLiteral("SteamCMD 初始化失败");
+                                    record(QStringLiteral("SteamCMD 安装"), message);
+                                    emit installStateChanged(SteamCMDInstallState::Failed, 0.0, message);
                                     return;
                                 }
                                 QFile marker(markerPath());
