@@ -4,71 +4,283 @@ import QtQuick.Layouts
 import FluentUI
 
 ColumnLayout {
-    id: login
+    id: root
     property string username: ""
     property string password: ""
     property string guardCode: ""
-    spacing: 10
+    property string loginState: String(value("steamLoginState", "idle"))
+    property string loginMessage: String(value("steamLoginMessage", ""))
+    property string guardType: String(value("steamGuardType", ""))
+    property bool sessionReusable: Boolean(value("steamSessionReusable", false))
+    property var loginLog: value("steamLoginLog", [])
+    property bool showLog: false
+    spacing: 12
+
+    function value(name, fallback) {
+        var result = mirage[name];
+        return result === undefined || result === null ? fallback : result;
+    }
+
+    function invoke(name) {
+        var fn = mirage[name];
+        if (typeof fn !== "function")
+            return false;
+        fn.apply(mirage, Array.prototype.slice.call(arguments, 1));
+        return true;
+    }
+
     FluText {
-        text: "Steam 登录"
+        Layout.alignment: Qt.AlignHCenter
+        text: qsTr("登录 Steam 账号")
         font: FluTextStyle.Title
     }
+
     FluText {
         Layout.fillWidth: true
-        visible: mirage.steamLoginState === "success"
-        text: "已登录 Steam：" + (mirage.steamUsername || login.username)
-        color: FluTheme.primaryColor
-    }
-    FluTextBox {
-        Layout.fillWidth: true
-        visible: mirage.steamLoginState !== "success"
-        placeholderText: "Steam 用户名"
-        text: login.username
-        onTextChanged: login.username = text
-    }
-    FluPasswordBox {
-        Layout.fillWidth: true
-        visible: mirage.steamLoginState !== "success"
-        placeholderText: "密码"
-        text: login.password
-        onTextChanged: login.password = text
-    }
-    FluTextBox {
-        Layout.fillWidth: true
-        visible: mirage.steamLoginState === "waitingForGuard"
-        placeholderText: "Steam Guard 验证码"
-        text: login.guardCode
-        onTextChanged: login.guardCode = text
-    }
-    FluText {
-        Layout.fillWidth: true
-        visible: mirage.steamLoginMessage.length > 0
-        text: mirage.steamLoginMessage
+        text: qsTr("需要一个拥有 Wallpaper Engine 的全球 Steam 账号来下载创意工坊内容。")
         wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter
+        color: FluTheme.fontSecondaryColor
     }
-    FluFilledButton {
-        visible: mirage.steamLoginState !== "success"
-        text: mirage.steamLoginState === "waitingForGuard" ? "提交验证码" : "登录"
-        onClicked: mirage.steamLoginState === "waitingForGuard"
-            ? mirage.submitSteamGuardCode(login.guardCode)
-            : mirage.loginSteam(login.username, login.password)
+
+    FluFrame {
+        Layout.fillWidth: true
+        Layout.leftMargin: 16
+        Layout.rightMargin: 16
+        Layout.preferredHeight: securityNoticeContent.implicitHeight + 20
+        ColumnLayout {
+            id: securityNoticeContent
+            anchors.fill: parent
+            anchors.margins: 10
+            spacing: 5
+            FluText {
+                Layout.fillWidth: true
+                text: qsTr("Mirage 并非 Steam 官方客户端。")
+                color: Qt.rgba(196 / 255, 121 / 255, 0, 1)
+                font: FluTextStyle.BodyStrong
+            }
+            FluText {
+                Layout.fillWidth: true
+                text: qsTr("若继续登录，密码仅通过本机的 Valve SteamCMD 安全终端提交，不会写入命令行或 Mirage 日志。SteamCMD 会在本机保存会话以便下载；您可随时在创意工坊页面“退出登录”清除它。")
+                wrapMode: Text.WordWrap
+                color: FluTheme.fontSecondaryColor
+                font: FluTextStyle.Caption
+            }
+        }
     }
-    FluButton {
-        visible: mirage.steamLoginState === "success"
-        text: "退出登录"
-        onClicked: mirage.logoutSteam()
+
+    FluFrame {
+        Layout.fillWidth: true
+        Layout.leftMargin: 30
+        Layout.rightMargin: 30
+        Layout.preferredHeight: savedSessionContent.implicitHeight + 20
+        visible: root.loginState !== "success" && root.sessionReusable
+        RowLayout {
+            id: savedSessionContent
+            anchors.fill: parent
+            anchors.margins: 10
+            spacing: 8
+            FluIcon {
+                iconSource: FluentIcons.Contact
+                iconSize: 20
+                iconColor: Qt.rgba(16 / 255, 124 / 255, 16 / 255, 1)
+            }
+            FluText {
+                Layout.fillWidth: true
+                text: qsTr("已找到账号 %1 的验证会话。").arg(root.username)
+                wrapMode: Text.WordWrap
+            }
+            FluFilledButton {
+                text: qsTr("使用已保存会话")
+                onClicked: root.invoke("useSavedSteamSession")
+            }
+        }
     }
-    FluButton {
-        text: "取消登录"
-        visible: mirage.steamLoginState === "loggingIn" || mirage.steamLoginState === "waitingForGuard"
-        onClicked: mirage.cancelSteamLogin()
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: 70
+        Layout.rightMargin: 70
+        visible: root.loginState === "idle" || root.loginState === "failed"
+        spacing: 8
+
+        FluTextBox {
+            Layout.fillWidth: true
+            placeholderText: qsTr("全球 Steam 登录账户名（非昵称）")
+            iconSource: FluentIcons.Contact
+            text: root.username
+            onTextChanged: root.username = text
+        }
+        FluPasswordBox {
+            Layout.fillWidth: true
+            placeholderText: qsTr("密码")
+            text: root.password
+            onTextChanged: root.password = text
+        }
+        FluFilledButton {
+            Layout.fillWidth: true
+            text: qsTr("登录")
+            enabled: root.username.trim().length > 0 && root.password.length > 0
+            onClicked: root.invoke("loginSteam", root.username, root.password)
+        }
     }
-    ScrollView {
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: 70
+        Layout.rightMargin: 70
+        visible: root.loginState === "loggingIn"
+        spacing: 10
+        FluProgressRing { Layout.alignment: Qt.AlignHCenter }
+        FluText {
+            Layout.alignment: Qt.AlignHCenter
+            text: root.loginMessage.length > 0 ? root.loginMessage : qsTr("正在登录...")
+            color: FluTheme.fontSecondaryColor
+        }
+        FluButton {
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("取消登录")
+            onClicked: root.invoke("cancelSteamLogin")
+        }
+    }
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: 70
+        Layout.rightMargin: 70
+        visible: root.loginState === "waitingForGuard" && root.guardType !== "mobileConfirm"
+        spacing: 8
+        FluIcon {
+            Layout.alignment: Qt.AlignHCenter
+            iconSource: root.guardType === "email" ? FluentIcons.Mail : FluentIcons.MobileTablet
+            iconSize: 34
+            iconColor: FluTheme.primaryColor
+        }
+        FluText {
+            Layout.alignment: Qt.AlignHCenter
+            text: root.guardType === "email" ? qsTr("请输入邮箱验证码") : qsTr("请输入手机验证码")
+            font: FluTextStyle.BodyStrong
+        }
+        FluTextBox {
+            Layout.fillWidth: true
+            placeholderText: qsTr("Steam Guard 验证码")
+            iconSource: FluentIcons.Lock
+            text: root.guardCode
+            onTextChanged: root.guardCode = text
+        }
+        FluFilledButton {
+            Layout.fillWidth: true
+            text: qsTr("验证")
+            enabled: root.guardCode.trim().length > 0
+            onClicked: root.invoke("submitSteamGuardCode", root.guardCode)
+        }
+        FluButton {
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("取消登录")
+            onClicked: root.invoke("cancelSteamLogin")
+        }
+    }
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: 70
+        Layout.rightMargin: 70
+        visible: root.loginState === "waitingForGuard" && root.guardType === "mobileConfirm"
+        spacing: 10
+        FluIcon {
+            Layout.alignment: Qt.AlignHCenter
+            iconSource: FluentIcons.MobileTablet
+            iconSize: 42
+            iconColor: FluTheme.primaryColor
+        }
+        FluText {
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("请在手机上确认登录")
+            font: FluTextStyle.BodyStrong
+        }
+        FluText {
+            Layout.fillWidth: true
+            text: root.loginMessage
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+            color: FluTheme.fontSecondaryColor
+        }
+        FluButton {
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("我已确认")
+            onClicked: root.invoke("confirmSteamMobileLogin")
+        }
+        FluButton {
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("取消登录")
+            onClicked: root.invoke("cancelSteamLogin")
+        }
+    }
+
+    FluFrame {
+        Layout.fillWidth: true
+        Layout.leftMargin: 70
+        Layout.rightMargin: 70
+        Layout.preferredHeight: loginSuccessContent.implicitHeight + 24
+        visible: root.loginState === "success"
+        RowLayout {
+            id: loginSuccessContent
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 10
+            FluIcon {
+                iconSource: FluentIcons.CheckMark
+                iconSize: 28
+                iconColor: Qt.rgba(16 / 255, 124 / 255, 16 / 255, 1)
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                FluText { text: qsTr("Steam 登录完成"); font: FluTextStyle.BodyStrong }
+                FluText {
+                    Layout.fillWidth: true
+                    text: qsTr("登录账号：%1").arg(root.username)
+                    color: FluTheme.fontSecondaryColor
+                    elide: Text.ElideRight
+                }
+            }
+            FluButton {
+                text: qsTr("退出登录")
+                onClicked: root.invoke("logoutSteam")
+            }
+        }
+    }
+
+    FluText {
+        Layout.fillWidth: true
+        visible: root.loginMessage.length > 0 && root.loginState === "failed"
+        text: root.loginMessage
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter
+        color: Qt.rgba(196 / 255, 43 / 255, 28 / 255, 1)
+    }
+
+    RowLayout {
+        Layout.alignment: Qt.AlignHCenter
+        visible: root.loginLog.length > 0
+        FluButton {
+            text: root.showLog ? qsTr("隐藏日志") : qsTr("显示 SteamCMD 日志")
+            onClicked: root.showLog = !root.showLog
+        }
+        FluIconButton {
+            iconSource: FluentIcons.Copy
+            text: qsTr("复制脱敏日志")
+            contentDescription: qsTr("复制脱敏日志")
+            onClicked: root.invoke("copySteamLoginLog")
+        }
+    }
+
+    FluMultilineTextBox {
         Layout.fillWidth: true
         Layout.preferredHeight: 120
-        FluText {
-            text: mirage.steamLoginLog.join("\n")
-            wrapMode: Text.Wrap
-        }
+        visible: root.showLog
+        readOnly: true
+        text: root.loginLog.join("\n")
+        wrapMode: Text.WrapAnywhere
+        color: FluTheme.fontSecondaryColor
     }
 }

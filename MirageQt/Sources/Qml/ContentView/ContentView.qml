@@ -1335,11 +1335,12 @@ FluWindow {
                 id: detailContent
                 width: detailScroll.contentWidth
                 implicitHeight: window.currentTab === 0 ? installedDetail.implicitHeight : workshopDetail.implicitHeight
-                height: implicitHeight
+                height: Math.max(detailScroll.availableHeight, implicitHeight)
 
                 ColumnLayout {
                     id: installedDetail
                     width: parent.width
+                    height: parent.height
                     visible: window.currentTab === 0
                     spacing: 16
 
@@ -1524,6 +1525,7 @@ FluWindow {
                 WorkshopItemDetail {
                     id: workshopDetail
                     width: parent.width
+                    height: parent.height
                     visible: window.currentTab !== 0
                     host: window
                 }
@@ -1803,37 +1805,11 @@ FluWindow {
         }
     }
 
-    MirageDialogWindow {
-        id: statusPopup
-        title: "Mirage"
-        width: 380
-        height: 160
-        modality: Qt.NonModal
-        buttonFlags: 0
-        contentDelegate: Component {
-            FluText {
-                width: parent.width
-                text: mirage.statusMessage
-                wrapMode: Text.WordWrap
-            }
-        }
-        Timer {
-            interval: 4000
-            running: statusPopup.visible
-            onTriggered: statusPopup.close()
-        }
-        Component.onCompleted: {
+    Connections {
+        target: mirage
+        function onStatusMessageChanged() {
             if (mirage.statusMessage.length > 0)
-                open();
-        }
-        Connections {
-            target: mirage
-            function onStatusMessageChanged() {
-                if (mirage.statusMessage.length > 0)
-                    statusPopup.open();
-                else
-                    statusPopup.close();
-            }
+                window.showSuccess(mirage.statusMessage);
         }
     }
 
