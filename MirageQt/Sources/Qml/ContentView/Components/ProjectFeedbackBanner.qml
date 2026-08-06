@@ -8,9 +8,14 @@ FluFrame {
     property string groupNumber: "2160040437"
     signal copyRequested
     Layout.fillWidth: true
+    implicitHeight: bannerContent.implicitHeight + 16
+
     RowLayout {
-        anchors.fill: parent
-        anchors.margins: 8
+        id: bannerContent
+        width: parent.width - 16
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.topMargin: 8
         spacing: 10
         FluIcon {
             iconSource: FluentIcons.Message

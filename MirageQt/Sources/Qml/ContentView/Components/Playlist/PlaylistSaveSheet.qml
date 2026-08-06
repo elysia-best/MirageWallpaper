@@ -4,24 +4,45 @@ import FluentUI
 import "../../../GlobalComponents"
 
 MirageDialogWindow {
-    property string playlistName: ""
+    id: root
+    required property var host
     title: "保存播放列表"
-    positiveText: "保存"
+    width: 380
+    height: 260
     negativeText: "取消"
-    contentDelegate: ColumnLayout {
-        FluText {
-            text: "名称"
-            font: FluTextStyle.BodyStrong
+    positiveText: "保存"
+    buttonFlags: FluContentDialogType.NegativeButton | FluContentDialogType.PositiveButton
+    onOpened: root.host.playlistSaveName = ""
+    onPositiveClicked: {
+            var name = root.host.playlistSaveName.trim();
+            if (name.length > 0)
+                mirage.savePlaylist(name);
         }
-        FluTextBox {
-            Layout.fillWidth: true
-            text: parent.parent.playlistName
-            onTextChanged: parent.parent.playlistName = text
-        }
-        FluText {
-            Layout.fillWidth: true
-            text: "如果已存在相同名称的播放列表，则它将会被覆盖。"
-            wrapMode: Text.WordWrap
-        }
+        contentDelegate: Component {
+            ColumnLayout {
+                width: parent.width
+                spacing: 8
+                FluText {
+                    text: "名称"
+                }
+                FluTextBox {
+                    Layout.fillWidth: true
+                    placeholderText: "播放列表名称"
+                    text: root.host.playlistSaveName
+                    onTextChanged: root.host.playlistSaveName = text
+                    onCommit: {
+                        var name = text.trim();
+                        if (name.length > 0) {
+                            mirage.savePlaylist(name);
+                            root.close();
+                        }
+                    }
+                }
+                FluText {
+                    Layout.fillWidth: true
+                    text: "同名播放列表将被覆盖。"
+                    wrapMode: Text.WordWrap
+                }
+            }
     }
 }

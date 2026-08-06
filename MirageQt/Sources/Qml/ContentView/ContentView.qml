@@ -6,16 +6,24 @@ import QtQuick.Window
 import FluentUI
 import "../PropertyLocalization.js" as PropertyLocalization
 import "Components"
+import "Components/Discover"
+import "Components/Workshop"
+import "Components/Playlist"
+import "../SettingsView"
 import "../SteamSetup"
 import "../GlobalComponents"
 
 FluWindow {
     id: window
     title: "Mirage 1.0.0"
-    width: Math.max(940, Math.min(1000, Screen.width - 32))
-    height: Math.max(600, Math.min(640, Screen.height - 64))
-    minimumWidth: 940
-    minimumHeight: 600
+    // Matches MainWindowController's initial and minimum content size.
+    width: 1000
+    height: 640
+    minimumWidth: 1000
+    minimumHeight: 640
+    // The status bar restores this root window after it is closed. FluentUI's
+    // default destroys the window on close, leaving the tray with no target.
+    autoDestroy: false
     fitsAppBarWindows: true
     appBar: FluAppBar {
         height: 32
@@ -237,8 +245,37 @@ FluWindow {
         playlistSettingsSheet.open();
     }
 
+    function openPlaylistDeleteConfirmation(playlistId, playlistName) {
+        playlistDeleteConfirmation.playlistId = playlistId;
+        playlistDeleteConfirmation.playlistName = playlistName;
+        playlistDeleteConfirmation.open();
+    }
+
     function openSettingsPanel() {
         settingsSheet.open();
+    }
+
+    function openSteamSetup() {
+        steamSetupController.open();
+    }
+
+    function showLinuxNotice() {
+        linuxNotice.open();
+    }
+
+    function openWallpaperContextMenu(wallpaper) {
+        wallpaperContextMenu.wallpaper = wallpaper;
+        wallpaperContextMenu.popup();
+    }
+
+    function openPropertyPicker(propertyKey, directory) {
+        if (directory) {
+            propertyFolderDialog.propertyKey = propertyKey;
+            propertyFolderDialog.open();
+        } else {
+            propertyFileDialog.propertyKey = propertyKey;
+            propertyFileDialog.open();
+        }
     }
     property var playlistOrderOptions: [
         {
@@ -585,6 +622,36 @@ FluWindow {
     function toggleWorkshopTag(key) {
         setEnabled("workshopSelectedTags", key, !isEnabled(workshopSelectedTags, key));
         mirage.toggleWorkshopTag(key);
+    }
+
+    function selectAllWorkshopTags() {
+        workshopTagFilters.forEach(function(filter) {
+            if (!isEnabled(workshopSelectedTags, filter.key))
+                toggleWorkshopTag(filter.key);
+        });
+    }
+
+    function clearWorkshopTags() {
+        workshopSelectedTags.slice().forEach(function(tag) {
+            toggleWorkshopTag(tag);
+        });
+    }
+
+    function filterDiscoverItems(items) {
+        return items.filter(function(item) {
+            if (workshopType !== "all" && String(item.type || "") !== workshopType)
+                return false;
+            if (workshopRatings.length > 0 && !isEnabled(workshopRatings, String(item.rating || "Everyone")))
+                return false;
+            if (workshopSelectedTags.length > 0) {
+                var itemTags = item.tags || [];
+                for (var index = 0; index < workshopSelectedTags.length; ++index) {
+                    if (itemTags.indexOf(workshopSelectedTags[index]) === -1)
+                        return false;
+                }
+            }
+            return true;
+        });
     }
 
     function resetWorkshopFilters() {
@@ -1001,14 +1068,14 @@ FluWindow {
 
                 ProjectFeedbackBanner {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: implicitHeight + 16
+                    Layout.preferredHeight: implicitHeight
                     onCopyRequested: window.copyGroupNumber()
                 }
 
                 ExplorerTopBar {
                     id: explorerTopBar
                     Layout.fillWidth: true
-                    visible: window.currentTab !== 1
+                    visible: window.currentTab === 0
                     host: window
                     currentTab: window.currentTab
                     searchText: window.currentTab === 0 ? window.searchText : window.workshopSearchText
@@ -1051,11 +1118,7 @@ FluWindow {
                             visible: window.filtersVisible
                             clip: true
 
-                            StackLayout {
-                                width: parent.width
-                                currentIndex: window.currentTab === 2 ? 1 : 0
-
-                                ColumnLayout {
+                            ColumnLayout {
                                     Layout.fillWidth: true
                                     spacing: 12
 
@@ -1198,148 +1261,52 @@ FluWindow {
                                         }
                                     }
                                 }
-                                WorkshopFilterPanel {
-                                    Layout.fillWidth: true
-                                }
-                            }
                         }
 
-                        ColumnLayout {
+                        WallpaperExplorer {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            spacing: 6
-
-                            GridView {
-                                id: wallpaperGrid
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                clip: true
-                                model: window.pagedWallpapers
-                                cellWidth: Math.max(window.explorerIconSize, Math.floor(width / Math.max(1, Math.floor(width / window.explorerIconSize))))
-                                cellHeight: cellWidth
-
-                                delegate: Item {
-                                    required property var modelData
-                                    width: wallpaperGrid.cellWidth
-                                    height: wallpaperGrid.cellHeight
-
-                                    FluFrame {
-                                        anchors.fill: parent
-                                        anchors.margins: 7
-
-                                        ColumnLayout {
-                                            anchors.fill: parent
-                                            anchors.margins: 6
-                                            spacing: 0
-
-                                            Image {
-                                                Layout.fillWidth: true
-                                                Layout.fillHeight: true
-                                                source: modelData.preview
-                                                fillMode: Image.PreserveAspectCrop
-                                                asynchronous: true
-                                                cache: false
-                                            }
-                                            FluText {
-                                                id: titleText
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: titleText.implicitHeight + 12
-                                                text: modelData.title
-                                                elide: Text.ElideRight
-                                                horizontalAlignment: Text.AlignHCenter
-                                                verticalAlignment: Text.AlignVCenter
-                                            }
-                                        }
-                                        FluFocusRectangle {
-                                            anchors.fill: parent
-                                            visible: modelData.id === mirage.selectedWallpaperId
-                                            radius: 4
-                                        }
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                        onClicked: function (mouse) {
-                                            if (mouse.button === Qt.RightButton) {
-                                                mirage.selectWallpaper(modelData.id);
-                                                wallpaperContextMenu.wallpaper = modelData;
-                                                wallpaperContextMenu.popup();
-                                                return;
-                                            }
-                                            mirage.selectWallpaper(modelData.id);
-                                        }
-                                        onDoubleClicked: function (mouse) {
-                                            if (mouse.button === Qt.LeftButton) {
-                                                window.runWithWallpaperTrust(modelData, function () {
-                                                    mirage.applyWallpaper(modelData.id, false);
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-
-                                FluText {
-                                    anchors.centerIn: parent
-                                    visible: wallpaperGrid.count === 0
-                                    text: "没有找到匹配的壁纸。"
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.alignment: Qt.AlignHCenter
-                                visible: window.wallpaperPageCount > 1
-                                spacing: 6
-                                FluIconButton {
-                                    text: "上一页"
-                                    iconSource: FluentIcons.ChevronLeft
-                                    enabled: window.wallpaperCurrentPage > 1
-                                    onClicked: window.setWallpaperPage(window.wallpaperCurrentPage - 1)
-                                }
-                                Repeater {
-                                    model: window.wallpaperPageItems()
-                                    delegate: Item {
-                                        required property int modelData
-                                        Layout.preferredWidth: modelData === 0 ? 20 : pageButton.implicitWidth
-                                        Layout.preferredHeight: Math.max(pageButton.implicitHeight, pageEllipsis.implicitHeight)
-                                        FluText {
-                                            id: pageEllipsis
-                                            anchors.centerIn: parent
-                                            visible: parent.modelData === 0
-                                            text: "…"
-                                        }
-                                        FluButton {
-                                            id: pageButton
-                                            anchors.centerIn: parent
-                                            visible: parent.modelData !== 0
-                                            text: parent.modelData
-                                            enabled: parent.modelData !== window.wallpaperCurrentPage
-                                            onClicked: window.setWallpaperPage(parent.modelData)
-                                        }
-                                    }
-                                }
-                                FluIconButton {
-                                    text: "下一页"
-                                    iconSource: FluentIcons.ChevronRight
-                                    enabled: window.wallpaperCurrentPage < window.wallpaperPageCount
-                                    onClicked: window.setWallpaperPage(window.wallpaperCurrentPage + 1)
-                                }
-                                FluTextBox {
-                                    Layout.preferredWidth: 54
-                                    text: String(window.wallpaperCurrentPage)
-                                    placeholderText: "页码"
-                                    horizontalAlignment: Text.AlignHCenter
-                                    onCommit: window.setWallpaperPage(text)
-                                }
-                                FluText {
-                                    text: "/ " + window.wallpaperPageCount
-                                }
-                            }
+                            host: window
                         }
                     }
 
-                    DiscoverPage {}
+                    RowLayout {
+                        spacing: 10
+                        ScrollView {
+                            Layout.fillHeight: true
+                            Layout.preferredWidth: 225
+                            visible: window.filtersVisible
+                            clip: true
+                            WorkshopFilterSidebar {
+                                width: parent.width
+                                host: window
+                            }
+                        }
+                        DiscoverView {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            host: window
+                        }
+                    }
 
-                    WorkshopPage {}
+                    RowLayout {
+                        spacing: 10
+                        ScrollView {
+                            Layout.fillHeight: true
+                            Layout.preferredWidth: 225
+                            visible: window.filtersVisible
+                            clip: true
+                            WorkshopFilterSidebar {
+                                width: parent.width
+                                host: window
+                            }
+                        }
+                        WorkshopView {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            host: window
+                        }
+                    }
                 }
 
                 ExplorerBottomBar {
@@ -1506,12 +1473,10 @@ FluWindow {
                         text: "此壁纸没有可调节的属性。"
                         wrapMode: Text.WordWrap
                     }
-                    Repeater {
-                        model: mirage.selectedProperties
-                        delegate: PropertyEditorRow {
-                            required property var modelData
-                            propertyData: modelData
-                        }
+                    PropertyEditor {
+                        Layout.fillWidth: true
+                        host: window
+                        properties: mirage.selectedProperties
                     }
 
                     DetailSectionHeader {
@@ -1556,512 +1521,25 @@ FluWindow {
                     }
                 }
 
-                WorkshopDetailPanel {
+                WorkshopItemDetail {
                     id: workshopDetail
                     width: parent.width
                     visible: window.currentTab !== 0
+                    host: window
                 }
             }
         }
     }
 
-    MirageDialogWindow {
+    FirstLaunchView {
         id: firstLaunchSheet
-        title: "欢迎使用 Mirage"
-        width: 600
-        height: 440
-        buttonFlags: 0
-        contentDelegate: Component {
-            ColumnLayout {
-                spacing: 14
-                FluText {
-                    text: "欢迎使用 Mirage"
-                    font: FluTextStyle.Title
-                }
-                FluDivider {
-                    Layout.fillWidth: true
-                }
-                WelcomeFeature {
-                    icon: FluentIcons.Picture
-                    title: "三类壁纸，一站渲染"
-                    detail: "支持 Wallpaper Engine 的场景、网页、视频三类壁纸。"
-                }
-                WelcomeFeature {
-                    icon: FluentIcons.FolderOpen
-                    title: "自动加载创意工坊壁纸"
-                    detail: "读取已订阅壁纸，也可导入本地文件。"
-                }
-                WelcomeFeature {
-                    icon: FluentIcons.Settings
-                    title: "实时属性调节"
-                    detail: "音量、速度、填充模式和壁纸属性即时生效。"
-                }
-                FluToggleSwitch {
-                    id: hideUntilUpdate
-                    text: "在下次更新前不再显示"
-                }
-                FluFilledButton {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "开始使用"
-                    onClicked: mirage.completeFirstLaunch(hideUntilUpdate.checked)
-                }
-            }
-        }
-        Component.onCompleted: {
-            if (mirage.firstLaunch)
-                open();
-        }
-        Connections {
-            target: mirage
-            function onFirstLaunchChanged() {
-                if (mirage.firstLaunch)
-                    firstLaunchSheet.open();
-                else
-                    firstLaunchSheet.close();
-            }
-        }
+        host: window
     }
 
-    MirageDialogWindow {
+    SettingsView {
         id: settingsSheet
-        title: "设置"
-        width: 780
-        height: 620
-        onOpened: window.resetSettingsDraft()
-        contentDelegate: Component {
-            ColumnLayout {
-                spacing: 12
-                RowLayout {
-                    Layout.fillWidth: true
-                    FluText {
-                        text: "设置"
-                        font: FluTextStyle.Title
-                    }
-                    Item {
-                        Layout.fillWidth: true
-                    }
-                    FluText {
-                        visible: window.settingsDirty
-                        text: "已修改"
-                    }
-                }
-                FluDivider {
-                    Layout.fillWidth: true
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Repeater {
-                        model: ["性能", "通用", "插件", "屏保", "关于"]
-                        delegate: FluToggleButton {
-                            required property string modelData
-                            required property int index
-                            text: modelData
-                            checked: window.settingsPage === index
-                            clickListener: function () {
-                                window.settingsPage = index;
-                            }
-                        }
-                    }
-                }
-                StackLayout {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    currentIndex: window.settingsPage
-
-                    ColumnLayout {
-                        spacing: 12
-                        FluText {
-                            text: "播放规则"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        Repeater {
-                            model: window.playbackOptions
-                            delegate: RowLayout {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                FluText {
-                                    Layout.fillWidth: true
-                                    text: modelData.label
-                                }
-                                FluComboBox {
-                                    Layout.preferredWidth: 180
-                                    model: window.playbackModes.map(function (mode) {
-                                        return mode.label;
-                                    })
-                                    currentIndex: window.playbackModes.map(function (mode) {
-                                        return mode.key;
-                                    }).indexOf(window.settingsDraft[modelData.key])
-                                    onActivated: window.setSetting(modelData.key, window.playbackModes[currentIndex].key)
-                                }
-                            }
-                        }
-                        FluDivider {
-                            Layout.fillWidth: true
-                        }
-                        FluText {
-                            text: "渲染质量"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Repeater {
-                                model: ["低", "中", "高", "极致"]
-                                delegate: FluButton {
-                                    required property string modelData
-                                    Layout.fillWidth: true
-                                    text: modelData
-                                    onClicked: {
-                                        if (modelData === "低") {
-                                            window.setSetting("antiAliasing", "none");
-                                            window.setSetting("textureResolution", "highPerformance");
-                                        } else if (modelData === "中") {
-                                            window.setSetting("antiAliasing", "msaa_x2");
-                                            window.setSetting("textureResolution", "automatic");
-                                        } else if (modelData === "高") {
-                                            window.setSetting("antiAliasing", "msaa_x4");
-                                            window.setSetting("textureResolution", "original");
-                                        } else {
-                                            window.setSetting("antiAliasing", "msaa_x8");
-                                            window.setSetting("textureResolution", "original");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        FluDivider {
-                            Layout.fillWidth: true
-                        }
-                        FluText {
-                            text: "渲染"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            FluText {
-                                text: "帧率"
-                            }
-                            FluSlider {
-                                Layout.fillWidth: true
-                                from: 10
-                                to: 120
-                                stepSize: 1
-                                value: Number(window.settingsDraft.fps || 30)
-                                onMoved: window.setSetting("fps", Math.round(value))
-                            }
-                            FluText {
-                                text: String(Math.round(window.settingsDraft.fps || 30))
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            FluText {
-                                text: "抗锯齿"
-                            }
-                            FluComboBox {
-                                Layout.fillWidth: true
-                                model: ["无", "MSAA 2x", "MSAA 4x", "MSAA 8x"]
-                                currentIndex: ["none", "msaa_x2", "msaa_x4", "msaa_x8"].indexOf(window.settingsDraft.antiAliasing)
-                                onActivated: window.setSetting("antiAliasing", ["none", "msaa_x2", "msaa_x4", "msaa_x8"][currentIndex])
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            FluText {
-                                text: "纹理分辨率"
-                            }
-                            FluComboBox {
-                                Layout.fillWidth: true
-                                model: ["原始", "自动", "高性能"]
-                                currentIndex: ["original", "automatic", "highPerformance"].indexOf(window.settingsDraft.textureResolution)
-                                onActivated: window.setSetting("textureResolution", ["original", "automatic", "highPerformance"][currentIndex])
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            FluText {
-                                Layout.fillWidth: true
-                                text: "后处理"
-                            }
-                            FluComboBox {
-                                Layout.preferredWidth: 180
-                                model: ["关闭", "启用"]
-                                currentIndex: window.settingsDraft.postProcessing === "enabled" ? 1 : 0
-                                onActivated: window.setSetting("postProcessing", currentIndex === 1 ? "enabled" : "disabled")
-                            }
-                        }
-                        FluToggleSwitch {
-                            text: "反射"
-                            checked: !!window.settingsDraft.reflections
-                            clickListener: function () {
-                                window.setSetting("reflections", !checked);
-                            }
-                        }
-                        FluToggleSwitch {
-                            text: "从内存加载壁纸"
-                            checked: window.settingsDraft.wallpaperLoadSource === "memory"
-                            clickListener: function () {
-                                window.setSetting("wallpaperLoadSource", !checked ? "memory" : "disk");
-                            }
-                        }
-                        FluToggleSwitch {
-                            text: "自动刷新创意工坊内容"
-                            checked: !!window.settingsDraft.autoRefresh
-                            clickListener: function () {
-                                window.setSetting("autoRefresh", !checked);
-                            }
-                        }
-                        FluToggleSwitch {
-                            text: "启用音频频谱（场景与网页壁纸）"
-                            checked: !!window.settingsDraft.enableSpectrum
-                            clickListener: function () {
-                                window.setSetting("enableSpectrum", !checked);
-                            }
-                        }
-                    }
-
-                    ColumnLayout {
-                        spacing: 12
-                        FluText {
-                            text: "应用"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        FluToggleSwitch {
-                            text: "登录后自动启动"
-                            checked: !!window.settingsDraft.autoStart
-                            clickListener: function () {
-                                window.setSetting("autoStart", !checked);
-                            }
-                        }
-                        FluToggleSwitch {
-                            text: "安全模式"
-                            checked: !!window.settingsDraft.safeMode
-                            clickListener: function () {
-                                window.setSetting("safeMode", !checked);
-                            }
-                        }
-                        FluDivider {
-                            Layout.fillWidth: true
-                        }
-                        FluText {
-                            text: "软件更新"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        FluToggleSwitch {
-                            text: "自动检查并下载更新（TODO：Linux 更新服务）"
-                            enabled: false
-                        }
-                        FluToggleSwitch {
-                            text: "接收测试版更新（TODO：Linux 更新服务）"
-                            enabled: false
-                        }
-                        FluText {
-                            Layout.fillWidth: true
-                            text: "TODO：Linux 版本暂未提供 Sparkle 更新服务，仍可通过发行版包管理器更新。"
-                            wrapMode: Text.WordWrap
-                            color: FluTheme.fontSecondaryColor
-                        }
-                        FluDivider {
-                            Layout.fillWidth: true
-                        }
-                        FluText {
-                            text: "语言"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        FluComboBox {
-                            Layout.fillWidth: true
-                            model: ["跟随系统", "简体中文", "繁體中文", "English"]
-                            currentIndex: ["followSystem", "zh_CN", "zh_TW", "en_US"].indexOf(window.settingsDraft.language)
-                            onActivated: window.setSetting("language", ["followSystem", "zh_CN", "zh_TW", "en_US"][currentIndex])
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            FluText {
-                                text: "外观"
-                            }
-                            FluComboBox {
-                                Layout.fillWidth: true
-                                model: ["跟随系统", "浅色", "深色"]
-                                currentIndex: ["followSystem", "light", "dark"].indexOf(window.settingsDraft.appearance)
-                                onActivated: window.setSetting("appearance", ["followSystem", "light", "dark"][currentIndex])
-                            }
-                        }
-                        FluDivider {
-                            Layout.fillWidth: true
-                        }
-                        FluText {
-                            text: "音频"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        FluToggleSwitch {
-                            text: "启用音频输出"
-                            checked: !!window.settingsDraft.audioOutput
-                            clickListener: function () {
-                                window.setSetting("audioOutput", !checked);
-                            }
-                        }
-                        FluToggleSwitch {
-                            text: "切换音频输出设备时重新加载"
-                            checked: !!window.settingsDraft.reloadWhenChangingOutputDevice
-                            clickListener: function () {
-                                window.setSetting("reloadWhenChangingOutputDevice", !checked);
-                            }
-                        }
-                        FluToggleSwitch {
-                            text: "全局静音"
-                            checked: !!window.settingsDraft.globalMuted
-                            clickListener: function () {
-                                window.setSetting("globalMuted", !checked);
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            FluText {
-                                text: "主音量"
-                            }
-                            FluSlider {
-                                Layout.fillWidth: true
-                                from: 0
-                                to: 1
-                                stepSize: 0.01
-                                value: Number(window.settingsDraft.masterVolume || 0)
-                                onMoved: window.setSetting("masterVolume", value)
-                            }
-                            FluText {
-                                text: Math.round(Number(window.settingsDraft.masterVolume || 0) * 100) + "%"
-                            }
-                        }
-                        FluDivider {
-                            Layout.fillWidth: true
-                        }
-                        FluText {
-                            text: "壁纸库"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        FluToggleSwitch {
-                            text: "自动刷新壁纸库"
-                            checked: !!window.settingsDraft.autoRefresh
-                            clickListener: function () {
-                                window.setSetting("autoRefresh", !checked);
-                            }
-                        }
-                    }
-
-                    ColumnLayout {
-                        spacing: 12
-                        FluText {
-                            text: "Steam 与路径"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            FluText {
-                                text: "API 地址"
-                            }
-                            FluComboBox {
-                                Layout.fillWidth: true
-                                model: ["官方", "镜像"]
-                                currentIndex: window.settingsDraft.steamAPIEndpoint === "mirror" ? 1 : 0
-                                onActivated: window.setSetting("steamAPIEndpoint", currentIndex === 1 ? "mirror" : "official")
-                            }
-                        }
-                        FluTextBox {
-                            Layout.fillWidth: true
-                            placeholderText: "Steam Web API Key（32 位十六进制）"
-                            text: window.settingsDraft.steamAPIKey || ""
-                            onTextChanged: window.setSetting("steamAPIKey", text)
-                        }
-                        FluTextBox {
-                            Layout.fillWidth: true
-                            placeholderText: "自定义创意工坊目录"
-                            text: window.settingsDraft.customWorkshopDirectory || ""
-                            onTextChanged: window.setSetting("customWorkshopDirectory", text)
-                        }
-                        FluTextBox {
-                            Layout.fillWidth: true
-                            placeholderText: "自定义导入目录"
-                            text: window.settingsDraft.customImportedDirectory || ""
-                            onTextChanged: window.setSetting("customImportedDirectory", text)
-                        }
-                        FluText {
-                            Layout.fillWidth: true
-                            text: "自定义目录会在下次刷新壁纸库时生效。"
-                            color: FluTheme.fontSecondaryColor
-                            wrapMode: Text.WordWrap
-                        }
-                        FluDivider {
-                            Layout.fillWidth: true
-                        }
-                        FluText {
-                            text: "外观覆盖"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        FluText {
-                            Layout.fillWidth: true
-                            text: "桌面壁纸覆盖（TODO：Linux 桌面覆盖服务）"
-                            color: FluTheme.fontSecondaryColor
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-
-                    ColumnLayout {
-                        spacing: 12
-                        FluText {
-                            text: "屏保"
-                            font: FluTextStyle.BodyStrong
-                        }
-                        FluText {
-                            Layout.fillWidth: true
-                            text: "TODO: 屏保集成尚未在 Linux Qt 版本实现。"
-                            wrapMode: Text.WordWrap
-                        }
-                        FluButton {
-                            text: "打开显示器设置"
-                            onClicked: linuxNotice.open()
-                        }
-                    }
-
-                    ColumnLayout {
-                        spacing: 12
-                        FluText {
-                            text: "Mirage"
-                            font: FluTextStyle.Title
-                        }
-                        FluText {
-                            text: "版本 1.0.0"
-                        }
-                        FluText {
-                            Layout.fillWidth: true
-                            text: "Wallpaper Engine 壁纸管理与 Linux 渲染控制。"
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Item {
-                        Layout.fillWidth: true
-                    }
-                    FluButton {
-                        text: "取消"
-                        onClicked: {
-                            window.resetSettingsDraft();
-                            settingsSheet.close();
-                        }
-                    }
-                    FluFilledButton {
-                        text: "保存"
-                        onClicked: {
-                            if (mirage.applySettings(window.settingsDraft)) {
-                                window.settingsDirty = false;
-                                settingsSheet.close();
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        host: window
     }
-
     MirageDialogWindow {
         id: wallpaperMetadataSheet
         title: "编辑壁纸信息"
@@ -2230,81 +1708,10 @@ FluWindow {
         }
     }
 
-    MirageDialogWindow {
+    PlaylistOpenSheet {
         id: playlistOpenSheet
-        title: "打开播放列表"
-        width: 460
-        height: 360
-        buttonFlags: FluContentDialogType.NeutralButton
-        neutralText: "完成"
-        contentDelegate: Component {
-            ColumnLayout {
-                width: parent.width
-                spacing: 10
-
-                FluText {
-                    Layout.fillWidth: true
-                    visible: mirage.savedPlaylists.length === 0
-                    text: "您尚未创建任何播放列表。"
-                    horizontalAlignment: Text.AlignHCenter
-                }
-                ListView {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(280, contentHeight)
-                    visible: mirage.savedPlaylists.length > 0
-                    clip: true
-                    spacing: 6
-                    model: mirage.savedPlaylists
-                    delegate: Item {
-                        required property var modelData
-                        width: ListView.view.width
-                        height: 58
-
-                        RowLayout {
-                            anchors.fill: parent
-                            spacing: 8
-                            FluIcon {
-                                iconSource: FluentIcons.List
-                                iconSize: 20
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 1
-                                FluText {
-                                    Layout.fillWidth: true
-                                    text: modelData.name
-                                    elide: Text.ElideRight
-                                    font: FluTextStyle.BodyStrong
-                                }
-                                FluText {
-                                    Layout.fillWidth: true
-                                    text: modelData.itemCount + " 项 · " + modelData.updatedAt
-                                    elide: Text.ElideRight
-                                }
-                            }
-                            FluFilledButton {
-                                text: "读取"
-                                onClicked: {
-                                    mirage.loadSavedPlaylist(modelData.id);
-                                    playlistOpenSheet.close();
-                                }
-                            }
-                            FluIconButton {
-                                text: "删除播放列表"
-                                iconSource: FluentIcons.Delete
-                                onClicked: {
-                                    playlistDeleteConfirmation.playlistId = modelData.id;
-                                    playlistDeleteConfirmation.playlistName = modelData.name;
-                                    playlistDeleteConfirmation.open();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        host: window
     }
-
     MirageDialogWindow {
         id: playlistDeleteConfirmation
         width: 420
@@ -2322,277 +1729,14 @@ FluWindow {
         }
     }
 
-    MirageDialogWindow {
+    PlaylistSaveSheet {
         id: playlistSaveSheet
-        title: "保存播放列表"
-        width: 380
-        height: 260
-        negativeText: "取消"
-        positiveText: "保存"
-        buttonFlags: FluContentDialogType.NegativeButton | FluContentDialogType.PositiveButton
-        onOpened: window.playlistSaveName = ""
-        onPositiveClicked: {
-            var name = window.playlistSaveName.trim();
-            if (name.length > 0)
-                mirage.savePlaylist(name);
-        }
-        contentDelegate: Component {
-            ColumnLayout {
-                width: parent.width
-                spacing: 8
-                FluText {
-                    text: "名称"
-                }
-                FluTextBox {
-                    Layout.fillWidth: true
-                    placeholderText: "播放列表名称"
-                    text: window.playlistSaveName
-                    onTextChanged: window.playlistSaveName = text
-                    onCommit: {
-                        var name = text.trim();
-                        if (name.length > 0) {
-                            mirage.savePlaylist(name);
-                            playlistSaveSheet.close();
-                        }
-                    }
-                }
-                FluText {
-                    Layout.fillWidth: true
-                    text: "同名播放列表将被覆盖。"
-                    wrapMode: Text.WordWrap
-                }
-            }
-        }
+        host: window
     }
-
-    MirageDialogWindow {
+    PlaylistSettingsSheet {
         id: playlistSettingsSheet
-        title: "播放列表设置"
-        width: 520
-        height: 620
-        negativeText: "取消"
-        positiveText: "保存"
-        buttonFlags: FluContentDialogType.NegativeButton | FluContentDialogType.PositiveButton
-        onOpened: window.resetPlaylistSettingsDraft()
-        onPositiveClicked: mirage.updatePlaylistSettings(window.playlistSettingsDraft)
-        contentDelegate: Component {
-            ColumnLayout {
-                width: parent.width
-                spacing: 10
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    FluText {
-                        text: "播放顺序"
-                        font: FluTextStyle.BodyStrong
-                    }
-                    Item {
-                        Layout.fillWidth: true
-                    }
-                    FluTextButton {
-                        text: "重置"
-                        onClicked: window.resetPlaylistSettingsDraft()
-                    }
-                }
-                FluComboBox {
-                    Layout.fillWidth: true
-                    model: window.playlistOrderOptions.map(function (option) {
-                        return option.label;
-                    })
-                    currentIndex: window.playlistOptionIndex(window.playlistOrderOptions, window.playlistSettingsDraft.order)
-                    onActivated: window.setPlaylistSetting("order", window.playlistOrderOptions[currentIndex].key)
-                }
-                FluDivider {
-                    Layout.fillWidth: true
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    FluText {
-                        text: "更换壁纸"
-                        font: FluTextStyle.BodyStrong
-                    }
-                    FluComboBox {
-                        Layout.fillWidth: true
-                        model: window.playlistTimingOptions.map(function (option) {
-                            return option.label;
-                        })
-                        currentIndex: window.playlistOptionIndex(window.playlistTimingOptions, window.playlistSettingsDraft.timing)
-                        onActivated: window.setPlaylistSetting("timing", window.playlistTimingOptions[currentIndex].key)
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: window.playlistSettingsDraft.timing === "timer"
-                    FluText {
-                        text: "间隔"
-                    }
-                    FluSpinBox {
-                        from: 0
-                        to: 24
-                        value: Number(window.playlistSettingsDraft.timerHours || 0)
-                        onValueModified: window.setPlaylistSetting("timerHours", value)
-                    }
-                    FluText {
-                        text: "小时"
-                    }
-                    FluSpinBox {
-                        from: 0
-                        to: 59
-                        value: Number(window.playlistSettingsDraft.timerMinutes || 0)
-                        onValueModified: window.setPlaylistSetting("timerMinutes", value)
-                    }
-                    FluText {
-                        text: "分钟"
-                    }
-                }
-                FluText {
-                    Layout.fillWidth: true
-                    visible: window.playlistSettingsDraft.timing === "logon"
-                    text: "仅在 Mirage 启动时切换到列表中的壁纸。"
-                    wrapMode: Text.WordWrap
-                }
-                FluText {
-                    Layout.fillWidth: true
-                    visible: window.playlistSettingsDraft.timing === "never"
-                    text: "壁纸不会自动更换，仅手动点选切换。"
-                    wrapMode: Text.WordWrap
-                }
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: window.playlistSettingsDraft.timing === "daytime"
-                    spacing: 6
-                    FluText {
-                        text: "选择每天切换壁纸的时刻"
-                    }
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 6
-                        Repeater {
-                            model: 24
-                            delegate: FluToggleButton {
-                                required property int index
-                                text: (index < 10 ? "0" : "") + index
-                                checked: (window.playlistSettingsDraft.daytimeAnchors || []).indexOf(index) !== -1
-                                clickListener: function () {
-                                    var anchors = (window.playlistSettingsDraft.daytimeAnchors || []).slice();
-                                    var anchorIndex = anchors.indexOf(index);
-                                    if (anchorIndex === -1)
-                                        anchors.push(index);
-                                    else
-                                        anchors.splice(anchorIndex, 1);
-                                    anchors.sort(function (left, right) {
-                                        return left - right;
-                                    });
-                                    window.setPlaylistSetting("daytimeAnchors", anchors);
-                                }
-                            }
-                        }
-                    }
-                }
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: window.playlistSettingsDraft.timing === "dayOfWeek"
-                    spacing: 6
-                    FluText {
-                        text: "列表中的前 7 张壁纸依次对应星期日至星期六。"
-                        wrapMode: Text.WordWrap
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: mirage.playlistItems.length > 7
-                        FluText {
-                            Layout.fillWidth: true
-                            text: "星期播放列表最多支持 7 张壁纸。"
-                            wrapMode: Text.WordWrap
-                        }
-                        FluButton {
-                            text: "移除多余壁纸"
-                            onClicked: mirage.trimPlaylistItems(7)
-                        }
-                    }
-                    Repeater {
-                        model: Math.min(7, mirage.playlistItems.length)
-                        delegate: FluText {
-                            required property int index
-                            text: window.weekdayLabels[index] + "：" + mirage.playlistItems[index].title
-                        }
-                    }
-                }
-                FluDivider {
-                    Layout.fillWidth: true
-                }
-
-                FluText {
-                    text: "显示壁纸过渡"
-                    font: FluTextStyle.BodyStrong
-                }
-                FluComboBox {
-                    Layout.fillWidth: true
-                    model: window.playlistTransitionOptions.map(function (option) {
-                        return option.label;
-                    })
-                    currentIndex: window.playlistOptionIndex(window.playlistTransitionOptions, window.playlistSettingsDraft.transition)
-                    onActivated: window.setPlaylistSetting("transition", window.playlistTransitionOptions[currentIndex].key)
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: window.playlistSettingsDraft.transition !== "disabled"
-                    FluText {
-                        text: "过渡时间"
-                    }
-                    FluSlider {
-                        Layout.fillWidth: true
-                        from: 0.2
-                        to: 5
-                        stepSize: 0.1
-                        value: Number(window.playlistSettingsDraft.transitionSeconds || 1)
-                        onMoved: window.setPlaylistSetting("transitionSeconds", value)
-                    }
-                    FluText {
-                        text: Number(window.playlistSettingsDraft.transitionSeconds || 1).toFixed(1) + " 秒"
-                    }
-                }
-                FluDivider {
-                    Layout.fillWidth: true
-                }
-
-                FluText {
-                    text: "选项"
-                    font: FluTextStyle.BodyStrong
-                }
-                FluToggleSwitch {
-                    text: "总是从第一张壁纸开始"
-                    checked: !!window.playlistSettingsDraft.alwaysBeginFirst
-                    clickListener: function () {
-                        window.setPlaylistSetting("alwaysBeginFirst", !checked);
-                    }
-                }
-                FluToggleSwitch {
-                    text: "第一张壁纸仅在启动时播放"
-                    checked: !!window.playlistSettingsDraft.introOnStartup
-                    clickListener: function () {
-                        window.setPlaylistSetting("introOnStartup", !checked);
-                    }
-                }
-                FluToggleSwitch {
-                    text: "在视频结束时更换壁纸"
-                    checked: !!window.playlistSettingsDraft.videoSequence
-                    clickListener: function () {
-                        window.setPlaylistSetting("videoSequence", !checked);
-                    }
-                }
-                FluToggleSwitch {
-                    text: "允许壁纸在暂停时更换"
-                    checked: !!window.playlistSettingsDraft.updateOnPause
-                    clickListener: function () {
-                        window.setPlaylistSetting("updateOnPause", !checked);
-                    }
-                }
-            }
-        }
+        host: window
     }
-
     FileDialog {
         id: propertyFileDialog
         property string propertyKey: ""
@@ -2693,475 +1837,6 @@ FluWindow {
         }
     }
 
-    component PropertyEditorRow: ColumnLayout {
-        required property var propertyData
-        Layout.fillWidth: true
-        visible: window.propertyConditionVisible(propertyData.condition)
-        spacing: 6
-
-        RowLayout {
-            Layout.fillWidth: true
-            visible: propertyData.type === "bool"
-            spacing: 8
-            FluText {
-                Layout.fillWidth: true
-                text: window.propertyLabel(propertyData)
-                wrapMode: Text.WordWrap
-            }
-            FluToggleSwitch {
-                text: ""
-                checked: window.propertyBoolValue(propertyData.value)
-                Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
-                clickListener: function () {
-                    mirage.setSelectedProperty(propertyData.key, !checked);
-                }
-            }
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            visible: propertyData.type === "slider"
-            spacing: 3
-            property real lowerBound: propertyData.hasMin ? Number(propertyData.min) : 0
-            property real upperBound: propertyData.hasMax ? Number(propertyData.max) : lowerBound + 1
-            RowLayout {
-                Layout.fillWidth: true
-                FluText {
-                    Layout.fillWidth: true
-                    text: window.propertyLabel(propertyData)
-                    wrapMode: Text.WordWrap
-                }
-                FluText {
-                    Layout.alignment: Qt.AlignRight | Qt.AlignTop
-                    text: propertyData.fraction ? Number(propertyData.value).toFixed(2) : String(Math.round(Number(propertyData.value)))
-                }
-            }
-            FluSlider {
-                Layout.fillWidth: true
-                from: parent.lowerBound
-                to: Math.max(parent.upperBound, parent.lowerBound + 1)
-                stepSize: propertyData.hasStep ? Number(propertyData.step) : (propertyData.fraction ? 0.01 : 1)
-                value: Math.max(from, Math.min(to, Number(propertyData.value)))
-                onMoved: mirage.setSelectedProperty(propertyData.key, propertyData.fraction ? value : Math.round(value))
-            }
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            visible: propertyData.type === "color"
-            spacing: 4
-            FluText {
-                Layout.fillWidth: true
-                text: window.propertyLabel(propertyData)
-                wrapMode: Text.WordWrap
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                Item {
-                    Layout.fillWidth: true
-                }
-                FluColorPicker {
-                    current: window.propertyColor(propertyData.value)
-                    onAccepted: mirage.setSelectedProperty(propertyData.key, window.propertyColorValue(current))
-                }
-            }
-        }
-
-        ColumnLayout {
-            id: comboRow
-            Layout.fillWidth: true
-            visible: propertyData.type === "combo"
-            property var optionItems: window.propertyOptionItems(propertyData.options)
-            spacing: 4
-            FluText {
-                Layout.fillWidth: true
-                text: window.propertyLabel(propertyData)
-                wrapMode: Text.WordWrap
-            }
-            FluComboBox {
-                Layout.fillWidth: true
-                model: comboRow.optionItems
-                textRole: "label"
-                currentIndex: window.propertyOptionIndex(comboRow.optionItems, propertyData.value)
-                onActivated: {
-                    if (currentIndex >= 0 && currentIndex < comboRow.optionItems.length) {
-                        mirage.setSelectedProperty(propertyData.key, comboRow.optionItems[currentIndex].value);
-                    }
-                }
-            }
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            visible: propertyData.type === "textinput"
-            spacing: 3
-            FluText {
-                Layout.fillWidth: true
-                text: window.propertyLabel(propertyData)
-                wrapMode: Text.WordWrap
-            }
-            FluTextBox {
-                Layout.fillWidth: true
-                text: String(propertyData.value || "")
-                onCommit: mirage.setSelectedProperty(propertyData.key, text)
-            }
-        }
-
-        FluText {
-            Layout.fillWidth: true
-            visible: propertyData.type === "text"
-            text: window.propertyLabel(propertyData)
-            wrapMode: Text.WordWrap
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            visible: propertyData.type === "group"
-            spacing: 3
-            FluText {
-                Layout.fillWidth: true
-                text: window.propertyLabel(propertyData)
-                wrapMode: Text.WordWrap
-                font: FluTextStyle.BodyStrong
-            }
-            FluDivider {
-                Layout.fillWidth: true
-            }
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            visible: propertyData.type === "file" || propertyData.type === "directory" || propertyData.type === "scenetexture"
-            spacing: 3
-            FluText {
-                Layout.fillWidth: true
-                text: window.propertyLabel(propertyData)
-                wrapMode: Text.WordWrap
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                FluText {
-                    Layout.fillWidth: true
-                    text: window.propertyPathLabel(propertyData.value)
-                    elide: Text.ElideMiddle
-                }
-                FluIconButton {
-                    text: "清除文件选择"
-                    iconSource: FluentIcons.Clear
-                    visible: String(propertyData.value || "").length > 0
-                    onClicked: mirage.setSelectedProperty(propertyData.key, "")
-                }
-                FluButton {
-                    text: "选择"
-                    onClicked: {
-                        if (propertyData.type === "directory") {
-                            propertyFolderDialog.propertyKey = propertyData.key;
-                            propertyFolderDialog.open();
-                        } else {
-                            propertyFileDialog.propertyKey = propertyData.key;
-                            propertyFileDialog.open();
-                        }
-                    }
-                }
-            }
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            visible: propertyData.type === "usershortcut"
-            spacing: 4
-            FluText {
-                Layout.fillWidth: true
-                text: window.propertyLabel(propertyData)
-                wrapMode: Text.WordWrap
-            }
-            FluTextBox {
-                Layout.fillWidth: true
-                placeholderText: "快捷方式"
-                text: String(propertyData.value || "")
-                onCommit: mirage.setSelectedProperty(propertyData.key, text)
-            }
-        }
-    }
-
-    component DiscoverPage: Item {
-        ColumnLayout {
-            anchors.fill: parent
-            spacing: 8
-
-            RowLayout {
-                Layout.fillWidth: true
-                FluText {
-                    text: "趋势范围"
-                }
-                FluComboBox {
-                    model: ["今日", "本周", "本月", "三个月", "半年", "一年"]
-                    currentIndex: [1, 7, 30, 90, 180, 365].indexOf(window.discoverTrendDays)
-                    onActivated: {
-                        window.discoverTrendDays = [1, 7, 30, 90, 180, 365][currentIndex];
-                        mirage.setDiscoverTrendDays(window.discoverTrendDays);
-                    }
-                }
-                Item {
-                    Layout.fillWidth: true
-                }
-                FluIconButton {
-                    text: "刷新发现"
-                    iconSource: FluentIcons.Refresh
-                    enabled: !mirage.discoverLoading
-                    onClicked: mirage.refreshDiscover()
-                }
-            }
-
-            ScrollView {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                clip: true
-
-                ColumnLayout {
-                    width: parent.width
-                    spacing: 18
-
-                    FluProgressRing {
-                        Layout.alignment: Qt.AlignHCenter
-                        visible: mirage.discoverLoading && mirage.discoverSections.length === 0
-                        indeterminate: true
-                    }
-                    FluText {
-                        Layout.alignment: Qt.AlignHCenter
-                        visible: !mirage.discoverLoading && mirage.discoverSections.length === 0
-                        text: "暂无发现内容"
-                    }
-                    Repeater {
-                        model: mirage.discoverSections
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            Layout.fillWidth: true
-                            spacing: 6
-                            FluText {
-                                text: modelData.title
-                                font: FluTextStyle.Subtitle
-                            }
-                            ListView {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 218
-                                clip: true
-                                orientation: ListView.Horizontal
-                                spacing: 10
-                                model: modelData.items
-                                delegate: WorkshopCard {
-                                    required property var modelData
-                                    itemData: modelData
-                                    compact: true
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    component WorkshopPage: Item {
-        ColumnLayout {
-            anchors.fill: parent
-            spacing: 8
-
-            FluFrame {
-                Layout.fillWidth: true
-                visible: !mirage.steamReady
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: 8
-                    FluIcon {
-                        iconSource: FluentIcons.Cloud
-                        iconSize: 20
-                    }
-                    FluText {
-                        Layout.fillWidth: true
-                        text: "连接 Steam 以下载壁纸。" + mirage.steamSetupSummary
-                        wrapMode: Text.WordWrap
-                    }
-                    FluButton {
-                        text: "设置 Steam"
-                        onClicked: steamSetupController.open()
-                    }
-                }
-            }
-
-            FluProgressRing {
-                Layout.alignment: Qt.AlignHCenter
-                visible: mirage.workshopLoading && mirage.workshopItems.length === 0
-                indeterminate: true
-            }
-            FluText {
-                Layout.alignment: Qt.AlignHCenter
-                visible: !mirage.workshopLoading && mirage.workshopItems.length === 0
-                text: mirage.workshopError.length > 0 ? mirage.workshopError : "没有找到壁纸"
-            }
-
-            GridView {
-                id: workshopGrid
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                visible: mirage.workshopItems.length > 0
-                clip: true
-                model: mirage.workshopItems
-                cellWidth: Math.max(178, Math.floor(width / Math.max(1, Math.floor(width / 204))))
-                cellHeight: 248
-                delegate: WorkshopCard {
-                    required property var modelData
-                    itemData: modelData
-                    width: Math.max(164, workshopGrid.cellWidth - 14)
-                }
-            }
-
-            RowLayout {
-                Layout.alignment: Qt.AlignHCenter
-                visible: mirage.workshopPageCount > 1
-                FluIconButton {
-                    text: "上一页"
-                    iconSource: FluentIcons.ChevronLeft
-                    enabled: mirage.workshopPage > 1
-                    onClicked: mirage.loadPreviousWorkshopPage()
-                }
-                FluText {
-                    text: mirage.workshopPage + " / " + mirage.workshopPageCount
-                }
-                FluIconButton {
-                    text: "下一页"
-                    iconSource: FluentIcons.ChevronRight
-                    enabled: mirage.workshopPage < mirage.workshopPageCount
-                    onClicked: mirage.loadNextWorkshopPage()
-                }
-            }
-        }
-    }
-
-    component WorkshopFilterPanel: ColumnLayout {
-        spacing: 10
-        FluText {
-            text: "创意工坊筛选"
-            font: FluTextStyle.Subtitle
-        }
-        FluFilledButton {
-            Layout.fillWidth: true
-            text: "重置筛选"
-            onClicked: window.resetWorkshopFilters()
-        }
-        FluText {
-            text: "类型"
-            font: FluTextStyle.BodyStrong
-        }
-        Repeater {
-            model: window.workshopTypeFilters
-            delegate: FluToggleButton {
-                required property var modelData
-                text: modelData.label
-                checked: window.workshopType === modelData.key
-                clickListener: function () {
-                    window.workshopType = modelData.key;
-                    mirage.setWorkshopTypeFilter(modelData.key);
-                }
-            }
-        }
-        FluDivider {
-            Layout.fillWidth: true
-        }
-        FluText {
-            text: "分级"
-            font: FluTextStyle.BodyStrong
-        }
-        Repeater {
-            model: window.ratingFilters
-            delegate: FluCheckBox {
-                required property var modelData
-                text: modelData.label
-                checked: window.isEnabled(window.workshopRatings, modelData.key)
-                clickListener: function () {
-                    window.setWorkshopRating(modelData.key, checked);
-                }
-            }
-        }
-        FluDivider {
-            Layout.fillWidth: true
-        }
-        FluText {
-            text: "标签"
-            font: FluTextStyle.BodyStrong
-        }
-        Repeater {
-            model: window.workshopTagFilters
-            delegate: FluCheckBox {
-                required property var modelData
-                text: modelData.label
-                checked: window.isEnabled(window.workshopSelectedTags, modelData.key)
-                clickListener: function () {
-                    window.toggleWorkshopTag(modelData.key);
-                }
-            }
-        }
-    }
-
-    component WorkshopCard: Item {
-        required property var itemData
-        property bool compact: false
-        implicitWidth: compact ? 164 : 194
-        implicitHeight: compact ? 204 : 234
-        width: implicitWidth
-        height: implicitHeight
-
-        FluFrame {
-            anchors.fill: parent
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 6
-                spacing: 4
-                Image {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: compact ? 124 : 146
-                    source: itemData.preview
-                    fillMode: Image.PreserveAspectCrop
-                    asynchronous: true
-                }
-                FluText {
-                    Layout.fillWidth: true
-                    text: itemData.title
-                    elide: Text.ElideRight
-                    font: FluTextStyle.BodyStrong
-                }
-                FluText {
-                    Layout.fillWidth: true
-                    visible: !compact
-                    text: itemData.typeLabel + " · " + itemData.subscriptions + " 订阅"
-                    elide: Text.ElideRight
-                }
-                FluProgressBar {
-                    Layout.fillWidth: true
-                    visible: itemData.downloadActive
-                    indeterminate: itemData.downloadProgress < 0
-                    value: Math.max(0, itemData.downloadProgress)
-                }
-                FluText {
-                    Layout.fillWidth: true
-                    visible: itemData.downloaded || itemData.downloadState.length > 0
-                    text: itemData.downloaded ? "已下载" : itemData.downloadMessage
-                    elide: Text.ElideRight
-                }
-            }
-            FluFocusRectangle {
-                anchors.fill: parent
-                visible: itemData.id === mirage.selectedWorkshopItem.id
-                radius: 4
-            }
-        }
-        MouseArea {
-            anchors.fill: parent
-            onClicked: mirage.selectWorkshopItem(itemData.id)
-            onDoubleClicked: mirage.downloadWorkshopItem(itemData.id)
-        }
-    }
-
     component DetailSectionHeader: RowLayout {
         required property string title
         Layout.fillWidth: true
@@ -3176,84 +1851,4 @@ FluWindow {
         }
     }
 
-    component WorkshopDetailPanel: ColumnLayout {
-        spacing: 16
-        Image {
-            Layout.alignment: Qt.AlignHCenter
-            Layout.preferredWidth: Math.min(280, parent.width)
-            Layout.preferredHeight: Layout.preferredWidth
-            visible: mirage.selectedWorkshopItem.id !== undefined
-            source: mirage.selectedWorkshopItem.preview || ""
-            fillMode: Image.PreserveAspectCrop
-            asynchronous: true
-        }
-        FluText {
-            Layout.fillWidth: true
-            text: mirage.selectedWorkshopItem.title || "点击壁纸查看详情"
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.WordWrap
-            font: FluTextStyle.Subtitle
-        }
-        FluText {
-            Layout.fillWidth: true
-            text: mirage.selectedWorkshopItem.typeLabel || ""
-            horizontalAlignment: Text.AlignHCenter
-        }
-        FluText {
-            Layout.fillWidth: true
-            text: mirage.selectedWorkshopItem.description || "暂无描述"
-            wrapMode: Text.WordWrap
-            maximumLineCount: 8
-            elide: Text.ElideRight
-        }
-        FluButton {
-            Layout.fillWidth: true
-            visible: mirage.selectedWorkshopItem.downloadState === "failed"
-            text: "重试下载"
-            onClicked: mirage.retryWorkshopDownload(mirage.selectedWorkshopItem.id)
-        }
-        FluFilledButton {
-            Layout.fillWidth: true
-            visible: !mirage.selectedWorkshopItem.downloaded && !mirage.selectedWorkshopItem.downloadActive && mirage.selectedWorkshopItem.id !== undefined
-            text: mirage.selectedWorkshopItem.needsDependency ? "需要基础壁纸" : "下载壁纸"
-            onClicked: mirage.downloadWorkshopItem(mirage.selectedWorkshopItem.id)
-        }
-        FluButton {
-            Layout.fillWidth: true
-            visible: !!mirage.selectedWorkshopItem.downloadActive
-            text: "取消下载"
-            onClicked: mirage.cancelWorkshopDownload(mirage.selectedWorkshopItem.id)
-        }
-        FluButton {
-            Layout.fillWidth: true
-            visible: mirage.selectedWorkshopItem.id !== undefined
-            text: "在 Steam 中查看（TODO）"
-            onClicked: linuxNotice.open()
-        }
-    }
-
-    component WelcomeFeature: RowLayout {
-        required property int icon
-        required property string title
-        required property string detail
-        spacing: 12
-        FluIcon {
-            iconSource: icon
-            iconSize: 30
-            iconColor: FluTheme.primaryColor
-        }
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 2
-            FluText {
-                text: title
-                font: FluTextStyle.BodyStrong
-            }
-            FluText {
-                Layout.fillWidth: true
-                text: detail
-                wrapMode: Text.WordWrap
-            }
-        }
-    }
 }

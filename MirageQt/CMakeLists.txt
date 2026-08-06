@@ -105,6 +105,8 @@ target_link_libraries(MirageQtCore PUBLIC
 
 qt_add_executable(MirageQt
     Sources/App/main.cpp
+    Sources/App/StatusBar.cpp
+    Sources/App/StatusBar.h
     Resources/resources.qrc)
 
 set_source_files_properties(Sources/Qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)

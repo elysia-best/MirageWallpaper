@@ -3,22 +3,60 @@ import QtQuick.Layouts
 import FluentUI
 
 ColumnLayout {
-    spacing: 12
-    FluText {
-        text: "插件"
-        font: FluTextStyle.Title
-    }
-    FluText {
-        Layout.fillWidth: true
-        text: "Linux 版本当前没有可管理的 Mirage 插件。"
-        wrapMode: Text.WordWrap
-    }
-    FluFrame {
-        Layout.fillWidth: true
-        Layout.preferredHeight: 72
-        FluText {
-            anchors.centerIn: parent
-            text: "插件管理（TODO）"
-        }
-    }
-}
+    required property var host
+
+                        spacing: 12
+                        FluText {
+                            text: "Steam 与路径"
+                            font: FluTextStyle.BodyStrong
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            FluText {
+                                text: "API 地址"
+                            }
+                            FluComboBox {
+                                Layout.fillWidth: true
+                                model: ["官方", "镜像"]
+                                currentIndex: host.settingsDraft.steamAPIEndpoint === "mirror" ? 1 : 0
+                                onActivated: host.setSetting("steamAPIEndpoint", currentIndex === 1 ? "mirror" : "official")
+                            }
+                        }
+                        FluTextBox {
+                            Layout.fillWidth: true
+                            placeholderText: "Steam Web API Key（32 位十六进制）"
+                            text: host.settingsDraft.steamAPIKey || ""
+                            onTextChanged: host.setSetting("steamAPIKey", text)
+                        }
+                        FluTextBox {
+                            Layout.fillWidth: true
+                            placeholderText: "自定义创意工坊目录"
+                            text: host.settingsDraft.customWorkshopDirectory || ""
+                            onTextChanged: host.setSetting("customWorkshopDirectory", text)
+                        }
+                        FluTextBox {
+                            Layout.fillWidth: true
+                            placeholderText: "自定义导入目录"
+                            text: host.settingsDraft.customImportedDirectory || ""
+                            onTextChanged: host.setSetting("customImportedDirectory", text)
+                        }
+                        FluText {
+                            Layout.fillWidth: true
+                            text: "自定义目录会在下次刷新壁纸库时生效。"
+                            color: FluTheme.fontSecondaryColor
+                            wrapMode: Text.WordWrap
+                        }
+                        FluDivider {
+                            Layout.fillWidth: true
+                        }
+                        FluText {
+                            text: "外观覆盖"
+                            font: FluTextStyle.BodyStrong
+                        }
+                        FluText {
+                            Layout.fillWidth: true
+                            text: "桌面壁纸覆盖（TODO：Linux 桌面覆盖服务）"
+                            color: FluTheme.fontSecondaryColor
+                            wrapMode: Text.WordWrap
+                        }
+                    }
