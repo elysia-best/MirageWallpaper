@@ -17,12 +17,15 @@ FluWindow {
     property alias guardCode: setupModel.guardCode
     property alias canProceed: setupModel.canProceed
 
-    width: 600
-    height: 680
-    minimumWidth: 540
-    minimumHeight: 580
-    title: qsTr("Steam 设置")
+    width: 520
+    height: 560
+    minimumWidth: 520
+    minimumHeight: 560
+    title: qsTr("Steam 创意工坊设置")
     autoDestroy: false
+    fixSize: true
+    showMinimize: false
+    showMaximize: false
 
     onVisibleChanged: {
         if (visible)
@@ -38,18 +41,7 @@ FluWindow {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
-
-            Item { Layout.fillWidth: true }
-            FluButton {
-                text: qsTr("关闭")
-                onClicked: setup.close()
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: 16
+            Layout.topMargin: 12
             Layout.bottomMargin: 14
             spacing: 4
 
@@ -57,7 +49,8 @@ FluWindow {
                 model: 4
                 delegate: Item {
                     required property int index
-                    Layout.fillWidth: true
+                    Layout.fillWidth: index < 3
+                    Layout.preferredWidth: 28
                     implicitHeight: 44
 
                     RowLayout {
@@ -116,8 +109,11 @@ FluWindow {
             Layout.topMargin: 10
             Layout.bottomMargin: 10
             clip: true
+            contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
             StackLayout {
+                id: bodyStack
                 width: bodyScroll.availableWidth
                 currentIndex: setup.currentStep
 
@@ -134,7 +130,7 @@ FluWindow {
                     }
                     FluText {
                         Layout.alignment: Qt.AlignHCenter
-                        text: qsTr("连接 Steam 以下载创意工坊壁纸")
+                        text: qsTr("设置 Steam 创意工坊")
                         font: FluTextStyle.Title
                     }
                     FluText {
