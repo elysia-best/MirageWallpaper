@@ -4,50 +4,51 @@ import FluentUI
 
 RowLayout {
     id: bar
+
     property int currentIndex: 0
     property int downloadCount: 0
     signal selected(int index)
-    spacing: 10
+    signal mobileRequested
+    signal displayRequested
+    signal settingsRequested
 
     RowLayout {
         spacing: 4
         Repeater {
-            model: ["已安装", "发现", "创意工坊"]
+            model: [qsTr("已安装"), qsTr("发现"), qsTr("创意工坊")]
             delegate: FluToggleButton {
+                id: tabButton
                 required property string modelData
                 required property int index
                 text: modelData
                 checked: bar.currentIndex === index
-                clickListener: function () {
-                    bar.selected(index);
+                clickListener: function() { bar.selected(index); }
+                FluBadge {
+                    position: "topRight"
+                    count: bar.downloadCount
+                    visible: index === 2 && bar.downloadCount > 0
                 }
             }
         }
-        FluBadge {
-            visible: bar.downloadCount > 0
-            count: bar.downloadCount
-        }
     }
-    Item {
-        Layout.fillWidth: true
-    }
+
+    Item { Layout.fillWidth: true }
     FluIconButton {
-        text: "移动端"
         iconSource: FluentIcons.MobileTablet
+        text: qsTr("移动端")
+        contentDescription: qsTr("移动端")
         onClicked: bar.mobileRequested()
     }
     FluIconButton {
-        text: "显示器设置"
         iconSource: FluentIcons.SettingsDisplaySound
+        text: qsTr("显示器设置")
+        contentDescription: qsTr("显示器设置")
         onClicked: bar.displayRequested()
     }
     FluIconButton {
-        text: "设置"
         iconSource: FluentIcons.Settings
+        text: qsTr("设置")
+        contentDescription: qsTr("设置")
         onClicked: bar.settingsRequested()
     }
-
-    signal mobileRequested
-    signal displayRequested
-    signal settingsRequested
 }
