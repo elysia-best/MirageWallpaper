@@ -12,6 +12,7 @@
 
 #include <QObject>
 #include <QSet>
+#include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -37,6 +38,15 @@ class MirageController : public QObject {
     Q_PROPERTY(int activeDownloadCount READ activeDownloadCount NOTIFY workshopStateChanged)
     Q_PROPERTY(bool steamReady READ steamReady NOTIFY workshopStateChanged)
     Q_PROPERTY(QString steamSetupSummary READ steamSetupSummary NOTIFY workshopStateChanged)
+    Q_PROPERTY(QString steamCMDPath READ steamCMDPath NOTIFY steamChanged)
+    Q_PROPERTY(QString steamUsername READ steamUsername NOTIFY steamChanged)
+    Q_PROPERTY(bool steamLoggedIn READ steamLoggedIn NOTIFY steamChanged)
+    Q_PROPERTY(QString steamInstallState READ steamInstallState NOTIFY steamChanged)
+    Q_PROPERTY(double steamInstallProgress READ steamInstallProgress NOTIFY steamChanged)
+    Q_PROPERTY(QString steamInstallMessage READ steamInstallMessage NOTIFY steamChanged)
+    Q_PROPERTY(QString steamLoginState READ steamLoginState NOTIFY steamChanged)
+    Q_PROPERTY(QString steamLoginMessage READ steamLoginMessage NOTIFY steamChanged)
+    Q_PROPERTY(QStringList steamLoginLog READ steamLoginLog NOTIFY steamChanged)
     Q_PROPERTY(bool firstLaunch READ firstLaunch NOTIFY firstLaunchChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
@@ -69,6 +79,15 @@ public:
     int activeDownloadCount() const;
     bool steamReady() const;
     QString steamSetupSummary() const;
+    QString steamCMDPath() const;
+    QString steamUsername() const;
+    bool steamLoggedIn() const;
+    QString steamInstallState() const;
+    double steamInstallProgress() const;
+    QString steamInstallMessage() const;
+    QString steamLoginState() const;
+    QString steamLoginMessage() const;
+    QStringList steamLoginLog() const;
     bool firstLaunch() const;
     QString statusMessage() const;
     QVariantMap settings() const;
@@ -91,7 +110,7 @@ public:
     Q_INVOKABLE void toggleSelectedFavorite();
     Q_INVOKABLE void updateSelectedMetadata(const QString& title, const QVariantList& tags);
     Q_INVOKABLE void deleteSelectedWallpaper();
-    Q_INVOKABLE void importWallpaper();
+    Q_INVOKABLE void importWallpaperPath(const QString& path);
     Q_INVOKABLE void stopWallpapers();
     Q_INVOKABLE void applySelectedToScreen(int screen);
     Q_INVOKABLE void stopScreen(int screen);
@@ -126,6 +145,20 @@ public:
     Q_INVOKABLE void downloadWorkshopItem(const QString& id);
     Q_INVOKABLE void cancelWorkshopDownload(const QString& id);
     Q_INVOKABLE void retryWorkshopDownload(const QString& id);
+    Q_INVOKABLE void clearCompletedDownloads();
+    Q_INVOKABLE void detectSteamCMD();
+    Q_INVOKABLE void installSteamCMD();
+    Q_INVOKABLE void cancelSteamCMDInstallation();
+    Q_INVOKABLE void loginSteam(const QString& username, const QString& password);
+    Q_INVOKABLE void submitSteamGuardCode(const QString& code);
+    Q_INVOKABLE void cancelSteamLogin();
+    Q_INVOKABLE void logoutSteam();
+    Q_INVOKABLE void pauseWallpapers();
+    Q_INVOKABLE void resumeWallpapers();
+    Q_INVOKABLE void muteWallpapers();
+    Q_INVOKABLE void unmuteWallpapers();
+    Q_INVOKABLE void reloadCurrentWallpaper();
+    Q_INVOKABLE void resetTrustedWallpapers();
     Q_INVOKABLE bool applySettings(const QVariantMap& values);
 
 public slots:
@@ -149,6 +182,7 @@ signals:
     void selectedRuntimeChanged();
     void playlistsSavedChanged();
     void displaysChanged();
+    void steamChanged();
 
 private:
     Wallpaper wallpaper(const QString& id) const;
@@ -178,6 +212,12 @@ private:
     int m_playlistScreen = 0;
     bool m_firstLaunch = true;
     QString m_statusMessage;
+    QString m_steamInstallState = QStringLiteral("detecting");
+    double m_steamInstallProgress = 0.0;
+    QString m_steamInstallMessage;
+    QString m_steamLoginState = QStringLiteral("idle");
+    QString m_steamLoginMessage;
+    QStringList m_steamLoginLog;
 };
 
 } // namespace Mirage
