@@ -117,16 +117,15 @@ jobs:
           cmake-version: 4.3.4
 
       - name: Install Qt 6.8
-        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
+        uses: jurplel/install-qt-action@v4
         with:
-          version: 6.8.3
-          host: linux
-          target: desktop
-          modules: qtwebengine qtwebchannel
-          install-deps: true
-          cache: true
-          setup-python: false
-
+          aqtversion: '==3.3.*'
+          version: '6.8.3'
+          host: 'linux'
+          target: 'desktop'
+          arch: 'linux_gcc_64'
+          modules: 'qtpositioning qtwebchannel qtwebengine'
+      
       - name: Set up Clang 21
         uses: egor-tensin/setup-clang@23bc15cd4207e45f1566447deb48f4ff3ef932cb # v2
         with:
