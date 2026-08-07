@@ -38,9 +38,6 @@ jobs:
             file \
             glslang-tools \
             libdrm-dev \
-            libavcodec-dev \
-            libavformat-dev \
-            libavutil-dev \
             libdbus-1-dev \
             libfontconfig1-dev \
             libfreetype6-dev \
@@ -48,8 +45,6 @@ jobs:
             liblz4-dev \
             libpulse-dev \
             libsdl2-dev \
-            libswresample-dev \
-            libswscale-dev \
             libx11-dev \
             nasm \
             ninja-build \
@@ -153,6 +148,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export LD_LIBRARY_PATH="$FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          test "$(pkg-config --variable=prefix libavformat)" = "$FFMPEG_PREFIX"
+          pkg-config --atleast-version=61 libavformat
+          pkg-config --modversion libavformat libavcodec libavutil libswscale libswresample
           JOBS="$(nproc)" ./scripts/build_all_linux.sh renderers
 
       - name: Build and install MirageQt
