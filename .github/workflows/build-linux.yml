@@ -122,7 +122,7 @@ jobs:
           version: 6.8.3
           host: linux
           target: desktop
-          modules: qtwebengine
+          modules: qtwebengine qtwebchannel
           install-deps: true
           cache: true
           setup-python: false
