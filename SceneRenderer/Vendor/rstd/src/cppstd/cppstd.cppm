@@ -504,7 +504,11 @@ export using std::allocator;
 export using std::allocator_traits;
 export using std::default_delete;
 export using std::enable_shared_from_this;
+// libstdc++ declares make_shared as a friend of shared_ptr. Re-exporting it
+// through a using-declaration makes Clang bind that friend to the alias.
+#if !defined(__GLIBCXX__)
 export using std::make_shared;
+#endif
 export using std::shared_ptr;
 export using std::unique_ptr;
 export using std::weak_ptr;
