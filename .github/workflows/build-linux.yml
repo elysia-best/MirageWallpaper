@@ -122,7 +122,7 @@ jobs:
           # FluentUI imports Qt5Compat.GraphicalEffects; Positioning's NMEA
           # plugin links Qt6SerialPort. Qt's SDK exposes the Wayland client
           # runtime under the qtwaylandcompositor package group.
-          modules: 'qt5compat qtpositioning qtserialport qtwaylandcompositor qtwebchannel qtwebengine'
+          modules: 'qt5compat qtpositioning qtserialport qtshadertools qtwaylandcompositor qtwebchannel qtwebengine'
       
       - name: Set up Clang 21
         uses: egor-tensin/setup-clang@23bc15cd4207e45f1566447deb48f4ff3ef932cb # v2
