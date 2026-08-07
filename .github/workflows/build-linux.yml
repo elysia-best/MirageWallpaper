@@ -50,50 +50,24 @@ jobs:
             libsdl2-dev \
             libswresample-dev \
             libswscale-dev \
-            libvulkan-dev \
             libx11-dev \
             nasm \
             ninja-build \
             patchelf \
-            pkg-config \
-            vulkan-tools
+            pkg-config
 
-      - name: Install Vulkan Headers 1.3.280
+      - name: Install LunarG Vulkan SDK 1.4.313
         shell: bash
         run: |
           set -euo pipefail
-          version="1.3.280"
-          prefix="$RUNNER_TEMP/vulkan-headers"
-          archive="$RUNNER_TEMP/Vulkan-Headers-${version}.tar.gz"
-          source_dir="$RUNNER_TEMP/Vulkan-Headers-${version}"
-
-          curl --fail --location --retry 3 --silent --show-error \
-            "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v${version}.tar.gz" \
-            -o "$archive"
-          printf '%s  %s\n' \
-            717b49c52dbd37c78cf2f7f0fc715292c42e74841219e6cca918cd293ad5dce4 \
-            "$archive" | sha256sum -c -
-          tar -xzf "$archive" -C "$RUNNER_TEMP"
-
-          install -d "$prefix/include" "$prefix/lib/pkgconfig"
-          cp -a "$source_dir/include/vulkan" "$prefix/include/"
-          {
-            printf 'prefix=%s\n' "$prefix"
-            printf 'exec_prefix=${prefix}\n'
-            printf 'libdir=/usr/lib/x86_64-linux-gnu\n'
-            printf 'includedir=${prefix}/include\n\n'
-            printf 'Name: vulkan\n'
-            printf 'Description: Vulkan Loader\n'
-            printf 'Version: %s\n' "$version"
-            printf 'Libs: -L${libdir} -lvulkan\n'
-            printf 'Cflags: -I${includedir}\n'
-          } > "$prefix/lib/pkgconfig/vulkan.pc"
-          PKG_CONFIG_PATH="$prefix/lib/pkgconfig" pkg-config --modversion vulkan
-
-          {
-            printf 'VULKAN_HEADERS_PREFIX=%s\n' "$prefix"
-            printf 'CMAKE_INCLUDE_PATH=%s/include:%s\n' "$prefix" "${CMAKE_INCLUDE_PATH:-}"
-          } >> "$GITHUB_ENV"
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-1.4.313-jammy.list \
+            https://packages.lunarg.com/vulkan/1.4.313/lunarg-vulkan-1.4.313-jammy.list
+          sudo apt update
+          sudo apt install -y --no-install-recommends vulkan-sdk
+          pkg-config --modversion vulkan
+          pkg-config --atleast-version=1.3.277 vulkan
 
       - name: Build FFmpeg 7.1.1
         shell: bash
@@ -113,7 +87,6 @@ jobs:
           tar -xJf "$archive" -C "$RUNNER_TEMP"
 
           cd "$source_dir"
-          export PKG_CONFIG_PATH="$VULKAN_HEADERS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           CC=gcc CXX=g++ ./configure \
             --prefix="$prefix" \
             --disable-programs \
@@ -128,7 +101,7 @@ jobs:
           make -j"$(nproc)"
           make install
 
-          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           pkg-config --modversion libavformat libavcodec libavutil libswscale libswresample
           test -f "$prefix/lib/pkgconfig/libavutil.pc"
 
