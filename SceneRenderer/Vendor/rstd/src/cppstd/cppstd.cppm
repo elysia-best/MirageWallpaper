@@ -60,7 +60,10 @@ module;
 // c++20
 #include <bit>
 #include <coroutine>
-#include <format>
+#if __has_include(<format>)
+#    include <format>
+#endif
+#include <fmt/format.h>
 #include <ranges>
 #include <source_location>
 #include <span>
@@ -865,7 +868,10 @@ export using std::countr_zero;
 export using std::has_single_bit;
 export using std::popcount;
 
-// <format>
+// <format> is unavailable in older libstdc++ releases (including Ubuntu
+// 22.04's default standard library). Keep this compatibility module usable
+// without making formatting support a hard dependency.
+#if __has_include(<format>)
 export using std::basic_format_context;
 export using std::basic_format_parse_context;
 export using std::basic_format_string;
@@ -879,6 +885,7 @@ export using std::formatter;
 export using std::make_format_args;
 export using std::vformat;
 export using std::vformat_to;
+#endif
 
 // <source_location>
 export using std::source_location;
@@ -922,6 +929,24 @@ export using std::move_only_function;
 #endif
 
 } // namespace std
+
+// fmtlib provides formatting on platforms where the C++ standard library does
+// not implement <format>, such as Ubuntu 22.04's libstdc++.
+export namespace fmt
+{
+using ::fmt::basic_format_context;
+using ::fmt::basic_format_parse_context;
+using ::fmt::format;
+using ::fmt::format_args;
+using ::fmt::format_string;
+using ::fmt::format_to;
+using ::fmt::format_to_n;
+using ::fmt::formatted_size;
+using ::fmt::formatter;
+using ::fmt::make_format_args;
+using ::fmt::vformat;
+using ::fmt::vformat_to;
+} // namespace fmt
 
 // libstdc++ vector::iterator is __gnu_cxx::__normal_iterator, with comparison
 // operators defined as free functions in __gnu_cxx::. Without explicit export,
