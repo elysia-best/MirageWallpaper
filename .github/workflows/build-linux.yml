@@ -120,8 +120,9 @@ jobs:
           target: 'desktop'
           arch: 'linux_gcc_64'
           # FluentUI imports Qt5Compat.GraphicalEffects; Positioning's NMEA
-          # plugin links Qt6SerialPort. Qt Wayland supplies the native platform plugin.
-          modules: 'qt5compat qtpositioning qtserialport qtwaylandcompositor qtwebchannel qtwebengine'
+          # plugin links Qt6SerialPort. qtwayland supplies the Wayland client
+          # platform plugins used by MirageQt on Plasma Wayland.
+          modules: 'qt5compat qtpositioning qtserialport qtwayland qtwebchannel qtwebengine'
       
       - name: Set up Clang 21
         uses: egor-tensin/setup-clang@23bc15cd4207e45f1566447deb48f4ff3ef932cb # v2
@@ -197,6 +198,12 @@ jobs:
           test -x "$appdir/usr/bin/SceneWallpaper"
           test -x "$appdir/usr/bin/VideoWallpaper"
           test -d "$appdir/usr/bin/assets"
+          # Do not produce an AppImage that only works by falling back to the
+          # host's Qt installation. MirageQt must run on Plasma Wayland with
+          # the Qt platform plugins bundled in the AppDir.
+          test -f "$appdir/usr/lib/libQt6WaylandClient.so.6"
+          test -f "$appdir/usr/plugins/platforms/libqwayland-generic.so"
+          test -f "$appdir/usr/plugins/platforms/libqwayland-egl.so"
 
       - name: Download AppImage tooling
         shell: bash
