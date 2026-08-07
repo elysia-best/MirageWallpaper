@@ -119,8 +119,9 @@ jobs:
           host: 'linux'
           target: 'desktop'
           arch: 'linux_gcc_64'
-          # qtpositioning's NMEA plugin links Qt6SerialPort and is scanned by linuxdeploy.
-          modules: 'qtpositioning qtserialport qtwebchannel qtwebengine'
+          # FluentUI imports Qt5Compat.GraphicalEffects; Positioning's NMEA
+          # plugin links Qt6SerialPort. Qt Wayland supplies the native platform plugin.
+          modules: 'qt5compat qtpositioning qtserialport qtwaylandcompositor qtwebchannel qtwebengine'
       
       - name: Set up Clang 21
         uses: egor-tensin/setup-clang@23bc15cd4207e45f1566447deb48f4ff3ef932cb # v2
