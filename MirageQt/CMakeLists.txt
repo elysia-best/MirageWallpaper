@@ -148,8 +148,9 @@ install(TARGETS MirageQt
     RUNTIME DESTINATION bin)
 
 # --- Desktop integration ---
-# Configures the .desktop entry with the absolute install path of the binary.
-set(MIRAGEQT_EXECUTABLE "${CMAKE_INSTALL_PREFIX}/bin/MirageQt")
+# Desktop environments and AppImage tooling resolve installed applications
+# through PATH; an absolute /usr path would point outside an AppDir.
+set(MIRAGEQT_EXECUTABLE "MirageQt")
 configure_file(Resources/mirageqt.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/mirageqt.desktop @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/mirageqt.desktop
         DESTINATION share/applications)
