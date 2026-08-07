@@ -28,6 +28,14 @@ namespace {
 constexpr std::int32_t kOutputSampleRate = 48000;
 constexpr std::int32_t kOutputChannels = 2;
 
+#if defined(SDL_HINT_AUDIODRIVER)
+constexpr const char* kAudioDriverHint = SDL_HINT_AUDIODRIVER;
+#elif defined(SDL_HINT_AUDIO_DRIVER)
+constexpr const char* kAudioDriverHint = SDL_HINT_AUDIO_DRIVER;
+#else
+constexpr const char* kAudioDriverHint = "SDL_AUDIODRIVER";
+#endif
+
 } // namespace
 
 class VRVideoRendererEngine::Impl {
@@ -167,7 +175,7 @@ private:
 
     void openAudioOutput() {
         if (m_audio_codec == nullptr) return;
-        SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "pipewire,pulseaudio,alsa",
+        SDL_SetHintWithPriority(kAudioDriverHint, "pipewire,pulseaudio,alsa",
                                 SDL_HINT_OVERRIDE);
         if (SDL_WasInit(SDL_INIT_AUDIO) == 0 && SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
             std::fprintf(stderr, "VideoRenderer: SDL audio init failed: %s\n", SDL_GetError());
