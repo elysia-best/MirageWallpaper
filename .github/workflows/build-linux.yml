@@ -34,8 +34,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             desktop-file-utils \
+            build-essential \
             file \
             glslang-tools \
+            libdrm-dev \
             libavcodec-dev \
             libavformat-dev \
             libavutil-dev \
@@ -50,10 +52,53 @@ jobs:
             libswscale-dev \
             libvulkan-dev \
             libx11-dev \
+            nasm \
             ninja-build \
             patchelf \
             pkg-config \
             vulkan-tools
+
+      - name: Build FFmpeg 6.1.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="6.1.1"
+          prefix="$RUNNER_TEMP/ffmpeg"
+          archive="$RUNNER_TEMP/ffmpeg-${version}.tar.xz"
+          source_dir="$RUNNER_TEMP/ffmpeg-${version}"
+
+          curl --fail --location --retry 3 --silent --show-error \
+            "https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz" \
+            -o "$archive"
+          printf '%s  %s\n' \
+            8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968 \
+            "$archive" | sha256sum -c -
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+
+          cd "$source_dir"
+          CC=gcc CXX=g++ ./configure \
+            --prefix="$prefix" \
+            --disable-programs \
+            --disable-doc \
+            --disable-debug \
+            --disable-static \
+            --enable-shared \
+            --enable-pic \
+            --disable-autodetect \
+            --enable-vulkan \
+            --enable-libdrm
+          make -j"$(nproc)"
+          make install
+
+          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          pkg-config --modversion libavformat libavcodec libavutil libswscale libswresample
+          test -f "$prefix/lib/pkgconfig/libavutil.pc"
+
+          {
+            printf 'FFMPEG_PREFIX=%s\n' "$prefix"
+            printf 'PKG_CONFIG_PATH=%s\n' "$PKG_CONFIG_PATH"
+            printf 'LD_LIBRARY_PATH=%s/lib:%s\n' "$prefix" "${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
 
       - name: Set up CMake 4.3.4
         uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
@@ -125,6 +170,8 @@ jobs:
           install -Dm755 \
             VideoRenderer/build/release/Tools/VideoWallpaper/VideoWallpaper \
             "$appdir/usr/bin/VideoWallpaper"
+          cp -a "$FFMPEG_PREFIX"/lib/libav*.so* "$appdir/usr/bin/"
+          cp -a "$FFMPEG_PREFIX"/lib/libsw*.so* "$appdir/usr/bin/"
           cp -a assets "$appdir/usr/bin/assets"
 
           cp -a SceneRenderer/build/linux-clang-release/MirageLinuxDisplay/src/libmirage_display.so* \
