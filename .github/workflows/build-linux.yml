@@ -228,7 +228,9 @@ jobs:
         shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-          EXTRA_QT_MODULES: "core5compat;shadertools"
+          # linuxdeploy uses this deployer name for the client-side shell and
+          # graphics integration plugins; no compositor library is deployed.
+          EXTRA_QT_MODULES: "core5compat;shadertools;waylandcompositor"
           EXTRA_PLATFORM_PLUGINS: "libqwayland-egl.so;libqwayland-generic.so"
         run: |
           set -euo pipefail
@@ -254,6 +256,10 @@ jobs:
           test -f "$appdir/usr/lib/libQt6ShaderTools.so.6"
           test -f "$appdir/usr/plugins/platforms/libqwayland-generic.so"
           test -f "$appdir/usr/plugins/platforms/libqwayland-egl.so"
+          test -f "$appdir/usr/plugins/wayland-shell-integration/libxdg-shell.so"
+          test -f "$appdir/usr/plugins/wayland-shell-integration/libwl-shell-plugin.so"
+          test -f "$appdir/usr/plugins/wayland-shell-integration/libivi-shell.so"
+          test -f "$appdir/usr/plugins/wayland-shell-integration/libqt-shell.so"
           test -f "$appdir/usr/qml/Qt5Compat/GraphicalEffects/libqtgraphicaleffectsplugin.so"
 
           mkdir -p dist
