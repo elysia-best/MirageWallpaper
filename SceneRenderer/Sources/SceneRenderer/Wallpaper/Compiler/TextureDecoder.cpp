@@ -291,7 +291,7 @@ std::shared_ptr<Image> ParseExternalImage(std::string_view key, const std::strin
         return nullptr;
     }
 
-    auto img_ptr    = std::make_shared<Image>();
+    auto img_ptr    = rstd::make_shared<Image>();
     img_ptr->key    = std::string(key);
     img_ptr->header = MakeExternalImageHeader(width, height);
     img_ptr->slots.resize(1);
@@ -319,7 +319,7 @@ std::shared_ptr<Image> TextureAssetDecoder::Parse(const std::string& name) {
     }
 
     std::string            path    = "/assets/materials/" + name + ".tex";
-    std::shared_ptr<Image> img_ptr = std::make_shared<Image>();
+    std::shared_ptr<Image> img_ptr = rstd::make_shared<Image>();
     auto&                  img     = *img_ptr;
     img.key                        = name;
     // std::ifstream file = fs::GetFileFstream(vfs, path);

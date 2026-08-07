@@ -93,7 +93,7 @@ public:
         {
             Desc desc {};
             callback(builder, desc);
-            m_map_pass[node->ID()] = std::make_shared<TPass>(desc);
+            m_map_pass[node->ID()] = rstd::make_shared<TPass>(desc);
         }
         if (type == PassNode::Type::Virtual) m_set_vitrual_passnode.insert(node->ID());
         return node;

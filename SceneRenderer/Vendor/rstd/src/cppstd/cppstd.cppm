@@ -934,6 +934,17 @@ export using std::move_only_function;
 
 } // namespace std
 
+export namespace rstd
+{
+// Keep the original standard-library declaration bound within this module.
+// libstdc++ shared_ptr cannot be instantiated by an importer that sees
+// make_shared only through an exported using-declaration.
+template<typename T, typename... Args>
+[[nodiscard]] auto make_shared(Args&&... args) -> std::shared_ptr<T> {
+    return std::make_shared<T>(std::forward<Args>(args)...);
+}
+} // namespace rstd
+
 // fmtlib provides formatting on platforms where the C++ standard library does
 // not implement <format>, such as Ubuntu 22.04's libstdc++.
 export namespace fmt

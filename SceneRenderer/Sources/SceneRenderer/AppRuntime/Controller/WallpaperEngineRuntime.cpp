@@ -1426,7 +1426,7 @@ void SceneRenderController::on(RenderInit&& m) {
     // round-trip it through this message.
     if (auto* sw = m_render->exSwapchain()) {
         if (m_render_tx) {
-            m_swapchain_tx                   = std::make_shared<RenderSender>(*m_render_tx);
+            m_swapchain_tx                   = rstd::make_shared<RenderSender>(*m_render_tx);
             std::weak_ptr<RenderSender> weak = m_swapchain_tx;
             sw->setOnReadyChanged([weak](const ExSwapchainReadyEvent& e) {
                 if (auto tx = weak.lock()) {
@@ -1665,7 +1665,7 @@ void SceneRuntimeController::loadScene() {
         auto              scene_doc = m_config.scene_document;
         if (! scene_doc) {
             auto loaded = wpscene::LoadSceneDocumentFromVfs(vfs, base + pkgEntry, pkg_v);
-            if (loaded) scene_doc = std::make_shared<wpscene::SceneDocument>(std::move(*loaded));
+            if (loaded) scene_doc = rstd::make_shared<wpscene::SceneDocument>(std::move(*loaded));
         }
         if (! scene_doc) {
             rstd_error("Not supported scene type");
@@ -1812,7 +1812,7 @@ bool SceneWallpaper::init() { return m_runtime->init(); }
 
 void SceneWallpaper::initVulkan(RenderInitInfo info) {
     m_offscreen = info.offscreen;
-    auto sp     = std::make_shared<RenderInitInfo>(std::move(info));
+    auto sp     = rstd::make_shared<RenderInitInfo>(std::move(info));
     (void)m_runtime->renderSender().send(RenderMsg { RenderInit { std::move(sp) } });
 }
 
