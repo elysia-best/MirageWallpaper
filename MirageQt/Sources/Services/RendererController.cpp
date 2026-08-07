@@ -142,9 +142,12 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         args << Paths::assetsDir()
              << wallpaper.resolvedEntryPath()
              << "--fps" << QString::number(options.fps)
+             << "--render-scale" << number(options.renderScale)
+             << "--msaa" << QString::number(options.msaaSamples)
              << "--control-stdin";
         if (options.muted) args << "--muted";
         if (options.loadFromMemory) args << "--load-from-memory";
+        if (!options.enableSpectrum) args << "--no-spectrum";
         const QString propsFile = writeUserPropertiesFile(options.userProperties, wallpaper);
         if (!propsFile.isEmpty()) {
             args << "--user-properties" << propsFile;

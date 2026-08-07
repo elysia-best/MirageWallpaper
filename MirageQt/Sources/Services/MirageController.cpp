@@ -1006,12 +1006,21 @@ void MirageController::resetTrustedWallpapers() {
 }
 
 bool MirageController::applySettings(const QVariantMap& values) {
+    const GlobalSettings before = m_settings.settings();
     GlobalSettings updated = m_settings.settings();
     updateSettingsFromMap(updated, values);
     QString error;
-    if (m_settings.setSettings(updated, &error)) return true;
+    if (m_settings.setSettings(updated, &error)) {
+        const GlobalSettings& applied = m_settings.settings();
+        if (before.fps != applied.fps) m_renderer.setFps(applied.fps);
+        return true;
+    }
     setStatusMessage(error.isEmpty() ? QStringLiteral("设置保存失败") : error);
     return false;
+}
+
+void MirageController::previewFps(int fps) {
+    m_renderer.setFps(qBound(10, fps, 120));
 }
 
 void MirageController::setPlaylistScreen(int screen) {
@@ -1194,6 +1203,20 @@ RenderOptions MirageController::renderOptionsFor(const Wallpaper& item) const {
     const WallpaperRuntimeState runtime = m_runtimeStore.loadRuntime(item);
     RenderOptions options;
     options.fps = settings.fps;
+    if (settings.textureResolution == QStringLiteral("highQuality"))
+        options.renderScale = 1.0;
+    else if (settings.textureResolution == QStringLiteral("highPerformance"))
+        options.renderScale = 0.5;
+    else
+        options.renderScale = 0.75;
+    if (settings.antiAliasing == QStringLiteral("none"))
+        options.msaaSamples = 1;
+    else if (settings.antiAliasing == QStringLiteral("msaa_x4"))
+        options.msaaSamples = 4;
+    else if (settings.antiAliasing == QStringLiteral("msaa_x8"))
+        options.msaaSamples = 8;
+    else
+        options.msaaSamples = 2;
     options.volume = runtime.volume * settings.masterVolume;
     options.muted = runtime.muted || settings.globalMuted || runtime.volume <= 0.0;
     options.speed = runtime.speed;

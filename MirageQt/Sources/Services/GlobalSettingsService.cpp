@@ -107,17 +107,29 @@ GlobalSettings fromJson(const QJsonObject& object) {
 GlobalSettings sanitized(GlobalSettings settings) {
     const QSet<QString> playback = {QStringLiteral("keepRunning"), QStringLiteral("mute"),
                                     QStringLiteral("pause"), QStringLiteral("stop")};
+    const QSet<QString> runningMutePause = {QStringLiteral("keepRunning"), QStringLiteral("mute"),
+                                            QStringLiteral("pause")};
+    const QSet<QString> runningPauseStop = {QStringLiteral("keepRunning"), QStringLiteral("pause"),
+                                            QStringLiteral("stop")};
     auto validOr = [](QString value, const QSet<QString>& accepted, const QString& fallback) {
         return accepted.contains(value) ? value : fallback;
     };
-    settings.otherApplicationFocused = validOr(settings.otherApplicationFocused, playback, QStringLiteral("keepRunning"));
+    settings.otherApplicationFocused = validOr(settings.otherApplicationFocused, runningMutePause, QStringLiteral("keepRunning"));
     settings.otherApplicationFullscreen = validOr(settings.otherApplicationFullscreen, playback, QStringLiteral("keepRunning"));
-    settings.otherApplicationPlayingAudio = validOr(settings.otherApplicationPlayingAudio, playback, QStringLiteral("keepRunning"));
-    settings.displayAsleep = validOr(settings.displayAsleep, playback, QStringLiteral("keepRunning"));
-    settings.laptopOnBattery = validOr(settings.laptopOnBattery, playback, QStringLiteral("keepRunning"));
+    settings.otherApplicationPlayingAudio = validOr(settings.otherApplicationPlayingAudio, runningMutePause, QStringLiteral("keepRunning"));
+    settings.displayAsleep = validOr(settings.displayAsleep, runningPauseStop, QStringLiteral("keepRunning"));
+    settings.laptopOnBattery = validOr(settings.laptopOnBattery, runningPauseStop, QStringLiteral("keepRunning"));
     settings.antiAliasing = validOr(settings.antiAliasing,
                                     {QStringLiteral("none"), QStringLiteral("msaa_x2"), QStringLiteral("msaa_x4"), QStringLiteral("msaa_x8")},
                                     QStringLiteral("msaa_x2"));
+    settings.postProcessing = validOr(settings.postProcessing,
+                                      {QStringLiteral("disabled"), QStringLiteral("enabled"), QStringLiteral("ultra")},
+                                      QStringLiteral("disabled"));
+    if (settings.textureResolution == QStringLiteral("original"))
+        settings.textureResolution = QStringLiteral("highQuality");
+    settings.textureResolution = validOr(settings.textureResolution,
+                                         {QStringLiteral("highQuality"), QStringLiteral("automatic"), QStringLiteral("highPerformance")},
+                                         QStringLiteral("automatic"));
     settings.appearance = validOr(settings.appearance,
                                   {QStringLiteral("light"), QStringLiteral("dark"), QStringLiteral("followSystem")},
                                   QStringLiteral("followSystem"));
@@ -184,7 +196,13 @@ void GlobalSettingsService::reload() {
     QFile file(settingsPath());
     if (file.open(QIODevice::ReadOnly)) {
         const auto doc = QJsonDocument::fromJson(file.readAll());
-        if (doc.isObject()) m_settings = sanitized(fromJson(doc.object()));
+        if (doc.isObject()) {
+            const bool migrateResolution =
+                doc.object().value(QStringLiteral("textureResolution")).toString() == QStringLiteral("original");
+            m_settings = sanitized(fromJson(doc.object()));
+            file.close();
+            if (migrateResolution) writeSettings(m_settings, nullptr);
+        }
     }
     emit settingsChanged(m_settings);
 }
