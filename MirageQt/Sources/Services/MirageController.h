@@ -175,6 +175,7 @@ public:
     Q_INVOKABLE void unmuteWallpapers();
     Q_INVOKABLE void reloadCurrentWallpaper();
     Q_INVOKABLE void resetTrustedWallpapers();
+    Q_INVOKABLE void previewFps(int fps);
     Q_INVOKABLE bool applySettings(const QVariantMap& values);
 
 public slots:

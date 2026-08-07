@@ -141,6 +141,18 @@ target_link_libraries(MirageQt PRIVATE
 target_include_directories(MirageQt PRIVATE Vendor/FluentUI/src)
 target_link_libraries(MirageQt PRIVATE fluentuiplugin fluentuipluginplugin)
 
+option(MIRAGEQT_BUILD_TESTS "Build MirageQt tests" OFF)
+if(MIRAGEQT_BUILD_TESTS)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
+    enable_testing()
+    add_executable(MirageQtGlobalSettingsTests
+        Tests/GlobalSettingsServiceTests.cpp)
+    target_link_libraries(MirageQtGlobalSettingsTests PRIVATE
+        MirageQtCore
+        Qt6::Test)
+    add_test(NAME MirageQtGlobalSettings COMMAND MirageQtGlobalSettingsTests)
+endif()
+
 set_target_properties(MirageQt PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 

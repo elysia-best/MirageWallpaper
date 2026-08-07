@@ -6,6 +6,7 @@
 namespace Mirage {
 
 struct GlobalSettings {
+    // TODO: apply these rules after the host plugin exposes the required state events.
     QString otherApplicationFocused = QStringLiteral("keepRunning");
     QString otherApplicationFullscreen = QStringLiteral("keepRunning");
     QString otherApplicationPlayingAudio = QStringLiteral("keepRunning");

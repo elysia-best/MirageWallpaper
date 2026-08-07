@@ -24,6 +24,8 @@ enum class FillMode {
 
 struct RenderOptions {
     int fps = 30;
+    double renderScale = 0.75;
+    int msaaSamples = 2;
     double volume = 1.0;
     bool muted = false;
     double speed = 1.0;

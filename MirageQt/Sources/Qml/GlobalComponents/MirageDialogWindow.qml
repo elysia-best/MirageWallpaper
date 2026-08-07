@@ -14,6 +14,7 @@ FluWindow {
     property int buttonFlags: FluContentDialogType.NegativeButton | FluContentDialogType.PositiveButton
     property Component contentDelegate
     property int contentMargin: 24
+    property bool closeOnPositive: true
 
     signal opened
     signal neutralClicked
@@ -111,7 +112,8 @@ FluWindow {
                 Layout.preferredWidth: 112
                 onClicked: {
                     dialog.positiveClicked();
-                    dialog.close();
+                    if (dialog.closeOnPositive)
+                        dialog.close();
                 }
             }
         }

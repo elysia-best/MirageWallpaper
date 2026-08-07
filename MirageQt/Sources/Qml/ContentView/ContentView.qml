@@ -664,8 +664,16 @@ FluWindow {
     }
 
     function resetSettingsDraft() {
-        settingsDraft = mirage.settings;
+        var next = {};
+        for (var name in mirage.settings)
+            next[name] = mirage.settings[name];
+        settingsDraft = next;
         settingsDirty = false;
+    }
+
+    function cancelSettingsDraft() {
+        mirage.previewFps(mirage.settings.fps);
+        resetSettingsDraft();
     }
 
     function setSetting(key, value) {
@@ -677,6 +685,8 @@ FluWindow {
         next[key] = value;
         settingsDraft = next;
         settingsDirty = true;
+        if (key === "fps")
+            mirage.previewFps(value);
     }
 
     function playlistOptionIndex(options, value) {
@@ -961,7 +971,7 @@ FluWindow {
         target: mirage
         function onSettingsChanged() {
             if (!settingsDirty)
-                settingsDraft = mirage.settings;
+                window.resetSettingsDraft();
         }
         function onInstalledWallpaperSelected() {
             window.currentTab = 0;
