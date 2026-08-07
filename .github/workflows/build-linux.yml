@@ -239,6 +239,8 @@ jobs:
 
           linuxdeploy \
             --appdir "$appdir" \
+            --library "$QT_ROOT_DIR/lib/libQt6Core5Compat.so.6" \
+            --library "$QT_ROOT_DIR/lib/libQt6ShaderTools.so.6" \
             --executable "$appdir/usr/bin/MirageQt" \
             --executable "$appdir/usr/bin/SceneWallpaper" \
             --executable "$appdir/usr/bin/VideoWallpaper" \
@@ -247,6 +249,7 @@ jobs:
             --plugin qt
 
           test -f "$appdir/usr/lib/libQt6WaylandClient.so.6"
+          test -f "$appdir/usr/lib/libQt6WaylandEglClientHwIntegration.so.6"
           test -f "$appdir/usr/lib/libQt6Core5Compat.so.6"
           test -f "$appdir/usr/lib/libQt6ShaderTools.so.6"
           test -f "$appdir/usr/plugins/platforms/libqwayland-generic.so"
