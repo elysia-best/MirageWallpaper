@@ -1,13 +1,13 @@
 
 find_package(PkgConfig REQUIRED)
-# The FFI uses AVChannelLayout and the modern Vulkan hwcontext API, introduced
-# with FFmpeg 5. Keep the minimums aligned with those headers instead of
-# allowing an older FFmpeg to fail later during C++ module compilation.
-pkg_check_modules(WAVSEN_AVFORMAT    REQUIRED IMPORTED_TARGET libavformat>=59)
-pkg_check_modules(WAVSEN_AVCODEC     REQUIRED IMPORTED_TARGET libavcodec>=59)
-pkg_check_modules(WAVSEN_AVUTIL      REQUIRED IMPORTED_TARGET libavutil>=57)
-pkg_check_modules(WAVSEN_SWSCALE     REQUIRED IMPORTED_TARGET libswscale>=6)
-pkg_check_modules(WAVSEN_SWRESAMPLE  REQUIRED IMPORTED_TARGET libswresample>=4)
+# The FFI uses AVVulkanDeviceQueueFamily and modern Vulkan frame flags, both
+# introduced with FFmpeg 7. Keep the minimums aligned with those headers
+# instead of allowing an older FFmpeg to fail in C++ module compilation.
+pkg_check_modules(WAVSEN_AVFORMAT    REQUIRED IMPORTED_TARGET libavformat>=61)
+pkg_check_modules(WAVSEN_AVCODEC     REQUIRED IMPORTED_TARGET libavcodec>=61)
+pkg_check_modules(WAVSEN_AVUTIL      REQUIRED IMPORTED_TARGET libavutil>=59)
+pkg_check_modules(WAVSEN_SWSCALE     REQUIRED IMPORTED_TARGET libswscale>=8)
+pkg_check_modules(WAVSEN_SWRESAMPLE  REQUIRED IMPORTED_TARGET libswresample>=5)
 # Optional: VAAPI hardware decode for non-Apple builds. macOS uses the
 # Core Audio path and should not probe Linux DRM/VAAPI pkg-config modules.
 if(NOT APPLE)
