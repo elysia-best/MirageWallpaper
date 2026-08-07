@@ -1,9 +1,3 @@
-module;
-
-// libstdc++ 12 requires the original declaration of make_shared to be
-// visible when shared_ptr is instantiated; rstd.cppstd only re-exports it.
-#include <memory>
-
 module wavsen.audio;
 
 import rstd.cppstd;
