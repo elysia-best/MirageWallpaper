@@ -516,7 +516,7 @@ public:
         if (device.handle().CreateFramebuffer(info, framebuffer) != VK_SUCCESS) {
             return std::nullopt;
         }
-        auto shared      = std::make_shared<vvk::Framebuffer>(std::move(framebuffer));
+        auto shared      = rstd::make_shared<vvk::Framebuffer>(std::move(framebuffer));
         slot.framebuffer = shared;
         ++slot.observed_count;
         return FramebufferResourceResult {
@@ -583,7 +583,7 @@ public:
 
         auto created = CreateRenderPass(device, desc);
         if (! created.has_value()) return std::nullopt;
-        auto shared      = std::make_shared<vvk::RenderPass>(std::move(*created));
+        auto shared      = rstd::make_shared<vvk::RenderPass>(std::move(*created));
         slot.render_pass = shared;
         ++slot.observed_count;
         return RenderPassResourceResult {
@@ -740,7 +740,7 @@ public:
         auto render_pass = render_pass_cache.Ensure(device, desc.render_pass);
         if (! render_pass.has_value() || ! render_pass->render_pass) return std::nullopt;
 
-        auto             entry = std::make_shared<PipelineResourceEntry>();
+        auto             entry = rstd::make_shared<PipelineResourceEntry>();
         GraphicsPipeline pipeline;
         pipeline.toDefault();
         pipeline.depth       = desc.depth;
@@ -817,7 +817,7 @@ public:
 
     void Retire(vvk::Framebuffer&& framebuffer) {
         if (! framebuffer) return;
-        m_framebuffers.push_back(std::make_shared<vvk::Framebuffer>(std::move(framebuffer)));
+        m_framebuffers.push_back(rstd::make_shared<vvk::Framebuffer>(std::move(framebuffer)));
     }
 
     void Retire(std::shared_ptr<vvk::Framebuffer> framebuffer) {

@@ -414,7 +414,7 @@ bool ParseMDLS(fs::MemBinaryStream& f, WPMdl& mdl, std::string_view path) {
     uint16_t bones_num = f.ReadUint16();
     f.ReadUint16(); // zero pad
 
-    mdl.puppet  = std::make_shared<WPPuppet>();
+    mdl.puppet  = rstd::make_shared<WPPuppet>();
     auto& bones = mdl.puppet->bones;
 
     bones.resize(bones_num);

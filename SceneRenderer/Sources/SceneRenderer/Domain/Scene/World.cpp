@@ -1165,7 +1165,7 @@ std::shared_ptr<VideoPlaybackState> Scene::VideoControl(std::string_view key) {
     const std::string control_key = texture->second.url.empty() ? std::string(key)
                                                                 : texture->second.url;
     auto [it, inserted] =
-        m_video_controls.try_emplace(control_key, std::make_shared<VideoPlaybackState>());
+        m_video_controls.try_emplace(control_key, rstd::make_shared<VideoPlaybackState>());
     (void)inserted;
     return it->second;
 }
