@@ -119,7 +119,8 @@ jobs:
           host: 'linux'
           target: 'desktop'
           arch: 'linux_gcc_64'
-          modules: 'qtpositioning qtwebchannel qtwebengine'
+          # qtpositioning's NMEA plugin links Qt6SerialPort and is scanned by linuxdeploy.
+          modules: 'qtpositioning qtserialport qtwebchannel qtwebengine'
       
       - name: Set up Clang 21
         uses: egor-tensin/setup-clang@23bc15cd4207e45f1566447deb48f4ff3ef932cb # v2
