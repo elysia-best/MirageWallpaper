@@ -1,0 +1,202 @@
+name: Build Linux AppImage
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Linux AppImage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      CC: clang-21
+      CXX: clang++-21
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            desktop-file-utils \
+            file \
+            glslang-tools \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libdbus-1-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libglfw3-dev \
+            liblz4-dev \
+            libpulse-dev \
+            libsdl2-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libvulkan-dev \
+            libx11-dev \
+            ninja-build \
+            patchelf \
+            pkg-config \
+            vulkan-tools
+
+      - name: Set up CMake 4.3.4
+        uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
+        with:
+          cmake-version: 4.3.4
+
+      - name: Install Qt 6.8
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4
+        with:
+          version: 6.8.3
+          host: linux
+          target: desktop
+          modules: qtwebengine
+          install-deps: true
+          cache: true
+          setup-python: false
+
+      - name: Set up Clang 21
+        uses: egor-tensin/setup-clang@23bc15cd4207e45f1566447deb48f4ff3ef932cb # v2
+        with:
+          version: 21
+          platform: x64
+          # v2 has historically created the generic links itself; create the
+          # links below explicitly so the CMake presets always select Clang 21.
+          cc: 0
+
+      - name: Select Clang 21
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends clang-21
+          command -v clang-21
+          command -v clang++-21
+          sudo ln -sfn "$(command -v clang-21)" /usr/local/bin/clang
+          sudo ln -sfn "$(command -v clang++-21)" /usr/local/bin/clang++
+          sudo ln -sfn "$(command -v clang-21)" /usr/local/bin/cc
+          sudo ln -sfn "$(command -v clang++-21)" /usr/local/bin/c++
+          clang --version
+          clang++ --version
+
+      - name: Build Linux renderers
+        shell: bash
+        run: |
+          set -euo pipefail
+          JOBS="$(nproc)" ./scripts/build_all_linux.sh renderers
+
+      - name: Build and install MirageQt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S MirageQt -B MirageQt/build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_C_COMPILER="$CC" \
+            -DCMAKE_CXX_COMPILER="$CXX"
+          cmake --build MirageQt/build/release --parallel "$(nproc)"
+
+      - name: Stage AppDir
+        shell: bash
+        run: |
+          set -euo pipefail
+          appdir="$RUNNER_TEMP/Mirage.AppDir"
+          rm -rf "$appdir"
+          cmake --install MirageQt/build/release --prefix "$appdir/usr"
+
+          install -Dm755 \
+            SceneRenderer/build/linux-clang-release/Tools/SceneWallpaper/SceneWallpaper \
+            "$appdir/usr/bin/SceneWallpaper"
+          install -Dm755 \
+            VideoRenderer/build/release/Tools/VideoWallpaper/VideoWallpaper \
+            "$appdir/usr/bin/VideoWallpaper"
+          cp -a assets "$appdir/usr/bin/assets"
+
+          cp -a SceneRenderer/build/linux-clang-release/MirageLinuxDisplay/src/libmirage_display.so* \
+            "$appdir/usr/bin/"
+          patchelf --set-rpath '$ORIGIN' \
+            "$appdir/usr/bin/SceneWallpaper" \
+            "$appdir/usr/bin/VideoWallpaper"
+
+          desktop-file-validate "$appdir/usr/share/applications/mirageqt.desktop"
+          test -x "$appdir/usr/bin/MirageQt"
+          test -x "$appdir/usr/bin/SceneWallpaper"
+          test -x "$appdir/usr/bin/VideoWallpaper"
+          test -d "$appdir/usr/bin/assets"
+
+      - name: Download AppImage tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          linuxdeploy_url="https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+          qt_plugin_url="https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage"
+          appimagetool_url="https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+
+          curl --fail --location --retry 3 --silent --show-error \
+            "$linuxdeploy_url" -o "$RUNNER_TEMP/linuxdeploy"
+          curl --fail --location --retry 3 --silent --show-error \
+            "$qt_plugin_url" -o "$RUNNER_TEMP/linuxdeploy-plugin-qt"
+          curl --fail --location --retry 3 --silent --show-error \
+            "$appimagetool_url" -o "$RUNNER_TEMP/appimagetool"
+
+          printf '%s  %s\n' \
+            c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d \
+            "$RUNNER_TEMP/linuxdeploy" | sha256sum -c -
+          printf '%s  %s\n' \
+            ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 \
+            "$RUNNER_TEMP/appimagetool" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/linuxdeploy" \
+            "$RUNNER_TEMP/linuxdeploy-plugin-qt" \
+            "$RUNNER_TEMP/appimagetool"
+
+      - name: Build AppImage
+        id: package
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          appdir="$RUNNER_TEMP/Mirage.AppDir"
+          export PATH="$RUNNER_TEMP:$PATH"
+          qmake_bin="$(command -v qmake6 || command -v qmake)"
+          export QMAKE="$qmake_bin"
+
+          linuxdeploy \
+            --appdir "$appdir" \
+            --executable "$appdir/usr/bin/MirageQt" \
+            --executable "$appdir/usr/bin/SceneWallpaper" \
+            --executable "$appdir/usr/bin/VideoWallpaper" \
+            --desktop-file "$appdir/usr/share/applications/mirageqt.desktop" \
+            --icon-file "$appdir/usr/share/icons/hicolor/512x512/apps/mirageqt.png" \
+            --plugin qt
+
+          mkdir -p dist
+          package="Mirage-${GITHUB_SHA:0:12}-linux-x86_64.AppImage"
+          appimagetool "$appdir" "dist/$package"
+          test -x "dist/$package"
+          file "dist/$package" | grep -q 'AppImage\|ELF 64-bit'
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Mirage-linux-x86_64-AppImage
+          path: dist/${{ steps.package.outputs.package }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
