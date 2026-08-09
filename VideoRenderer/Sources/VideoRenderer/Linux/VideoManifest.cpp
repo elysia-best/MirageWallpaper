@@ -1,96 +1,141 @@
 #include "VideoManifest.h"
 
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QJsonDocument>
-#include <QJsonParseError>
-#include <QSet>
+#include <filesystem>
+#include <format>
+#include <fstream>
+#include <unordered_set>
 
-namespace {
+namespace fs = std::filesystem;
+using json = nlohmann::json;
 
-const QSet<QString>& videoExtensions() {
-    static const QSet<QString> extensions {
-        QStringLiteral("mp4"), QStringLiteral("m4v"), QStringLiteral("mov"),
-        QStringLiteral("qt"), QStringLiteral("avi"), QStringLiteral("mkv"),
-        QStringLiteral("webm"), QStringLiteral("mpg"), QStringLiteral("mpeg"),
-    };
-    return extensions;
+enum {
+    VRManifestErrorOpenFailed = 1,
+    VRManifestErrorInvalidJSON,
+    VRManifestErrorWrongType,
+    VRManifestErrorMissingVideo,
+    VRManifestErrorUnsafePath,
+};
+
+const std::unordered_set<std::string> VRVideoExtensions = {
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"
+};
+
+// VideoRendererManifestError Begin
+VideoRendererManifestError::VideoRendererManifestError(int code, std::string description) : code(code),
+    userInfo(std::move(description)) {
 }
 
-QString findFirstVideoFile(const QDir& directory) {
-    const QFileInfoList children = directory.entryInfoList(QDir::Files | QDir::Readable, QDir::Name);
-    for (const QFileInfo& child : children) {
-        if (videoExtensions().contains(child.suffix().toLower())) return child.fileName();
-    }
-    return {};
+const char *VideoRendererManifestError::what() const noexcept {
+    return userInfo.c_str();
 }
 
-void setError(QString* error, const QString& message) {
-    if (error) *error = message;
+// VideoRendererManifestError End
+
+// Resolve a manifest-supplied relative path inside `directory`, or nil if it
+// escapes. project.json is untrusted Workshop content, so a "file" entry of
+// "../../../../Users/you/Movies/private.mov" must not end up playing on the
+// desktop. Same containment pattern as WRURLSchemeHandler
+// -safePathForRelative:inDirectory:: canonicalize BOTH sides (standardize and
+// resolve symlinks, since a symlinked entry inside the directory can point
+// anywhere) and require equality with the root or a "<root>/" prefix.
+static fs::path VRContainedPath(std::string relative, const fs::path &directory) {
+    if (relative.empty()) return {};
+    while (relative.starts_with('/')) relative = relative.substr(1);
+    if (relative.empty()) return {};
+    const auto base = fs::weakly_canonical(fs::is_symlink(directory) ? fs::read_symlink(directory) : directory);
+    const auto combined = fs::weakly_canonical(base / fs::path(relative));
+    auto standardised = fs::is_symlink(combined) ? fs::read_symlink(combined) : combined;
+    if (standardised != base && !standardised.string().starts_with(base.string() + "/")) return {};
+    return standardised;
 }
 
-} // namespace
+static std::string VRFindFirstVideoFile(const fs::path &directory) {
+    std::string videoFileName;
+    std::ranges::for_each(fs::directory_iterator{directory}, [&videoFileName](const auto &dir_entry) {
+        if (const auto &fullPath = dir_entry.path(); fs::exists(fullPath) && fs::is_regular_file(fullPath)) {
+            if (VRVideoExtensions.contains(fullPath.extension().string())) {
+                videoFileName = fullPath.filename().string();
+            }
+        }
+    });
+    return videoFileName;
+}
 
-std::optional<VRVideoManifest> VRVideoManifest::loadFromDirectory(
-    const QString& inputDirectory, QString* error) {
-    const QFileInfo directoryInfo(QDir::cleanPath(inputDirectory));
-    if (!directoryInfo.exists() || !directoryInfo.isDir()) {
-        setError(error, QStringLiteral("wallpaper directory not found: %1").arg(inputDirectory));
-        return std::nullopt;
+static json VRManifestUserProperties(const json &json_data) {
+    if (!json_data["general"].is_object()) return {};
+    auto properties = json_data["general"]["properties"];
+    return properties.is_object() ? properties : json{};
+}
+
+std::shared_ptr<VRVideoManifest> VRVideoManifest::loadFromDirectory(const std::string &dir) {
+    fs::path directory;
+    try {
+        directory = fs::canonical(fs::path(dir)); // This means standardised path.
+    } catch (const fs::filesystem_error &e) {
+        throw VideoRendererManifestError(VRManifestErrorOpenFailed,
+                                         std::format("wallpaper directory not found: {}", directory.c_str()));
     }
 
-    const QString directoryPath = directoryInfo.absoluteFilePath();
-    const QDir directory(directoryPath);
-    const QString projectPath = directory.filePath(QStringLiteral("project.json"));
-    QFile projectFile(projectPath);
-    if (!projectFile.open(QIODevice::ReadOnly)) {
-        setError(error, QStringLiteral("cannot open %1: %2").arg(projectPath, projectFile.errorString()));
-        return std::nullopt;
-    }
+    auto const projectPath = directory / "project.json";
+    auto parsed = json();
+    {
+        std::ifstream jsonFile(projectPath);
+        if (!jsonFile.is_open())
+            throw VideoRendererManifestError(VRManifestErrorOpenFailed,
+                                             std::format("cannot open {}", projectPath.c_str()));
 
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(projectFile.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        setError(error, QStringLiteral("invalid project.json: %1: %2")
-                            .arg(projectPath, parseError.errorString()));
-        return std::nullopt;
-    }
+        try {
+            parsed = json::parse(jsonFile);
+        } catch (const json::parse_error &e) {
+            throw VideoRendererManifestError(VRManifestErrorInvalidJSON,
+                                             std::format("invalid project.json: {} with error {}", projectPath.c_str(),
+                                                         e.what()));
+        }
 
-    const QJsonObject json = document.object();
-    const QString type = json.value(QStringLiteral("type")).toString().toLower();
-    if (type != QStringLiteral("video")) {
-        setError(error, QStringLiteral("project.json type is '%1', expected 'video'")
-                            .arg(type.isEmpty() ? QStringLiteral("<missing>") : type));
-        return std::nullopt;
-    }
+        try {
+            std::string type = parsed["type"].get<std::string>();
+            std::ranges::transform(type, type.begin(), ::tolower);
+            if (type != "video")
+                throw VideoRendererManifestError(VRManifestErrorWrongType,
+                                                 std::format("project.json type is '{}', expected 'video'",
+                                                             type.empty() ? type.c_str() : "<missing>"));
+            std::string videoFile = parsed["file"].get<std::string>();
+            if (videoFile.empty()) videoFile = VRFindFirstVideoFile(directory);
+            if (videoFile.empty())
+                throw VideoRendererManifestError(VRManifestErrorMissingVideo,
+                                                 "video wallpaper has no playable file entry");
 
-    QString videoFile = json.value(QStringLiteral("file")).toString();
-    if (videoFile.isEmpty()) videoFile = findFirstVideoFile(directory);
-    if (videoFile.isEmpty()) {
-        setError(error, QStringLiteral("video wallpaper has no playable file entry"));
-        return std::nullopt;
-    }
+            const auto videoPath = VRContainedPath(videoFile, directory);
+            if (videoPath.empty())
+                throw VideoRendererManifestError(VRManifestErrorUnsafePath,
+                                                 "project.json 'file' entry escapes the wallpaper directory");
+            if (!fs::exists(videoPath) || fs::is_directory(videoPath))
+                throw VideoRendererManifestError(VRManifestErrorMissingVideo,
+                                                 std::format("video file not found in wallpaper directory: {}",
+                                                             videoFile));
 
-    const QFileInfo videoInfo(QDir::cleanPath(directory.filePath(videoFile)));
-    if (!videoInfo.exists() || !videoInfo.isFile()) {
-        setError(error, QStringLiteral("video file not found: %1").arg(videoInfo.absoluteFilePath()));
-        return std::nullopt;
-    }
+            auto title = parsed["title"].get<std::string>();
+            if (title.empty()) title = directory.stem();
 
-    VRVideoManifest manifest;
-    manifest.m_wallpaperDirectory = directoryPath;
-    manifest.m_title = json.value(QStringLiteral("title")).toString();
-    if (manifest.m_title.isEmpty()) {
-        manifest.m_title = directoryInfo.fileName().isEmpty()
-            ? QStringLiteral("VideoWallpaper")
-            : directoryInfo.fileName();
+            auto preview = parsed["preview"].get<std::string>();
+            auto ptr = new VRVideoManifest();
+            return ptr->initWithDirectory(directory, title, preview, videoFile, videoPath, VRManifestUserProperties(parsed));
+        } catch (const json::out_of_range &e) {
+            throw VideoRendererManifestError(VRManifestErrorInvalidJSON,
+                                             std::format("invalid project.json: {} with error {}", projectPath.c_str(),
+                                                         e.what()));
+        }
     }
-    manifest.m_preview = json.value(QStringLiteral("preview")).toString();
-    manifest.m_videoFile = videoFile;
-    manifest.m_videoUrl = QUrl::fromLocalFile(videoInfo.absoluteFilePath());
+}
 
-    const QJsonObject general = json.value(QStringLiteral("general")).toObject();
-    manifest.m_userProperties = general.value(QStringLiteral("properties")).toObject();
-    return manifest;
+std::shared_ptr<VRVideoManifest> VRVideoManifest::initWithDirectory(const fs::path &directory,
+    const std::string &title, const std::string &preview, const std::string &videoFile,
+    const std::filesystem::path &videoPath, const json &userProperties) {
+    this->m_wallpaperDirectory = directory;
+    this->m_title = title;
+    this->m_preview = preview;
+    this->m_videoFile = videoFile;
+    this->m_videoPath = videoPath;
+    this->m_userProperties = userProperties;
+    return std::shared_ptr<VRVideoManifest>(this);
 }
