@@ -1,28 +1,44 @@
 #pragma once
 
-#include <QJsonObject>
-#include <QString>
-#include <QUrl>
+#include <nlohmann/json.hpp>
 
-#include <optional>
+#include <memory>
+#include <string>
+#include <exception>
+#include <filesystem>
+
+struct VideoRendererManifestError: std::exception {
+    int code;
+    std::string userInfo;
+    VideoRendererManifestError(int code, std::string description);
+    [[nodiscard]] const char * what() const noexcept override;
+};
 
 class VRVideoManifest {
 public:
-    [[nodiscard]] static std::optional<VRVideoManifest> loadFromDirectory(
-        const QString& directory, QString* error = nullptr);
+    [[nodiscard]] static std::shared_ptr<VRVideoManifest> loadFromDirectory(const std::string& dir);
 
-    [[nodiscard]] const QString& wallpaperDirectory() const noexcept { return m_wallpaperDirectory; }
-    [[nodiscard]] const QString& title() const noexcept { return m_title; }
-    [[nodiscard]] const QString& preview() const noexcept { return m_preview; }
-    [[nodiscard]] const QString& videoFile() const noexcept { return m_videoFile; }
-    [[nodiscard]] const QUrl& videoUrl() const noexcept { return m_videoUrl; }
-    [[nodiscard]] const QJsonObject& userProperties() const noexcept { return m_userProperties; }
+    [[nodiscard]] const std::string& wallpaperDirectory() const noexcept {
+        return m_wallpaperDirectory;
+    }
+    [[nodiscard]] const std::string& title() const noexcept { return m_title; }
+    [[nodiscard]] const std::string& preview() const noexcept { return m_preview; }
+    [[nodiscard]] const std::string& videoFile() const noexcept { return m_videoFile; }
+    [[nodiscard]] const std::string& videoPath() const noexcept { return m_videoPath; }
+    [[nodiscard]] const nlohmann::json& userProperties() const noexcept {
+        return m_userProperties;
+    }
 
 private:
-    QString m_wallpaperDirectory;
-    QString m_title;
-    QString m_preview;
-    QString m_videoFile;
-    QUrl m_videoUrl;
-    QJsonObject m_userProperties;
+    std::shared_ptr<VRVideoManifest> initWithDirectory(const std::filesystem::path&directory,
+                                                       const std::string &title, const std::string &preview,
+                                                       const std::string &videoFile,
+                                                       const std::filesystem::path &videoPath, const nlohmann::json &userProperties);
+
+    std::filesystem::path m_wallpaperDirectory;
+    std::string m_title;
+    std::string m_preview;
+    std::string m_videoFile;
+    std::string m_videoPath;
+    nlohmann::json m_userProperties;
 };
