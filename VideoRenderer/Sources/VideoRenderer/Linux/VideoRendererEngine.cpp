@@ -50,7 +50,7 @@ public:
             setError(error, "video engine is already open");
             return false;
         }
-        const std::string path = manifest.videoUrl().toLocalFile().toStdString();
+        const std::string path = manifest.videoPath();
         if (path.empty()) {
             setError(error, "video manifest has no local file");
             return false;

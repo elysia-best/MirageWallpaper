@@ -51,6 +51,7 @@ if(APPLE)
 else()
     target_link_libraries(VideoRendererEngine PUBLIC
         Qt6::Core
+        nlohmann_json::nlohmann_json
         PkgConfig::MIRAGE_FFMPEG)
     target_link_libraries(VideoRendererEngine PRIVATE SDL2::SDL2)
 endif()

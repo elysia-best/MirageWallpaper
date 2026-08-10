@@ -18,7 +18,7 @@ class VRVideoManifest {
 public:
     [[nodiscard]] static std::shared_ptr<VRVideoManifest> loadFromDirectory(const std::string& dir);
 
-    [[nodiscard]] const std::string& wallpaperDirectory() const noexcept {
+    [[nodiscard]] const std::filesystem::path& wallpaperDirectory() const noexcept {
         return m_wallpaperDirectory;
     }
     [[nodiscard]] const std::string& title() const noexcept { return m_title; }
