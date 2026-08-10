@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <clocale>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -32,12 +33,13 @@
 #include <unistd.h>
 #endif
 
-extern "C" {
-#include <libswscale/swscale.h>
-}
-
 #include <mpv/client.h>
 #include <mpv/render.h>
+#include <mpv/render_gl.h>
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES3/gl3.h>
 
 namespace {
 
@@ -491,6 +493,8 @@ public:
     }
 
     void setFillMode(VRVideoFillMode fillMode) {
+        // 仅记录状态：presentMpvFrame 每帧按最新 fillMode 计算 fit 目标并重建
+        // GL FBO（渲染目标），无需通知 mpv。
         m_fill_mode.store(fillMode);
     }
 
@@ -945,11 +949,21 @@ private:
     bool openWithMpv() {
         m_mpv = mpv_create();
         if (m_mpv == nullptr) {
+            // mpv_create 极少失败（仅内部分配失败）；打印 errno 与 locale 以便
+            // 定位环境相关问题（如非 C locale 或库加载异常）。
+            std::fprintf(stderr,
+                         "VideoWallpaper: mpv_create failed: errno=%d (%s) "
+                         "LC_NUMERIC=%s\n",
+                         errno, std::strerror(errno),
+                         std::setlocale(LC_NUMERIC, nullptr) != nullptr
+                             ? std::setlocale(LC_NUMERIC, nullptr)
+                             : "?");
             m_last_error = "cannot create libmpv handle";
             return false;
         }
         // 行为可预测：不读用户 mpv.conf、不加载脚本；必须显式 vo=libmpv，
-        // 否则 mpv 会打开默认 VO 窗口。
+        // 否则 mpv 会打开默认 VO 窗口。hwdec=auto：GL render 后端下允许 GPU
+        // 解码帧直接作为 GL 纹理（免 CPU 回拷），mpv 内建三卡决策。
         const struct {
             const char* name;
             const char* value;
@@ -957,7 +971,7 @@ private:
             {"config", "no"},
             {"load-scripts", "no"},
             {"vo", "libmpv"},
-            {"hwdec", "auto-copy"}, // GPU 解码+帧回 CPU，mpv 内建决策（NVIDIA/Intel/AMD 全覆盖）
+            {"hwdec", "auto"},
             {"ao", "pipewire,pulseaudio,alsa"},
             {"loop-file", "no"},  // 无自动循环：EOF 触发 video-did-end，由外部 play() 重播
             {"keep-open", "yes"}, // EOF 后保持核心存活，供 play() seek 0 重播
@@ -972,13 +986,24 @@ private:
             m_last_error = "libmpv initialization failed";
             return false;
         }
-        const char* api = MPV_RENDER_API_TYPE_SW;
+        // 先建 headless EGL/GLES3 上下文（mpv GL render API 的宿主，需 GL
+        // context current），再创建 render context。
+        if (!createGlContext()) {
+            m_last_error = "cannot create headless EGL/GLES3 context: " + m_last_error;
+            return false;
+        }
+        const char* api = MPV_RENDER_API_TYPE_OPENGL;
+        mpv_opengl_init_params gl_params = {
+            .get_proc_address = getGlProcAddress,
+            .get_proc_address_ctx = nullptr,
+        };
         mpv_render_param render_params[] = {
             {MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(api)},
+            {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_params},
             {MPV_RENDER_PARAM_INVALID, nullptr},
         };
         if (mpv_render_context_create(&m_render, m_mpv, render_params) < 0) {
-            m_last_error = "libmpv software render context creation failed";
+            m_last_error = "libmpv opengl render context creation failed";
             return false;
         }
         // 初始属性（壁纸总是自动播放；volume 0..100）。
@@ -1067,9 +1092,22 @@ private:
         }
         if (render != nullptr) mpv_render_context_free(render);
         if (handle != nullptr) mpv_terminate_destroy(handle);
-        if (m_sws != nullptr) {
-            sws_freeContext(m_sws);
-            m_sws = nullptr;
+        // GL/EGL 资源与 mpv 同线程释放：先删 GL 对象，再销毁 EGL 上下文。
+        if (m_gl_fbo != 0) {
+            glDeleteFramebuffers(1, &m_gl_fbo);
+            glDeleteTextures(1, &m_gl_tex);
+            m_gl_fbo = 0;
+            m_gl_tex = 0;
+        }
+        if (m_egl_context != EGL_NO_CONTEXT) {
+            eglMakeCurrent(m_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                           EGL_NO_CONTEXT);
+            eglDestroyContext(m_egl_display, m_egl_context);
+            m_egl_context = EGL_NO_CONTEXT;
+        }
+        if (m_egl_display != EGL_NO_DISPLAY) {
+            eglTerminate(m_egl_display);
+            m_egl_display = EGL_NO_DISPLAY;
         }
     }
 
@@ -1114,9 +1152,96 @@ private:
         return rect;
     }
 
-    // 从 mpv 取当前帧（SW RGBA，视频原始尺寸），按 fillMode 缩放合成进
-    // pool 画布并上传导出。合成逻辑沿用原 CPU 端实现（sws 缩放+黑边画布），
-    // 行为与迁移前一致。
+    // mpv GL render API 的 GL 函数解析回调（EGL 提供）。
+    static void* getGlProcAddress(void* fn_ctx, const char* name) {
+        (void)fn_ctx;
+        return reinterpret_cast<void*>(eglGetProcAddress(name));
+    }
+
+    // 创建 headless EGL/GLES3 上下文（EGL_PLATFORM_SURFACELESS_MESA，无窗口），
+    // 作为 mpv GL render API 的宿主。壁纸进程无显示，不能用窗口平台；
+    // 仅在渲染线程调用，EGL 资源随渲染线程在 cleanupMpv() 释放。
+    bool createGlContext() {
+        m_egl_display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
+                                              EGL_DEFAULT_DISPLAY, nullptr);
+        if (m_egl_display == EGL_NO_DISPLAY) {
+            m_last_error = "eglGetPlatformDisplay(surfaceless) failed";
+            return false;
+        }
+        EGLint egl_major = 0;
+        EGLint egl_minor = 0;
+        if (!eglInitialize(m_egl_display, &egl_major, &egl_minor)) {
+            m_last_error = "eglInitialize failed";
+            return false;
+        }
+        if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+            m_last_error = "eglBindAPI(ES) failed";
+            return false;
+        }
+        const EGLint config_attrs[] = {
+            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+            EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+            EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+            EGL_NONE,
+        };
+        EGLConfig config = nullptr;
+        EGLint num_config = 0;
+        if (!eglChooseConfig(m_egl_display, config_attrs, &config, 1, &num_config) ||
+            num_config == 0) {
+            m_last_error = "eglChooseConfig failed";
+            return false;
+        }
+        const EGLint context_attrs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+        m_egl_context =
+            eglCreateContext(m_egl_display, config, EGL_NO_CONTEXT, context_attrs);
+        if (m_egl_context == EGL_NO_CONTEXT) {
+            m_last_error = "eglCreateContext(ES3) failed";
+            return false;
+        }
+        if (!eglMakeCurrent(m_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                            m_egl_context)) {
+            m_last_error = "eglMakeCurrent(surfaceless) failed";
+            return false;
+        }
+        return true;
+    }
+
+    // 确保 GL FBO 尺寸与 fit 目标一致（mpv 渲染目标，尺寸=mpv 输出尺寸）。
+    // 尺寸变化（fillMode 切换）时销毁重建；仅在渲染线程调用。
+    bool ensureFbo(int width, int height) {
+        if (m_gl_fbo != 0 && m_gl_fbo_w == width && m_gl_fbo_h == height) return true;
+        if (m_gl_fbo != 0) {
+            glDeleteFramebuffers(1, &m_gl_fbo);
+            glDeleteTextures(1, &m_gl_tex);
+            m_gl_fbo = 0;
+            m_gl_tex = 0;
+        }
+        glGenTextures(1, &m_gl_tex);
+        glBindTexture(GL_TEXTURE_2D, m_gl_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &m_gl_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_gl_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               m_gl_tex, 0);
+        const bool complete =
+            glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (!complete) {
+            m_last_error = "GL framebuffer incomplete";
+            return false;
+        }
+        m_gl_fbo_w = width;
+        m_gl_fbo_h = height;
+        return true;
+    }
+
+    // 从 mpv 取当前帧（GL render：GPU 硬件缩放后读回 RGBA），按 fillMode 区域
+    // memcpy 合成进 pool 画布并上传导出。缩放/格式转换由 mpv（libplacebo）在
+    // GPU 完成（FBO 尺寸=fit 目标），CPU 仅做读回与合成——相比 SW render 方案
+    // 消除了 CPU 端 NV12→RGBA 转换与 zimg 缩放（CPU 占用高的根源）。
     void presentMpvFrame() {
         if (m_pool_width == 0 || m_upload_image == VK_NULL_HANDLE) return;
         serviceHostAndPool();
@@ -1125,69 +1250,73 @@ private:
             return;
         }
 
-        long long video_w = 0;
-        long long video_h = 0;
-        if (mpv_get_property(m_mpv, "video-params/w", MPV_FORMAT_INT64, &video_w) < 0 ||
-            mpv_get_property(m_mpv, "video-params/h", MPV_FORMAT_INT64, &video_h) < 0 ||
-            video_w <= 0 || video_h <= 0) {
-            return; // 尚无视频参数（加载中），跳过本帧
+        // 惰性初始化：读解码输出尺寸（video-params/w,h 实测为源尺寸，不受
+        // 渲染路径影响），用于计算 fit 目标。
+        if (m_video_src_w <= 0 || m_video_src_h <= 0) {
+            long long src_w = 0;
+            long long src_h = 0;
+            if (mpv_get_property(m_mpv, "video-params/w", MPV_FORMAT_INT64, &src_w) < 0 ||
+                mpv_get_property(m_mpv, "video-params/h", MPV_FORMAT_INT64, &src_h) < 0 ||
+                src_w <= 0 || src_h <= 0) {
+                return; // 尚无解码参数（加载中），跳过本帧
+            }
+            m_video_src_w = static_cast<int>(src_w);
+            m_video_src_h = static_cast<int>(src_h);
         }
-        if (static_cast<long long>(m_mpv_buf_w) != video_w ||
-            static_cast<long long>(m_mpv_buf_h) != video_h) {
-            m_mpv_buf_w = static_cast<int>(video_w);
-            m_mpv_buf_h = static_cast<int>(video_h);
+
+        // fit 目标尺寸即 GL 渲染目标（FBO 尺寸=mpv 输出尺寸）。
+        const FitRect rect = computeFitRect(m_video_src_w, m_video_src_h);
+        if (rect.w == 0 || rect.h == 0) return;
+        if (!ensureFbo(static_cast<int>(rect.w), static_cast<int>(rect.h))) {
+            fail(QString::fromStdString(m_last_error));
+            return;
+        }
+        if (m_mpv_buf_w != static_cast<int>(rect.w) ||
+            m_mpv_buf_h != static_cast<int>(rect.h)) {
+            m_mpv_buf_w = static_cast<int>(rect.w);
+            m_mpv_buf_h = static_cast<int>(rect.h);
             m_mpv_buf_stride = m_mpv_buf_w * 4;
             m_mpv_buf.assign(static_cast<std::size_t>(m_mpv_buf_stride) *
                                  static_cast<std::size_t>(m_mpv_buf_h),
                              0);
         }
         if (m_mpv_buf.empty()) return;
-        int sw_size[2] = {m_mpv_buf_w, m_mpv_buf_h};
+
+        // mpv 渲染到 FBO（GPU 缩放）+ 读回 RGBA。GL 渲染必须在 EGL 上下文
+        // current 的线程（即本渲染线程）执行。
+        glBindFramebuffer(GL_FRAMEBUFFER, m_gl_fbo);
+        glViewport(0, 0, static_cast<GLsizei>(rect.w), static_cast<GLsizei>(rect.h));
+        mpv_opengl_fbo fbo_params = {
+            .fbo = static_cast<int>(m_gl_fbo),
+            .w = static_cast<int>(rect.w),
+            .h = static_cast<int>(rect.h),
+            .internal_format = 0,
+        };
         mpv_render_param render_params[] = {
-            {MPV_RENDER_PARAM_SW_SIZE, sw_size},
-            {MPV_RENDER_PARAM_SW_FORMAT, const_cast<char*>("rgba")},
-            {MPV_RENDER_PARAM_SW_STRIDE, &m_mpv_buf_stride},
-            {MPV_RENDER_PARAM_SW_POINTER, m_mpv_buf.data()},
+            {MPV_RENDER_PARAM_OPENGL_FBO, &fbo_params},
             {MPV_RENDER_PARAM_INVALID, nullptr},
         };
         if (mpv_render_context_render(m_render, render_params) < 0) return;
+        glFinish();                        // 确保 GPU 命令完成后再读回
+        glBindFramebuffer(GL_FRAMEBUFFER, m_gl_fbo); // mpv 渲染后可能改绑 GL 状态
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glReadPixels(0, 0, static_cast<GLsizei>(rect.w), static_cast<GLsizei>(rect.h),
+                     GL_RGBA, GL_UNSIGNED_BYTE, m_mpv_buf.data());
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        const FitRect rect = computeFitRect(m_mpv_buf_w, m_mpv_buf_h);
-        if (rect.w == 0 || rect.h == 0) return;
-        // 源格式固定为 RGBA（mpv SW 输出），仅按源/目标尺寸重建 sws 上下文。
-        if (m_sws == nullptr ||
-            m_sws_source_w != m_mpv_buf_w || m_sws_source_h != m_mpv_buf_h ||
-            m_sws_target_w != rect.w || m_sws_target_h != rect.h) {
-            if (m_sws != nullptr) sws_freeContext(m_sws);
-            m_sws = sws_getContext(m_mpv_buf_w, m_mpv_buf_h, AV_PIX_FMT_RGBA,
-                                   static_cast<int>(rect.w), static_cast<int>(rect.h),
-                                   AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
-            // 创建失败时源尺寸置 0，保证下一帧会重新尝试重建（否则
-            // m_sws==nullptr 但尺寸匹配导致缩放永久失效）。
-            m_sws_source_w = m_sws != nullptr ? m_mpv_buf_w : 0;
-            m_sws_source_h = m_sws != nullptr ? m_mpv_buf_h : 0;
-            m_sws_target_w = rect.w;
-            m_sws_target_h = rect.h;
-            m_scaled.assign(static_cast<std::size_t>(rect.w) * rect.h * 4u, 0);
-        }
-        if (m_sws == nullptr) return;
-        // RGBA 为单平面：源指针/步长只使用第 0 平面。
-        const std::uint8_t* src_planes[4] = {m_mpv_buf.data(), nullptr, nullptr, nullptr};
-        const int src_linesize[4] = {m_mpv_buf_stride, 0, 0, 0};
-        uint8_t* dst = m_scaled.data();
-        int dst_stride = static_cast<int>(rect.w) * 4;
-        if (sws_scale(m_sws, src_planes, src_linesize, 0, m_mpv_buf_h, &dst,
-                      &dst_stride) <= 0) {
-            return;
-        }
-
-        /* Composite the fitted region into the pool-sized canvas. */
+        // fit 区域拷贝进画布：黑边画布 + 居中/裁剪语义不变；cover 放大时 rect
+        // 可能超出画布，按画布边界裁剪防止越界写。
+        const std::uint32_t clip_x = std::min(rect.x, m_pool_width);
+        const std::uint32_t clip_y = std::min(rect.y, m_pool_height);
+        const std::uint32_t copy_w = std::min(rect.w, m_pool_width - clip_x);
+        const std::uint32_t copy_h = std::min(rect.h, m_pool_height - clip_y);
+        const std::size_t row_bytes = static_cast<std::size_t>(rect.w) * 4u;
         std::memset(m_canvas.data(), 0, m_canvas.size());
-        for (std::uint32_t y = 0; y < rect.h; ++y) {
-            std::memcpy(m_canvas.data() + (static_cast<std::size_t>(rect.y + y) * m_pool_width +
-                                           rect.x) * 4u,
-                        m_scaled.data() + static_cast<std::size_t>(y) * rect.w * 4u,
-                        static_cast<std::size_t>(rect.w) * 4u);
+        for (std::uint32_t y = 0; y < copy_h; ++y) {
+            std::memcpy(m_canvas.data() + (static_cast<std::size_t>(clip_y + y) * m_pool_width +
+                                           clip_x) * 4u,
+                        m_mpv_buf.data() + static_cast<std::size_t>(y) * row_bytes,
+                        static_cast<std::size_t>(copy_w) * 4u);
         }
         uploadAndSubmit();
     }
@@ -1369,7 +1498,6 @@ private:
     std::uint32_t m_pool_width { 0 };
     std::uint32_t m_pool_height { 0 };
     std::vector<std::uint8_t> m_canvas;
-    std::vector<std::uint8_t> m_scaled;
     std::atomic<VRVideoFillMode> m_fill_mode { VRVideoFillModeCover };
     std::atomic_bool m_first_frame { false };
     std::atomic_bool m_eof_notified { false };
@@ -1394,18 +1522,25 @@ private:
     mpv_render_context* m_render { nullptr };
     std::deque<std::function<void()>> m_mpv_commands;
 
-    // mpv SW 渲染缓冲（视频原始尺寸 RGBA）
+    // mpv GL 渲染读回缓冲（尺寸 = fit 目标，RGBA）
     std::vector<std::uint8_t> m_mpv_buf;
     int m_mpv_buf_w { 0 };
     int m_mpv_buf_h { 0 };
     int m_mpv_buf_stride { 0 };
 
-    // 缩放合成（RGBA→RGBA，fillMode）
-    SwsContext* m_sws { nullptr };
-    int m_sws_source_w { 0 };
-    int m_sws_source_h { 0 };
-    std::uint32_t m_sws_target_w { 0 };
-    std::uint32_t m_sws_target_h { 0 };
+    // 解码器输出尺寸（video-params/w,h 实测为源尺寸，不受渲染路径影响），
+    // 用于计算 fit 目标尺寸。
+    int m_video_src_w { 0 };
+    int m_video_src_h { 0 };
+
+    // headless EGL/GLES3 上下文（mpv GL render API 宿主，渲染线程独占）
+    EGLDisplay m_egl_display { EGL_NO_DISPLAY };
+    EGLContext m_egl_context { EGL_NO_CONTEXT };
+    // fit 尺寸 FBO（mpv 渲染目标；fillMode 切换导致尺寸变化时重建）
+    GLuint m_gl_fbo { 0 };
+    GLuint m_gl_tex { 0 };
+    int m_gl_fbo_w { 0 };
+    int m_gl_fbo_h { 0 };
     std::string m_last_error;
 };
 

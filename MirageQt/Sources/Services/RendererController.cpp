@@ -162,6 +162,8 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         if (options.muted) args << "--muted";
         if (options.loadFromMemory) args << "--load-from-memory";
         args << "--control-stdin";
+            env.insert("LC_NUMERIC", "C");  // From mpv: Non-C locale detected. This is not supported.
+                                                             // Call 'setlocale(LC_NUMERIC, "C");' in your code.
         break;
     case WallpaperKind::Web:
     case WallpaperKind::Unsupported:
