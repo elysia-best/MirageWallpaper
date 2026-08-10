@@ -16,9 +16,11 @@ if(APPLE)
         VRTranscoder.mm)
 elseif(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
+    # FFmpeg 探测保留：macOS 后端（VR_FFMPEG_LIBS）仍在使用，Linux 合成路径也依赖 libswscale。
     pkg_check_modules(MIRAGE_FFMPEG REQUIRED IMPORTED_TARGET
         libavformat>=58 libavcodec>=58 libavutil>=56 libswscale>=5 libswresample>=3)
-    find_package(SDL2 REQUIRED)
+    # libmpv 取代 SDL2 音频与 FFmpeg 原始解码：解码/音频/同步/循环全部交由 libmpv。
+    pkg_check_modules(MIRAGE_MPV REQUIRED IMPORTED_TARGET mpv>=2.0)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
 
     set(VR_PLATFORM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Linux")
@@ -52,6 +54,6 @@ else()
     target_link_libraries(VideoRendererEngine PUBLIC
         Qt6::Core
         nlohmann_json::nlohmann_json
-        PkgConfig::MIRAGE_FFMPEG)
-    target_link_libraries(VideoRendererEngine PRIVATE SDL2::SDL2)
+        PkgConfig::MIRAGE_FFMPEG
+        PkgConfig::MIRAGE_MPV)
 endif()
