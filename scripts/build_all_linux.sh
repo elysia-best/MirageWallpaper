@@ -196,7 +196,7 @@ package() {
         "$ROOT_DIR/VideoRenderer/build/release/Tools/VideoWallpaper/VideoWallpaper" \
         "$ROOT_DIR/VideoRenderer/build/Tools/VideoWallpaper/VideoWallpaper")" \
         || die "VideoWallpaper binary not found (build it first: $VIDEO_SH $CONFIG)"
-    app_bin="$APP_BUILD_DIR/MirageQt"
+    app_bin="$APP_BUILD_DIR/bin/MirageQt"
     [[ -x "$app_bin" ]] || die "MirageQt binary not found at $app_bin (build it first: $0 app)"
 
     local version="${VERSION:-$(git -C "$ROOT_DIR" describe --tags --always --dirty 2>/dev/null || echo 0.1.0)}"
@@ -211,7 +211,7 @@ package() {
     mkdir -p "$pkg_dir"
 
     info "copying binaries"
-    cp -f "$app_bin"   "$pkg_dir/bin/MirageQt"
+    cp -f "$app_bin"   "$pkg_dir/MirageQt"
     cp -f "$scene_bin" "$pkg_dir/SceneWallpaper"
     cp -f "$video_bin" "$pkg_dir/VideoWallpaper"
     chmod +x "$pkg_dir"/MirageQt "$pkg_dir"/SceneWallpaper "$pkg_dir"/VideoWallpaper
