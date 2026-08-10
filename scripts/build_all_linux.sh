@@ -211,7 +211,7 @@ package() {
     mkdir -p "$pkg_dir"
 
     info "copying binaries"
-    cp -f "$app_bin"   "$pkg_dir/MirageQt"
+    cp -f "$app_bin"   "$pkg_dir/bin/MirageQt"
     cp -f "$scene_bin" "$pkg_dir/SceneWallpaper"
     cp -f "$video_bin" "$pkg_dir/VideoWallpaper"
     chmod +x "$pkg_dir"/MirageQt "$pkg_dir"/SceneWallpaper "$pkg_dir"/VideoWallpaper
