@@ -1053,15 +1053,13 @@ struct Viewer {
 int main(int argc, char** argv) {
     ViewerArgs args;
     if (!parseArgs(argc, argv, args)) return 1;
-
-    QString manifestError;
-    const auto manifest = VRVideoManifest::loadFromDirectory(
-        QString::fromLocal8Bit(args.workshop), &manifestError);
-    if (!manifest) {
-        std::fprintf(stderr, "VideoViewer: %s\n", manifestError.toLocal8Bit().constData());
-        return 2;
+    std::shared_ptr<VRVideoManifest> manifest;
+    try {
+        manifest = VRVideoManifest::loadFromDirectory(args.workshop);
+    } catch (const VideoRendererManifestError &e) {
+        std::fprintf(stderr, "VideoViewer: %s\n", e.what());
+        return e.code;
     }
-
     VRVideoEngineConfig config = VRVideoRendererEngine::defaultConfig();
     config.fillMode = args.fillMode;
     config.initialVolume = args.volume;
