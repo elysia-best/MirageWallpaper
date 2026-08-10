@@ -14,6 +14,9 @@ elseif(UNIX AND NOT APPLE)
         libavformat>=58 libavcodec>=58 libavutil>=56 libswscale>=5 libswresample>=3)
     # libmpv 取代 SDL 音频与 FFmpeg 原始解码（解码/音频/同步/循环交由 libmpv）。
     pkg_check_modules(MIRAGE_MPV REQUIRED IMPORTED_TARGET mpv>=2.0)
+    # headless EGL/GLES3：mpv OpenGL render API 的宿主（GPU 硬件缩放取帧）。
+    pkg_check_modules(MIRAGE_EGL REQUIRED IMPORTED_TARGET egl)
+    pkg_check_modules(MIRAGE_GLES REQUIRED IMPORTED_TARGET glesv2)
 
     # Linux displays through the mirage-display protocol only (no X11 host).
     add_executable(VideoWallpaper
@@ -30,6 +33,8 @@ elseif(UNIX AND NOT APPLE)
         mirage_display_vulkan_static
         PkgConfig::MIRAGE_FFMPEG
         PkgConfig::MIRAGE_MPV
+        PkgConfig::MIRAGE_EGL
+        PkgConfig::MIRAGE_GLES
         Threads::Threads
         Qt6::Core
         VideoRendererEngine)
