@@ -958,7 +958,10 @@ struct Viewer {
         if (resizePending) {
             resizePending = false;
             vkDeviceWaitIdle(device);
-            if (!createSwapchain()) return false;
+            if (!createSwapchain()) {
+                std::fprintf(stderr, "VideoViewer: swapchain recreation failed after resize\n");
+                return false;
+            }
             commandBuffers.clear();
             VkCommandBufferAllocateInfo allocInfo {
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -968,9 +971,16 @@ struct Viewer {
             };
             commandBuffers.resize(imageCount);
             if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS) {
+                std::fprintf(stderr, "VideoViewer: command buffer recreation failed after resize\n");
                 return false;
             }
         }
+
+        // 前置等待：确保上一帧 GPU 命令完成后才可能重建纹理。createTexture
+        // 会 vkDestroyImage 销毁旧纹理，若 GPU 仍在引用则属未定义行为，忙转
+        // 主循环（MAILBOX 非阻塞 present）下必然触发设备丢失；该等待同时把
+        // 主循环节流到 GPU 帧率，避免无节制提交。inFlight 初始为 signaled。
+        vkWaitForFences(device, 1, &inFlight, VK_TRUE, UINT64_MAX);
 
         VRVideoRendererEngine::Frame frame;
         const bool haveFrame = engine.currentFrame(frame);
@@ -990,7 +1000,6 @@ struct Viewer {
             newTexture = true;
         }
 
-        vkWaitForFences(device, 1, &inFlight, VK_TRUE, UINT64_MAX);
         std::uint32_t imageIndex = 0;
         VkResult acquireResult = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
                                                        imageAvailable, VK_NULL_HANDLE,
@@ -1000,7 +1009,11 @@ struct Viewer {
             if (!createSwapchain()) return false;
             return true;
         }
-        if (acquireResult != VK_SUCCESS) return false;
+        if (acquireResult != VK_SUCCESS) {
+            std::fprintf(stderr, "VideoViewer: vkAcquireNextImageKHR failed: %d\n",
+                         static_cast<int>(acquireResult));
+            return false;
+        }
 
         int fbWidth = 0;
         int fbHeight = 0;
@@ -1025,7 +1038,10 @@ struct Viewer {
             .pSignalSemaphores = &renderFinished,
         };
         vkResetFences(device, 1, &inFlight);
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlight) != VK_SUCCESS) {
+        const VkResult submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlight);
+        if (submitResult != VK_SUCCESS) {
+            std::fprintf(stderr, "VideoViewer: vkQueueSubmit failed: %d\n",
+                         static_cast<int>(submitResult));
             return false;
         }
         VkPresentInfoKHR presentInfo {
@@ -1041,6 +1057,8 @@ struct Viewer {
             vkDeviceWaitIdle(device);
             if (!createSwapchain()) return false;
         } else if (presentResult != VK_SUCCESS) {
+            std::fprintf(stderr, "VideoViewer: vkQueuePresentKHR failed: %d\n",
+                         static_cast<int>(presentResult));
             return false;
         }
         currentImage = imageIndex;

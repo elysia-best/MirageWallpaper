@@ -118,7 +118,7 @@ int runProtocol(QCoreApplication& app, const VRVideoManifest& manifest,
     VRProtocolVideoRenderer::Config config;
     config.socketPath = QString::fromLocal8Bit(args.displaySocket);
     config.outputId = QString::fromLocal8Bit(args.displayOutputId);
-    config.videoPath = manifest.videoUrl().toLocalFile();
+    config.videoPath = QString::fromStdString(manifest.videoPath());
     config.fillMode = args.fillMode;
     config.volume = args.volume;
     config.muted = args.muted;
@@ -198,12 +198,16 @@ int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("VideoWallpaper"));
 
-    QString manifestError;
-    const auto manifest = VRVideoManifest::loadFromDirectory(
-        QString::fromLocal8Bit(args.workshop), &manifestError);
+    std::shared_ptr<VRVideoManifest> manifest;
+    try {
+        manifest = VRVideoManifest::loadFromDirectory(
+            QString::fromLocal8Bit(args.workshop).toStdString());
+    } catch (const VideoRendererManifestError& e) {
+        std::fprintf(stderr, "VideoWallpaper: %s\n", e.what());
+        return 2;
+    }
     if (!manifest) {
-        std::fprintf(stderr, "VideoWallpaper: %s\n",
-                     manifestError.toLocal8Bit().constData());
+        std::fprintf(stderr, "VideoWallpaper: cannot load wallpaper manifest\n");
         return 2;
     }
     return runProtocol(app, *manifest, args);

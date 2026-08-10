@@ -8,11 +8,12 @@ if(APPLE)
     target_compile_options(VideoWallpaper PRIVATE -Wno-deprecated-declarations)
 elseif(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
-    find_package(SDL2 REQUIRED)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
+    # FFmpeg 探测保留：macOS 后端仍在使用，Linux 合成路径依赖 libswscale。
     pkg_check_modules(MIRAGE_FFMPEG REQUIRED IMPORTED_TARGET
         libavformat>=58 libavcodec>=58 libavutil>=56 libswscale>=5 libswresample>=3)
-    pkg_check_modules(MIRAGE_PULSE REQUIRED IMPORTED_TARGET libpulse-simple>=1.0)
+    # libmpv 取代 SDL 音频与 FFmpeg 原始解码（解码/音频/同步/循环交由 libmpv）。
+    pkg_check_modules(MIRAGE_MPV REQUIRED IMPORTED_TARGET mpv>=2.0)
 
     # Linux displays through the mirage-display protocol only (no X11 host).
     add_executable(VideoWallpaper
@@ -28,7 +29,7 @@ elseif(UNIX AND NOT APPLE)
     target_link_libraries(VideoWallpaper PRIVATE
         mirage_display_vulkan_static
         PkgConfig::MIRAGE_FFMPEG
-        PkgConfig::MIRAGE_PULSE
+        PkgConfig::MIRAGE_MPV
         Threads::Threads
         Qt6::Core
         VideoRendererEngine)

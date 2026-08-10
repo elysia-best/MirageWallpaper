@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -31,17 +33,11 @@
 #endif
 
 extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/opt.h>
-#include <libavutil/samplefmt.h>
-#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
-#include <pulse/error.h>
-#include <pulse/simple.h>
 }
+
+#include <mpv/client.h>
+#include <mpv/render.h>
 
 namespace {
 
@@ -416,6 +412,10 @@ public:
     void stop() {
         if (m_stopped.exchange(true)) return;
         m_running.store(false);
+        {
+            std::lock_guard lock(m_control_mutex);
+            if (m_mpv != nullptr) mpv_wakeup(m_mpv);
+        }
         m_control_cv.notify_all();
         if (m_render_thread.joinable()) m_render_thread.join();
         if (m_host != nullptr) m_host->stop();
@@ -424,7 +424,6 @@ public:
             md_vk_exporter_free(m_exporter);
             m_exporter = nullptr;
         }
-        closeMedia();
         destroyVulkan();
         m_host.reset();
     }
@@ -436,9 +435,23 @@ public:
             if (m_eof.load()) {
                 m_restart_requested = true;
                 m_eof.store(false);
+                m_eof_notified.store(false);
             }
         }
-        m_control_cv.notify_all();
+        postMpvCommand([this] {
+            // EOF 后重播：先 seek 到 0，再解除暂停。
+            if (m_restart_requested.load()) {
+                m_restart_requested.store(false);
+                const char* seek[] = {"seek", "0", "absolute", nullptr};
+                if (mpv_command(m_mpv, seek) < 0) {
+                    std::fprintf(stderr, "VideoWallpaper: mpv seek failed\n");
+                }
+            }
+            int paused = 0;
+            if (mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &paused) < 0) {
+                std::fprintf(stderr, "VideoWallpaper: mpv pause=0 failed\n");
+            }
+        });
     }
 
     void pause() {
@@ -446,17 +459,35 @@ public:
             std::lock_guard lock(m_control_mutex);
             m_user_paused = true;
         }
-        m_control_cv.notify_all();
+        postMpvCommand([this] {
+            int paused = 1;
+            if (mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &paused) < 0) {
+                std::fprintf(stderr, "VideoWallpaper: mpv pause=1 failed\n");
+            }
+        });
     }
 
     void setVolume(float volume) {
         m_config.volume = VRClampVideoVolume(volume);
         m_volume.store(m_config.volume);
+        postMpvCommand([this, volume] {
+            // mpv volume 属性范围 0..100；协议约定 0..1。
+            double mpv_volume = static_cast<double>(VRClampVideoVolume(volume)) * 100.0;
+            if (mpv_set_property(m_mpv, "volume", MPV_FORMAT_DOUBLE, &mpv_volume) < 0) {
+                std::fprintf(stderr, "VideoWallpaper: mpv volume set failed\n");
+            }
+        });
     }
 
     void setMuted(bool muted) {
         m_config.muted = muted;
         m_muted.store(muted);
+        postMpvCommand([this, muted] {
+            int mute = muted ? 1 : 0;
+            if (mpv_set_property(m_mpv, "mute", MPV_FORMAT_FLAG, &mute) < 0) {
+                std::fprintf(stderr, "VideoWallpaper: mpv mute set failed\n");
+            }
+        });
     }
 
     void setFillMode(VRVideoFillMode fillMode) {
@@ -901,149 +932,144 @@ private:
         }
     }
 
-    bool openMedia() {
-        avformat_network_init();
-        if (avformat_open_input(&m_format, m_config.videoPath.toUtf8().constData(),
-                                nullptr, nullptr) != 0) {
-            m_last_error = "cannot open video file";
+    // —— libmpv 集成（解码/音频/同步/循环全部交由 libmpv）——
+    // 向渲染线程（mpv 线程）投递命令。mpv_wakeup 是唯一允许跨线程调用的
+    // mpv API；其余 mpv_* 调用必须发生在渲染线程（见 renderLoop）。wakeup
+    // 保持在锁内，与 cleanupMpv() 中 m_mpv 置空互斥，避免指向已销毁 handle。
+    void postMpvCommand(std::function<void()> command) {
+        std::lock_guard lock(m_control_mutex);
+        m_mpv_commands.push_back(std::move(command));
+        if (m_mpv != nullptr) mpv_wakeup(m_mpv);
+    }
+
+    bool openWithMpv() {
+        m_mpv = mpv_create();
+        if (m_mpv == nullptr) {
+            m_last_error = "cannot create libmpv handle";
             return false;
         }
-        if (avformat_find_stream_info(m_format, nullptr) < 0) {
-            m_last_error = "cannot read video stream info";
-            return false;
-        }
-        for (unsigned i = 0; i < m_format->nb_streams; ++i) {
-            AVStream* stream = m_format->streams[i];
-            if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && m_video_index < 0) {
-                m_video_index = static_cast<int>(i);
-            } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && m_audio_index < 0) {
-                m_audio_index = static_cast<int>(i);
+        // 行为可预测：不读用户 mpv.conf、不加载脚本；必须显式 vo=libmpv，
+        // 否则 mpv 会打开默认 VO 窗口。
+        const struct {
+            const char* name;
+            const char* value;
+        } options[] = {
+            {"config", "no"},
+            {"load-scripts", "no"},
+            {"vo", "libmpv"},
+            {"hwdec", "auto-copy"}, // GPU 解码+帧回 CPU，mpv 内建决策（NVIDIA/Intel/AMD 全覆盖）
+            {"ao", "pipewire,pulseaudio,alsa"},
+            {"loop-file", "no"},  // 无自动循环：EOF 触发 video-did-end，由外部 play() 重播
+            {"keep-open", "yes"}, // EOF 后保持核心存活，供 play() seek 0 重播
+        };
+        for (const auto& option : options) {
+            if (mpv_set_option_string(m_mpv, option.name, option.value) < 0) {
+                m_last_error = std::string("cannot set libmpv option ") + option.name;
+                return false;
             }
         }
-        if (m_video_index < 0) {
-            m_last_error = "no video stream";
+        if (mpv_initialize(m_mpv) < 0) {
+            m_last_error = "libmpv initialization failed";
             return false;
         }
-        const AVCodec* video_codec =
-            avcodec_find_decoder(m_format->streams[m_video_index]->codecpar->codec_id);
-        if (video_codec == nullptr) {
-            m_last_error = "unsupported video codec";
+        const char* api = MPV_RENDER_API_TYPE_SW;
+        mpv_render_param render_params[] = {
+            {MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(api)},
+            {MPV_RENDER_PARAM_INVALID, nullptr},
+        };
+        if (mpv_render_context_create(&m_render, m_mpv, render_params) < 0) {
+            m_last_error = "libmpv software render context creation failed";
             return false;
         }
-        m_video_codec = avcodec_alloc_context3(video_codec);
-        if (avcodec_parameters_to_context(m_video_codec,
-                                          m_format->streams[m_video_index]->codecpar) < 0 ||
-            avcodec_open2(m_video_codec, video_codec, nullptr) < 0) {
-            m_last_error = "cannot open video decoder";
+        // 初始属性（壁纸总是自动播放；volume 0..100）。
+        double initial_volume =
+            static_cast<double>(VRClampVideoVolume(m_config.volume)) * 100.0;
+        int initial_mute = m_config.muted ? 1 : 0;
+        int initial_pause = 0;
+        if (mpv_set_property(m_mpv, "volume", MPV_FORMAT_DOUBLE, &initial_volume) < 0 ||
+            mpv_set_property(m_mpv, "mute", MPV_FORMAT_FLAG, &initial_mute) < 0 ||
+            mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &initial_pause) < 0) {
+            m_last_error = "cannot set libmpv initial properties";
             return false;
         }
-        m_video_stream = m_format->streams[m_video_index];
-
-        if (m_audio_index >= 0) {
-            const AVCodec* audio_codec =
-                avcodec_find_decoder(m_format->streams[m_audio_index]->codecpar->codec_id);
-            if (audio_codec != nullptr) {
-                m_audio_codec = avcodec_alloc_context3(audio_codec);
-                if (avcodec_parameters_to_context(m_audio_codec,
-                                                  m_format->streams[m_audio_index]->codecpar) == 0 &&
-                    avcodec_open2(m_audio_codec, audio_codec, nullptr) == 0) {
-                    m_audio_stream = m_format->streams[m_audio_index];
-                } else {
-                    avcodec_free_context(&m_audio_codec);
-                    m_audio_codec = nullptr;
+        const QByteArray path = m_config.videoPath.toUtf8();
+        const char* load_command[] = {"loadfile", path.constData(), nullptr};
+        if (mpv_command(m_mpv, load_command) < 0) {
+            m_last_error = "libmpv loadfile failed";
+            return false;
+        }
+        // 等待 FILE_LOADED 或加载错误（最多 15s），与引擎 open() 语义一致。
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(15);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (!m_running.load()) {
+                m_last_error = "renderer stopped while opening video";
+                return false;
+            }
+            mpv_event* event = mpv_wait_event(m_mpv, 0.05);
+            if (event->event_id == MPV_EVENT_FILE_LOADED) return true;
+            if (event->event_id == MPV_EVENT_END_FILE) {
+                const auto* end = static_cast<const mpv_event_end_file*>(event->data);
+                if (end->reason == MPV_END_FILE_REASON_ERROR) {
+                    const char* text = mpv_error_string(end->error);
+                    m_last_error = std::string("libmpv failed to load video: ") +
+                                   (text != nullptr ? text : "unknown error");
+                    return false;
                 }
             }
         }
-        return true;
+        m_last_error = "timeout loading video with libmpv";
+        return false;
     }
 
-    void closeMedia() {
+    void handleMpvEvent(const mpv_event* event) {
+        switch (event->event_id) {
+        case MPV_EVENT_END_FILE: {
+            const auto* end = static_cast<const mpv_event_end_file*>(event->data);
+            if (end->reason == MPV_END_FILE_REASON_EOF) {
+                if (m_eof.exchange(true)) return;
+                if (!m_eof_notified.exchange(true) && m_config.videoDidEndCallback) {
+                    m_config.videoDidEndCallback();
+                }
+            } else if (end->reason == MPV_END_FILE_REASON_ERROR) {
+                const char* text = mpv_error_string(end->error);
+                fail(QStringLiteral("libmpv playback error: %1")
+                         .arg(text != nullptr ? QString::fromUtf8(text)
+                                              : QStringLiteral("unknown error")));
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    void processMpvCommands() {
+        std::deque<std::function<void()>> commands;
+        {
+            std::lock_guard lock(m_control_mutex);
+            commands.swap(m_mpv_commands);
+        }
+        for (auto& command : commands) command();
+    }
+
+    void cleanupMpv() {
+        // mpv 资源在渲染线程释放（与创建同线程）；置空加锁避免与
+        // postMpvCommand()/stop() 跨线程读 m_mpv 竞争。
+        mpv_render_context* render = nullptr;
+        mpv_handle* handle = nullptr;
+        {
+            std::lock_guard lock(m_control_mutex);
+            render = m_render;
+            m_render = nullptr;
+            handle = m_mpv;
+            m_mpv = nullptr;
+        }
+        if (render != nullptr) mpv_render_context_free(render);
+        if (handle != nullptr) mpv_terminate_destroy(handle);
         if (m_sws != nullptr) {
             sws_freeContext(m_sws);
             m_sws = nullptr;
-        }
-        if (m_swr != nullptr) {
-            swr_free(&m_swr);
-            m_swr = nullptr;
-        }
-        if (m_pulse != nullptr) {
-            pa_simple_free(m_pulse);
-            m_pulse = nullptr;
-        }
-        if (m_audio_codec != nullptr) {
-            avcodec_free_context(&m_audio_codec);
-            m_audio_codec = nullptr;
-        }
-        if (m_video_codec != nullptr) {
-            avcodec_free_context(&m_video_codec);
-            m_video_codec = nullptr;
-        }
-        if (m_format != nullptr) {
-            avformat_close_input(&m_format);
-            m_format = nullptr;
-        }
-        m_video_stream = nullptr;
-        m_audio_stream = nullptr;
-        m_video_index = -1;
-        m_audio_index = -1;
-    }
-
-    bool openAudioOutput() {
-        if (m_audio_codec == nullptr) return false;
-        int error = 0;
-        const pa_sample_spec spec {
-            .format = PA_SAMPLE_S16LE,
-            .rate = 48000,
-            .channels = 2,
-        };
-        m_pulse = pa_simple_new(nullptr, "VideoWallpaper", PA_STREAM_PLAYBACK, nullptr,
-                                "video", &spec, nullptr, nullptr, &error);
-        if (m_pulse == nullptr) {
-            std::fprintf(stderr, "VideoWallpaper: audio output unavailable (%s)\n",
-                         pa_strerror(error));
-            return false;
-        }
-        m_swr = swr_alloc();
-        AVChannelLayout in_layout = m_audio_codec->ch_layout;
-        if (in_layout.order != AV_CHANNEL_ORDER_NATIVE &&
-            in_layout.order != AV_CHANNEL_ORDER_AMBISONIC) {
-            av_channel_layout_default(&in_layout, 2);
-        }
-        av_opt_set_chlayout(m_swr, "in_chlayout", &in_layout, 0);
-        av_opt_set_int(m_swr, "in_sample_rate", m_audio_codec->sample_rate, 0);
-        if (m_audio_codec->sample_fmt != AV_SAMPLE_FMT_NONE) {
-            av_opt_set_sample_fmt(m_swr, "in_sample_fmt", m_audio_codec->sample_fmt, 0);
-        }
-        AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_STEREO;
-        av_opt_set_chlayout(m_swr, "out_chlayout", &out_layout, 0);
-        av_opt_set_int(m_swr, "out_sample_rate", 48000, 0);
-        av_opt_set_sample_fmt(m_swr, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);
-        if (swr_init(m_swr) < 0) {
-            swr_free(&m_swr);
-            pa_simple_free(m_pulse);
-            m_pulse = nullptr;
-            return false;
-        }
-        return true;
-    }
-
-    void writeAudio(const AVFrame* frame) {
-        if (m_pulse == nullptr || m_swr == nullptr) return;
-        const int out_samples =
-            av_rescale_rnd(swr_get_delay(m_swr, frame->sample_rate) + frame->nb_samples,
-                           48000, frame->sample_rate, AV_ROUND_UP);
-        m_pcm.resize(static_cast<std::size_t>(out_samples) * 2u * 2u);
-        uint8_t* out = m_pcm.data();
-        int converted = swr_convert(m_swr, &out, out_samples,
-                                    const_cast<const std::uint8_t**>(frame->data),
-                                    frame->nb_samples);
-        if (converted > 0) {
-            int error = 0;
-            if (!m_muted.load() && pa_simple_write(m_pulse, m_pcm.data(),
-                                                   static_cast<std::size_t>(converted) * 4u,
-                                                   &error) < 0) {
-                /* Pulse hiccup; keep the wallpaper going. */
-            }
         }
     }
 
@@ -1088,42 +1114,71 @@ private:
         return rect;
     }
 
-    bool presentFrame(AVFrame* frame) {
-        if (m_pool_width == 0 || m_upload_image == VK_NULL_HANDLE) return false;
+    // 从 mpv 取当前帧（SW RGBA，视频原始尺寸），按 fillMode 缩放合成进
+    // pool 画布并上传导出。合成逻辑沿用原 CPU 端实现（sws 缩放+黑边画布），
+    // 行为与迁移前一致。
+    void presentMpvFrame() {
+        if (m_pool_width == 0 || m_upload_image == VK_NULL_HANDLE) return;
         serviceHostAndPool();
         if (m_exporter == nullptr || md_vk_exporter_pool(m_exporter) == nullptr ||
             m_upload_image == VK_NULL_HANDLE) {
-            return false;
+            return;
         }
 
-        const double pts = frame->pts != AV_NOPTS_VALUE
-                               ? frame->pts * av_q2d(m_video_stream->time_base)
-                               : -1.0;
-        if (!pace(pts)) return true;
+        long long video_w = 0;
+        long long video_h = 0;
+        if (mpv_get_property(m_mpv, "video-params/w", MPV_FORMAT_INT64, &video_w) < 0 ||
+            mpv_get_property(m_mpv, "video-params/h", MPV_FORMAT_INT64, &video_h) < 0 ||
+            video_w <= 0 || video_h <= 0) {
+            return; // 尚无视频参数（加载中），跳过本帧
+        }
+        if (static_cast<long long>(m_mpv_buf_w) != video_w ||
+            static_cast<long long>(m_mpv_buf_h) != video_h) {
+            m_mpv_buf_w = static_cast<int>(video_w);
+            m_mpv_buf_h = static_cast<int>(video_h);
+            m_mpv_buf_stride = m_mpv_buf_w * 4;
+            m_mpv_buf.assign(static_cast<std::size_t>(m_mpv_buf_stride) *
+                                 static_cast<std::size_t>(m_mpv_buf_h),
+                             0);
+        }
+        if (m_mpv_buf.empty()) return;
+        int sw_size[2] = {m_mpv_buf_w, m_mpv_buf_h};
+        mpv_render_param render_params[] = {
+            {MPV_RENDER_PARAM_SW_SIZE, sw_size},
+            {MPV_RENDER_PARAM_SW_FORMAT, const_cast<char*>("rgba")},
+            {MPV_RENDER_PARAM_SW_STRIDE, &m_mpv_buf_stride},
+            {MPV_RENDER_PARAM_SW_POINTER, m_mpv_buf.data()},
+            {MPV_RENDER_PARAM_INVALID, nullptr},
+        };
+        if (mpv_render_context_render(m_render, render_params) < 0) return;
 
-        const FitRect rect = computeFitRect(frame->width, frame->height);
-        if (rect.w == 0 || rect.h == 0) return false;
+        const FitRect rect = computeFitRect(m_mpv_buf_w, m_mpv_buf_h);
+        if (rect.w == 0 || rect.h == 0) return;
+        // 源格式固定为 RGBA（mpv SW 输出），仅按源/目标尺寸重建 sws 上下文。
         if (m_sws == nullptr ||
-            m_sws_source_w != frame->width || m_sws_source_h != frame->height ||
-            m_sws_source_fmt != frame->format ||
+            m_sws_source_w != m_mpv_buf_w || m_sws_source_h != m_mpv_buf_h ||
             m_sws_target_w != rect.w || m_sws_target_h != rect.h) {
             if (m_sws != nullptr) sws_freeContext(m_sws);
-            m_sws = sws_getContext(frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+            m_sws = sws_getContext(m_mpv_buf_w, m_mpv_buf_h, AV_PIX_FMT_RGBA,
                                    static_cast<int>(rect.w), static_cast<int>(rect.h),
                                    AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
-            m_sws_source_w = frame->width;
-            m_sws_source_h = frame->height;
-            m_sws_source_fmt = frame->format;
+            // 创建失败时源尺寸置 0，保证下一帧会重新尝试重建（否则
+            // m_sws==nullptr 但尺寸匹配导致缩放永久失效）。
+            m_sws_source_w = m_sws != nullptr ? m_mpv_buf_w : 0;
+            m_sws_source_h = m_sws != nullptr ? m_mpv_buf_h : 0;
             m_sws_target_w = rect.w;
             m_sws_target_h = rect.h;
             m_scaled.assign(static_cast<std::size_t>(rect.w) * rect.h * 4u, 0);
         }
-        if (m_sws == nullptr) return false;
+        if (m_sws == nullptr) return;
+        // RGBA 为单平面：源指针/步长只使用第 0 平面。
+        const std::uint8_t* src_planes[4] = {m_mpv_buf.data(), nullptr, nullptr, nullptr};
+        const int src_linesize[4] = {m_mpv_buf_stride, 0, 0, 0};
         uint8_t* dst = m_scaled.data();
         int dst_stride = static_cast<int>(rect.w) * 4;
-        if (sws_scale(m_sws, frame->data, frame->linesize, 0, frame->height,
-                      &dst, &dst_stride) <= 0) {
-            return false;
+        if (sws_scale(m_sws, src_planes, src_linesize, 0, m_mpv_buf_h, &dst,
+                      &dst_stride) <= 0) {
+            return;
         }
 
         /* Composite the fitted region into the pool-sized canvas. */
@@ -1134,31 +1189,7 @@ private:
                         m_scaled.data() + static_cast<std::size_t>(y) * rect.w * 4u,
                         static_cast<std::size_t>(rect.w) * 4u);
         }
-        return uploadAndSubmit();
-    }
-
-    bool pace(double pts) {
-        using Clock = std::chrono::steady_clock;
-        if (pts < 0.0) return true;
-        const auto now = Clock::now();
-        if (m_first_pts < 0.0) {
-            m_first_pts = pts;
-            m_t0 = now;
-            return true;
-        }
-        if (pts < m_first_pts) {
-            m_first_pts = pts;
-            m_t0 = now;
-            return true;
-        }
-        const double elapsed = std::chrono::duration<double>(now - m_t0).count();
-        const double target = pts - m_first_pts;
-        if (target > elapsed) {
-            std::this_thread::sleep_until(m_t0 + std::chrono::duration<double>(target));
-            return true;
-        }
-        if (elapsed - target > 0.25) return false; /* behind schedule: drop */
-        return true;
+        uploadAndSubmit();
     }
 
     bool uploadAndSubmit() {
@@ -1262,109 +1293,38 @@ private:
         return true;
     }
 
+    // 渲染线程 = mpv 线程：创建 mpv、处理事件与命令、SW 渲染取帧合成上传。
     void renderLoop() {
-        if (!openMedia()) {
+        if (!openWithMpv()) {
             fail(QString::fromStdString(m_last_error));
+            cleanupMpv(); // openWithMpv 中途失败可能已创建 mpv/render context，必须在此释放
             return;
         }
-        openAudioOutput();
-
+        auto last_report = std::chrono::steady_clock::now();
         while (m_running.load()) {
-            if (m_eof.load()) {
-                if (!waitForRestart()) break;
-                continue;
-            }
-            if (m_user_paused.load()) {
-                std::unique_lock lock(m_control_mutex);
-                m_control_cv.wait(lock, [this] {
-                    return !m_running.load() || !m_user_paused.load();
-                });
-                if (!m_running.load()) break;
-                continue;
-            }
-            if (!readAndPresentOne()) {
-                if (!m_running.load()) break;
-                if (m_eof.load()) continue;
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-        }
-        m_running.store(false);
-        m_control_cv.notify_all();
-    }
+            processMpvCommands();
+            // 阻塞短暂超时：有事件立即返回，无事件每 10ms 轮询一次渲染。
+            mpv_event* event = mpv_wait_event(m_mpv, 0.01);
+            if (event->event_id != MPV_EVENT_NONE) handleMpvEvent(event);
+            if (!m_running.load()) break;
 
-    bool readAndPresentOne() {
-        if (m_format == nullptr || m_video_codec == nullptr) return false;
-        AVPacket* packet = av_packet_alloc();
-        if (packet == nullptr) return false;
-        const int read_result = av_read_frame(m_format, packet);
-        if (read_result < 0) {
-            av_packet_free(&packet);
-            if (read_result == AVERROR_EOF || m_format->pb == nullptr ||
-                avio_feof(m_format->pb)) {
-                handleEof();
-            } else {
-                fail(QStringLiteral("video demux error"));
+            const uint64_t flags = mpv_render_context_update(m_render);
+            if ((flags & MPV_RENDER_UPDATE_FRAME) != 0u) {
+                presentMpvFrame();
             }
-            return false;
-        }
-        if (packet->stream_index == m_video_index) {
-            if (avcodec_send_packet(m_video_codec, packet) == 0) {
-                AVFrame* frame = av_frame_alloc();
-                while (avcodec_receive_frame(m_video_codec, frame) == 0) {
-                    (void)presentFrame(frame);
-                    av_frame_unref(frame);
-                }
-                av_frame_free(&frame);
-            }
-        } else if (m_audio_index >= 0 && packet->stream_index == m_audio_index) {
-            if (avcodec_send_packet(m_audio_codec, packet) == 0) {
-                AVFrame* frame = av_frame_alloc();
-                while (avcodec_receive_frame(m_audio_codec, frame) == 0) {
-                    writeAudio(frame);
-                    av_frame_unref(frame);
-                }
-                av_frame_free(&frame);
-            }
-        }
-        av_packet_free(&packet);
-        return true;
-    }
 
-    void handleEof() {
-        if (m_pulse != nullptr) {
-            int error = 0;
-            (void)pa_simple_flush(m_pulse, &error);
-        }
-        if (m_eof.exchange(true)) return;
-        if (!m_eof_notified.exchange(true) && m_config.videoDidEndCallback) {
-            m_config.videoDidEndCallback();
-        }
-    }
-
-    bool waitForRestart() {
-        std::unique_lock lock(m_control_mutex);
-        m_control_cv.wait(lock, [this] {
-            return !m_running.load() || m_restart_requested.load();
-        });
-        if (!m_running.load()) return false;
-        m_restart_requested = false;
-        m_eof.store(false);
-        m_eof_notified.store(false);
-        lock.unlock();
-
-        if (m_format != nullptr) {
-            if (av_seek_frame(m_format, -1, 0, AVSEEK_FLAG_BACKWARD) < 0) {
-                avformat_seek_file(m_format, -1, INT64_MIN, 0, 0, 0);
+            // hwdec-current 诊断日志：报告 mpv 实际选用的解码路径（软解为
+            // "no"）。仅读取属性打日志，不参与任何决策分支。
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_report >= std::chrono::seconds(2)) {
+                last_report = now;
+                char* hwdec = mpv_get_property_string(m_mpv, "hwdec-current");
+                std::fprintf(stderr, "VideoWallpaper: hwdec-current=%s\n",
+                             hwdec != nullptr ? hwdec : "?");
+                mpv_free(hwdec);
             }
-            avcodec_flush_buffers(m_video_codec);
-            if (m_audio_codec != nullptr) avcodec_flush_buffers(m_audio_codec);
-            if (m_pulse != nullptr) {
-                int error = 0;
-                (void)pa_simple_flush(m_pulse, &error);
-            }
-            m_first_pts = -1.0;
         }
-        return true;
+        cleanupMpv();
     }
 
     void fail(const QString& message) {
@@ -1429,25 +1389,23 @@ private:
     std::atomic_bool m_restart_requested { false };
     std::mutex m_control_mutex;
     std::condition_variable m_control_cv;
-    double m_first_pts { -1.0 };
-    std::chrono::steady_clock::time_point m_t0 {};
+    // libmpv（渲染线程独占；m_mpv 置空/读取在 m_control_mutex 保护下）
+    mpv_handle* m_mpv { nullptr };
+    mpv_render_context* m_render { nullptr };
+    std::deque<std::function<void()>> m_mpv_commands;
 
-    AVFormatContext* m_format { nullptr };
-    AVCodecContext* m_video_codec { nullptr };
-    AVCodecContext* m_audio_codec { nullptr };
-    AVStream* m_video_stream { nullptr };
-    AVStream* m_audio_stream { nullptr };
-    int m_video_index { -1 };
-    int m_audio_index { -1 };
+    // mpv SW 渲染缓冲（视频原始尺寸 RGBA）
+    std::vector<std::uint8_t> m_mpv_buf;
+    int m_mpv_buf_w { 0 };
+    int m_mpv_buf_h { 0 };
+    int m_mpv_buf_stride { 0 };
+
+    // 缩放合成（RGBA→RGBA，fillMode）
     SwsContext* m_sws { nullptr };
     int m_sws_source_w { 0 };
     int m_sws_source_h { 0 };
-    int m_sws_source_fmt { -1 };
     std::uint32_t m_sws_target_w { 0 };
     std::uint32_t m_sws_target_h { 0 };
-    SwrContext* m_swr { nullptr };
-    pa_simple* m_pulse { nullptr };
-    std::vector<std::uint8_t> m_pcm;
     std::string m_last_error;
 };
 
