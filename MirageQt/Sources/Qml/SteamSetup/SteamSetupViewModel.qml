@@ -1,4 +1,5 @@
 import QtQuick
+import "../MirageBridge.js" as MirageBridge
 
 QtObject {
     id: model
@@ -32,17 +33,11 @@ QtObject {
     }
 
     function mirageValue(name, fallback) {
-        var value = mirage[name];
-        return value === undefined || value === null ? fallback : value;
+        return MirageBridge.value(mirage, name, fallback);
     }
 
     function invoke(name) {
-        var fn = mirage[name];
-        if (typeof fn !== "function")
-            return false;
-        var args = Array.prototype.slice.call(arguments, 1);
-        fn.apply(mirage, args);
-        return true;
+        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
     }
 
     function detectSteamCMD() {

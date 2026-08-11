@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
+import "Playlist"
 
 ColumnLayout {
     id: bar
@@ -77,60 +78,10 @@ ColumnLayout {
         }
     }
 
-    ListView {
-        id: playlistList
+    PlaylistStrip {
         Layout.fillWidth: true
         Layout.fillHeight: true
         visible: bar.host.playlistExpanded
-        orientation: ListView.Horizontal
-        spacing: 8
-        clip: true
-        model: mirage.playlistItems
-        delegate: FluFrame {
-            required property var modelData
-            required property int index
-            width: 112
-            height: parent.height
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 4
-                Image {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    source: modelData.preview
-                    fillMode: Image.PreserveAspectCrop
-                }
-                FluText {
-                    Layout.fillWidth: true
-                    text: modelData.title
-                    elide: Text.ElideRight
-                }
-            }
-            FluIconButton {
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 2
-                z: 1
-                text: "从播放列表移除"
-                iconSource: FluentIcons.Delete
-                onClicked: mirage.removePlaylistItem(modelData.id)
-            }
-            MouseArea {
-                anchors.fill: parent
-                anchors.rightMargin: 30
-                drag.target: parent
-                drag.axis: Drag.XAxis
-                onDoubleClicked: bar.host.runWithWallpaperTrust(modelData, function () {
-                    mirage.playPlaylistItem(modelData.id);
-                })
-                onReleased: {
-                    var target = Math.round((parent.x + parent.width / 2) / (parent.width + playlistList.spacing));
-                    target = Math.max(0, Math.min(playlistList.count - 1, target));
-                    if (target !== index) {
-                        mirage.movePlaylistItem(index, target > index ? target + 1 : target);
-                    }
-                }
-            }
-        }
+        host: bar.host
     }
 }

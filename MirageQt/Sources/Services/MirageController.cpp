@@ -15,156 +15,8 @@
 namespace Mirage {
 namespace {
 
-QVariantMap settingsMap(const GlobalSettings& settings) {
-    return {
-        {QStringLiteral("otherApplicationFocused"), settings.otherApplicationFocused},
-        {QStringLiteral("otherApplicationFullscreen"), settings.otherApplicationFullscreen},
-        {QStringLiteral("otherApplicationPlayingAudio"), settings.otherApplicationPlayingAudio},
-        {QStringLiteral("displayAsleep"), settings.displayAsleep},
-        {QStringLiteral("laptopOnBattery"), settings.laptopOnBattery},
-        {QStringLiteral("antiAliasing"), settings.antiAliasing},
-        {QStringLiteral("postProcessing"), settings.postProcessing},
-        {QStringLiteral("textureResolution"), settings.textureResolution},
-        {QStringLiteral("reflections"), settings.reflections},
-        {QStringLiteral("fps"), settings.fps},
-        {QStringLiteral("wallpaperLoadSource"), settings.wallpaperLoadSource},
-        {QStringLiteral("autoStart"), settings.autoStart},
-        {QStringLiteral("safeMode"), settings.safeMode},
-        {QStringLiteral("language"), settings.language},
-        {QStringLiteral("appearance"), settings.appearance},
-        {QStringLiteral("audioOutput"), settings.audioOutput},
-        {QStringLiteral("reloadWhenChangingOutputDevice"), settings.reloadWhenChangingOutputDevice},
-        {QStringLiteral("masterVolume"), settings.masterVolume},
-        {QStringLiteral("globalMuted"), settings.globalMuted},
-        {QStringLiteral("enableSpectrum"), settings.enableSpectrum},
-        {QStringLiteral("videoFramework"), settings.videoFramework},
-        {QStringLiteral("processPriority"), settings.processPriority},
-        {QStringLiteral("pauseOnVRAMExhausted"), settings.pauseOnVRAMExhausted},
-        {QStringLiteral("restartAfterCrashing"), settings.restartAfterCrashing},
-        {QStringLiteral("logLevel"), settings.logLevel},
-        {QStringLiteral("verboseLog"), settings.verboseLog},
-        {QStringLiteral("autoRefresh"), settings.autoRefresh},
-        {QStringLiteral("steamAPIEndpoint"), settings.steamAPIEndpoint},
-        {QStringLiteral("steamAPIKey"), settings.steamAPIKey},
-        {QStringLiteral("customWorkshopDirectory"), settings.customWorkshopDirectory},
-        {QStringLiteral("customImportedDirectory"), settings.customImportedDirectory},
-    };
-}
 
-void updateSettingsFromMap(GlobalSettings& settings, const QVariantMap& values) {
-    const auto stringValue = [&values](const QString& key, const QString& fallback) {
-        return values.contains(key) ? values.value(key).toString() : fallback;
-    };
-    const auto boolValue = [&values](const QString& key, bool fallback) {
-        return values.contains(key) ? values.value(key).toBool() : fallback;
-    };
-    const auto intValue = [&values](const QString& key, int fallback) {
-        return values.contains(key) ? values.value(key).toInt() : fallback;
-    };
-    const auto doubleValue = [&values](const QString& key, double fallback) {
-        return values.contains(key) ? values.value(key).toDouble() : fallback;
-    };
-    settings.otherApplicationFocused = stringValue(QStringLiteral("otherApplicationFocused"), settings.otherApplicationFocused);
-    settings.otherApplicationFullscreen = stringValue(QStringLiteral("otherApplicationFullscreen"), settings.otherApplicationFullscreen);
-    settings.otherApplicationPlayingAudio = stringValue(QStringLiteral("otherApplicationPlayingAudio"), settings.otherApplicationPlayingAudio);
-    settings.displayAsleep = stringValue(QStringLiteral("displayAsleep"), settings.displayAsleep);
-    settings.laptopOnBattery = stringValue(QStringLiteral("laptopOnBattery"), settings.laptopOnBattery);
-    settings.antiAliasing = stringValue(QStringLiteral("antiAliasing"), settings.antiAliasing);
-    settings.postProcessing = stringValue(QStringLiteral("postProcessing"), settings.postProcessing);
-    settings.textureResolution = stringValue(QStringLiteral("textureResolution"), settings.textureResolution);
-    settings.reflections = boolValue(QStringLiteral("reflections"), settings.reflections);
-    settings.fps = intValue(QStringLiteral("fps"), settings.fps);
-    settings.wallpaperLoadSource = stringValue(QStringLiteral("wallpaperLoadSource"), settings.wallpaperLoadSource);
-    settings.autoStart = boolValue(QStringLiteral("autoStart"), settings.autoStart);
-    settings.safeMode = boolValue(QStringLiteral("safeMode"), settings.safeMode);
-    settings.language = stringValue(QStringLiteral("language"), settings.language);
-    settings.appearance = stringValue(QStringLiteral("appearance"), settings.appearance);
-    settings.audioOutput = boolValue(QStringLiteral("audioOutput"), settings.audioOutput);
-    settings.reloadWhenChangingOutputDevice = boolValue(QStringLiteral("reloadWhenChangingOutputDevice"), settings.reloadWhenChangingOutputDevice);
-    settings.masterVolume = doubleValue(QStringLiteral("masterVolume"), settings.masterVolume);
-    settings.globalMuted = boolValue(QStringLiteral("globalMuted"), settings.globalMuted);
-    settings.enableSpectrum = boolValue(QStringLiteral("enableSpectrum"), settings.enableSpectrum);
-    settings.videoFramework = stringValue(QStringLiteral("videoFramework"), settings.videoFramework);
-    settings.processPriority = stringValue(QStringLiteral("processPriority"), settings.processPriority);
-    settings.pauseOnVRAMExhausted = boolValue(QStringLiteral("pauseOnVRAMExhausted"), settings.pauseOnVRAMExhausted);
-    settings.restartAfterCrashing = boolValue(QStringLiteral("restartAfterCrashing"), settings.restartAfterCrashing);
-    settings.logLevel = stringValue(QStringLiteral("logLevel"), settings.logLevel);
-    settings.verboseLog = boolValue(QStringLiteral("verboseLog"), settings.verboseLog);
-    settings.autoRefresh = boolValue(QStringLiteral("autoRefresh"), settings.autoRefresh);
-    settings.steamAPIEndpoint = stringValue(QStringLiteral("steamAPIEndpoint"), settings.steamAPIEndpoint);
-    settings.steamAPIKey = stringValue(QStringLiteral("steamAPIKey"), settings.steamAPIKey);
-    settings.customWorkshopDirectory = stringValue(QStringLiteral("customWorkshopDirectory"), settings.customWorkshopDirectory);
-    settings.customImportedDirectory = stringValue(QStringLiteral("customImportedDirectory"), settings.customImportedDirectory);
-}
 
-QVariantMap playlistSettingsMap(const PlaylistSettings& settings) {
-    QVariantList anchors;
-    for (int hour : settings.daytimeAnchors) anchors.append(hour);
-    QVariantList weekOrder;
-    for (int day : settings.dayOfWeekOrder) weekOrder.append(day);
-    return {
-        {QStringLiteral("order"), playlistOrderKey(settings.order)},
-        {QStringLiteral("timing"), playlistTimingKey(settings.timing)},
-        {QStringLiteral("timerHours"), settings.timerHours},
-        {QStringLiteral("timerMinutes"), settings.timerMinutes},
-        {QStringLiteral("updateOnPause"), settings.updateOnPause},
-        {QStringLiteral("transition"), playlistTransitionKey(settings.transition)},
-        {QStringLiteral("transitionSeconds"), settings.transitionSeconds},
-        {QStringLiteral("alwaysBeginFirst"), settings.alwaysBeginFirst},
-        {QStringLiteral("introOnStartup"), settings.introOnStartup},
-        {QStringLiteral("videoSequence"), settings.videoSequence},
-        {QStringLiteral("daytimeAnchors"), anchors},
-        {QStringLiteral("dayOfWeekOrder"), weekOrder},
-    };
-}
-
-void updatePlaylistSettingsFromMap(PlaylistSettings& settings, const QVariantMap& values) {
-    if (values.contains(QStringLiteral("order"))) {
-        settings.order = playlistOrderFromKey(values.value(QStringLiteral("order")).toString());
-    }
-    if (values.contains(QStringLiteral("timing"))) {
-        settings.timing = playlistTimingFromKey(values.value(QStringLiteral("timing")).toString());
-    }
-    if (values.contains(QStringLiteral("timerHours"))) {
-        settings.timerHours = values.value(QStringLiteral("timerHours")).toInt();
-    }
-    if (values.contains(QStringLiteral("timerMinutes"))) {
-        settings.timerMinutes = values.value(QStringLiteral("timerMinutes")).toInt();
-    }
-    if (values.contains(QStringLiteral("updateOnPause"))) {
-        settings.updateOnPause = values.value(QStringLiteral("updateOnPause")).toBool();
-    }
-    if (values.contains(QStringLiteral("transition"))) {
-        settings.transition = playlistTransitionFromKey(values.value(QStringLiteral("transition")).toString());
-    }
-    if (values.contains(QStringLiteral("transitionSeconds"))) {
-        settings.transitionSeconds = values.value(QStringLiteral("transitionSeconds")).toDouble();
-    }
-    if (values.contains(QStringLiteral("alwaysBeginFirst"))) {
-        settings.alwaysBeginFirst = values.value(QStringLiteral("alwaysBeginFirst")).toBool();
-    }
-    if (values.contains(QStringLiteral("introOnStartup"))) {
-        settings.introOnStartup = values.value(QStringLiteral("introOnStartup")).toBool();
-    }
-    if (values.contains(QStringLiteral("videoSequence"))) {
-        settings.videoSequence = values.value(QStringLiteral("videoSequence")).toBool();
-    }
-    if (values.contains(QStringLiteral("daytimeAnchors"))) {
-        QVector<int> anchors;
-        for (const QVariant& value : values.value(QStringLiteral("daytimeAnchors")).toList()) {
-            anchors.push_back(value.toInt());
-        }
-        settings.daytimeAnchors = anchors;
-    }
-    if (values.contains(QStringLiteral("dayOfWeekOrder"))) {
-        QVector<int> weekOrder;
-        for (const QVariant& value : values.value(QStringLiteral("dayOfWeekOrder")).toList()) {
-            const int day = value.toInt();
-            if (day >= 0 && day <= 6 && !weekOrder.contains(day)) weekOrder.push_back(day);
-        }
-        if (!weekOrder.isEmpty()) settings.dayOfWeekOrder = weekOrder;
-    }
-}
 
 WorkshopSortOrder workshopSortOrderFor(const QString& key) {
     if (key == QStringLiteral("recent")) return WorkshopSortOrder::MostRecent;
@@ -196,82 +48,6 @@ std::optional<WorkshopAgeRating> workshopAgeRatingFor(const QString& key) {
     return std::nullopt;
 }
 
-QString downloadStateKey(DownloadStateKind kind) {
-    switch (kind) {
-    case DownloadStateKind::Queued: return QStringLiteral("queued");
-    case DownloadStateKind::Starting: return QStringLiteral("starting");
-    case DownloadStateKind::Downloading: return QStringLiteral("downloading");
-    case DownloadStateKind::Validating: return QStringLiteral("validating");
-    case DownloadStateKind::Completed: return QStringLiteral("completed");
-    case DownloadStateKind::Failed: return QStringLiteral("failed");
-    case DownloadStateKind::Cancelled: return QStringLiteral("cancelled");
-    }
-    return {};
-}
-
-QString steamInstallStateKey(SteamCMDInstallState state) {
-    switch (state) {
-    case SteamCMDInstallState::Detecting: return QStringLiteral("detecting");
-    case SteamCMDInstallState::Found: return QStringLiteral("found");
-    case SteamCMDInstallState::NotFound: return QStringLiteral("notFound");
-    case SteamCMDInstallState::Downloading: return QStringLiteral("downloading");
-    case SteamCMDInstallState::Extracting: return QStringLiteral("extracting");
-    case SteamCMDInstallState::Initializing: return QStringLiteral("initializing");
-    case SteamCMDInstallState::Installed: return QStringLiteral("installed");
-    case SteamCMDInstallState::Failed: return QStringLiteral("failed");
-    }
-    return {};
-}
-
-QString steamLoginStateKey(SteamLoginState state) {
-    switch (state) {
-    case SteamLoginState::Idle: return QStringLiteral("idle");
-    case SteamLoginState::LoggingIn: return QStringLiteral("loggingIn");
-    case SteamLoginState::WaitingForGuard: return QStringLiteral("waitingForGuard");
-    case SteamLoginState::Success: return QStringLiteral("success");
-    case SteamLoginState::Failed: return QStringLiteral("failed");
-    }
-    return {};
-}
-
-QString steamGuardTypeKey(SteamGuardType type) {
-    switch (type) {
-    case SteamGuardType::None: return QStringLiteral("");
-    case SteamGuardType::Email: return QStringLiteral("email");
-    case SteamGuardType::Mobile: return QStringLiteral("mobile");
-    case SteamGuardType::MobileConfirm: return QStringLiteral("mobileConfirm");
-    }
-    return {};
-}
-
-bool isActiveDownload(DownloadStateKind kind) {
-    return kind == DownloadStateKind::Starting || kind == DownloadStateKind::Downloading ||
-           kind == DownloadStateKind::Validating;
-}
-
-struct DiscoverSectionDefinition {
-    DiscoverCollection collection;
-    const char* title;
-};
-
-constexpr DiscoverSectionDefinition kDiscoverSections[] = {
-    {DiscoverCollection::Trending, "本周最热"},
-    {DiscoverCollection::MostUpvoted, "最多投票"},
-    {DiscoverCollection::MostRecent, "最新上架"},
-    {DiscoverCollection::MostSubscribed, "订阅最多"},
-    {DiscoverCollection::TopRated, "评分最高"},
-    {DiscoverCollection::LastUpdated, "最近更新"},
-    {DiscoverCollection::PlaytimeTrend, "本周播放时长最多"},
-    {DiscoverCollection::AveragePlaytimeTrend, "本周平均播放时长最长"},
-    {DiscoverCollection::SessionsTrend, "本周播放次数最多"},
-    {DiscoverCollection::TotalPlaytime, "总播放时长最多"},
-    {DiscoverCollection::LifetimeAveragePlaytime, "终身平均播放时长"},
-    {DiscoverCollection::LifetimeSessions, "总播放次数最多"},
-    {DiscoverCollection::Anime, "动漫精选"},
-    {DiscoverCollection::Nature, "自然风光"},
-    {DiscoverCollection::Abstract, "抽象艺术"},
-    {DiscoverCollection::Landscape, "风景壁纸"},
-};
 
 } // namespace
 
@@ -285,10 +61,13 @@ MirageController::MirageController(QObject* parent)
     , m_workshop(&m_steamAPI, &m_steamCMD, &m_library, this)
     , m_renderer(&m_settings, this)
     , m_runtimeStore(this)
-    , m_playlist(&m_library, &m_renderer, this) {
+    , m_playlist(&m_library, &m_renderer, this)
+    , m_trusted(this)
+    , m_steamSetup(&m_steamCMD, this)
+    , m_playback(&m_settings, &m_renderer, &m_runtimeStore, &m_playlist, this) {
     m_firstLaunch = QSettings().value(QStringLiteral("IsFirstLaunch"), true).toBool();
     m_renderer.setWallpaperTrustChecker([this](const Wallpaper& item) {
-        return isWallpaperTrusted(item.id());
+        return m_trusted.isTrusted(item.id());
     });
     connect(&m_library, &WallpaperLibrary::libraryChanged, this, &MirageController::reloadWallpapers);
     connect(&m_favorites, &FavoritesManager::changed, this, [this] {
@@ -335,37 +114,9 @@ MirageController::MirageController(QObject* parent)
         emit selectedWorkshopItemChanged();
     });
     connect(&m_workshop, &WorkshopViewModel::steamSetupChanged, this, &MirageController::workshopStateChanged);
-    connect(&m_steamCMD, &SteamCMDManager::installStateChanged, this,
-            [this](SteamCMDInstallState state, double progress, const QString& message) {
-                m_steamInstallState = steamInstallStateKey(state);
-                m_steamInstallProgress = progress;
-                m_steamInstallMessage = message;
-                emit steamChanged();
-            });
-    connect(&m_steamCMD, &SteamCMDManager::loginStateChanged, this,
-            [this](SteamLoginState state, const QString& message) {
-                m_steamLoginState = steamLoginStateKey(state);
-                m_steamLoginMessage = message;
-                emit steamChanged();
-            });
-    connect(&m_steamCMD, &SteamCMDManager::guardTypeChanged, this,
-            [this](SteamGuardType) { emit steamChanged(); });
-    connect(&m_steamCMD, &SteamCMDManager::diagnosticEvent, this,
-            [this](const QString& line) {
-                m_steamLoginLog.append(line);
-                if (m_steamLoginLog.size() > 500)
-                    m_steamLoginLog.remove(0, m_steamLoginLog.size() - 500);
-                emit steamChanged();
-            });
-    connect(&m_steamCMD, &SteamCMDManager::steamCMDPathChanged, this,
-            [this](const QString&) { emit steamChanged(); });
+    connect(&m_steamSetup, &SteamSetupViewModel::steamChanged, this, &MirageController::steamChanged);
     connect(&m_steamCMD, &SteamCMDManager::authenticationChanged, this,
-            [this](bool, const QString&) {
-                emit steamChanged();
-                emit workshopStateChanged();
-            });
-    connect(&m_steamCMD, &SteamCMDManager::sessionReusableChanged, this,
-            [this](bool) { emit steamChanged(); });
+            [this](bool, const QString&) { emit workshopStateChanged(); });
     connect(&m_workshop, &WorkshopViewModel::installedWallpaperRequested, this, [this](const Wallpaper& item) {
         selectWallpaper(item.id());
         emit installedWallpaperSelected();
@@ -382,7 +133,7 @@ MirageController::MirageController(QObject* parent)
 
     if (m_steamCMD.sessionReusable()) m_steamCMD.refreshSession();
     reloadWallpapers();
-    restoreStartupPlayback();
+    m_playback.restoreStartupPlayback();
     m_playlist.startRotators();
 }
 
@@ -418,21 +169,6 @@ QVariantList MirageController::workshopItems() const {
     return result;
 }
 
-QVariantList MirageController::discoverSections() const {
-    QVariantList result;
-    for (const DiscoverSectionDefinition& definition : kDiscoverSections) {
-        const QVector<WorkshopItem>& items = m_workshop.discoverItems(definition.collection);
-        if (items.isEmpty()) continue;
-        QVariantList sectionItems;
-        sectionItems.reserve(items.size());
-        for (const WorkshopItem& item : items) sectionItems.append(workshopItemMap(item));
-        result.append(QVariantMap{
-            {QStringLiteral("title"), QString::fromUtf8(definition.title)},
-            {QStringLiteral("items"), sectionItems},
-        });
-    }
-    return result;
-}
 
 QVariantMap MirageController::selectedWorkshopItem() const {
     return m_workshop.selectedItem() ? workshopItemMap(*m_workshop.selectedItem()) : QVariantMap{};
@@ -465,29 +201,19 @@ QVariantList MirageController::downloadQueue() const {
     return result;
 }
 
-bool MirageController::hasDownloadHistory() const {
-    for (const WorkshopDownloadTask& task : m_workshop.downloadQueue()) {
-        if (task.state.kind == DownloadStateKind::Completed ||
-            task.state.kind == DownloadStateKind::Failed ||
-            task.state.kind == DownloadStateKind::Cancelled) return true;
-    }
-    return false;
-}
-
 bool MirageController::steamReady() const { return m_workshop.steamSetupState() == SteamSetupState::Ready; }
 QString MirageController::steamSetupSummary() const { return m_workshop.steamSetupSummary(); }
 QString MirageController::steamCMDPath() const { return m_steamCMD.steamCMDPath(); }
 QString MirageController::steamUsername() const { return m_steamCMD.savedUsername(); }
 bool MirageController::steamLoggedIn() const { return m_steamCMD.isLoggedIn(); }
-QString MirageController::steamInstallState() const { return m_steamInstallState; }
-double MirageController::steamInstallProgress() const { return m_steamInstallProgress; }
-QString MirageController::steamInstallMessage() const { return m_steamInstallMessage; }
-QString MirageController::steamLoginState() const { return m_steamLoginState; }
-QString MirageController::steamLoginMessage() const { return m_steamLoginMessage; }
-QStringList MirageController::steamLoginLog() const { return m_steamLoginLog; }
-QString MirageController::steamGuardType() const { return steamGuardTypeKey(m_steamCMD.steamGuardType()); }
-bool MirageController::steamSessionReusable() const { return m_steamCMD.sessionReusable(); }
-QStringList MirageController::steamDiagnosticEvents() const { return m_steamCMD.diagnosticEvents(); }
+QString MirageController::steamInstallState() const { return m_steamSetup.installState(); }
+double MirageController::steamInstallProgress() const { return m_steamSetup.installProgress(); }
+QString MirageController::steamInstallMessage() const { return m_steamSetup.installMessage(); }
+QString MirageController::steamLoginState() const { return m_steamSetup.loginState(); }
+QString MirageController::steamLoginMessage() const { return m_steamSetup.loginMessage(); }
+QStringList MirageController::steamLoginLog() const { return m_steamSetup.loginLog(); }
+QString MirageController::steamGuardType() const { return m_steamSetup.guardType(); }
+bool MirageController::steamSessionReusable() const { return m_steamSetup.sessionReusable(); }
 
 bool MirageController::firstLaunch() const {
     return m_firstLaunch;
@@ -497,9 +223,6 @@ QString MirageController::statusMessage() const {
     return m_statusMessage;
 }
 
-QVariantMap MirageController::settings() const {
-    return settingsMap(m_settings.settings());
-}
 
 QVariantList MirageController::selectedProperties() const {
     const Wallpaper item = wallpaper(m_selectedWallpaperId);
@@ -535,41 +258,7 @@ int MirageController::screenCount() const {
 }
 
 QVariantList MirageController::displays() const {
-    QVariantList result;
-    const QList<QScreen*> screens = QGuiApplication::screens();
-    result.reserve(qMax(1, screens.size()));
-
-    if (screens.isEmpty()) {
-        result.append(QVariantMap{
-            {QStringLiteral("index"), 0},
-            {QStringLiteral("name"), QStringLiteral("显示器 1")},
-            {QStringLiteral("width"), 0},
-            {QStringLiteral("height"), 0},
-            {QStringLiteral("primary"), true},
-            {QStringLiteral("running"), m_renderer.isRunningOnScreen(0)},
-            {QStringLiteral("wallpaperTitle"), QString()},
-        });
-        return result;
-    }
-
-    for (int index = 0; index < screens.size(); ++index) {
-        const QScreen* screen = screens.at(index);
-        const QString wallpaperId = m_renderer.wallpaperIdOnScreen(index);
-        const Wallpaper runningWallpaper = wallpaper(wallpaperId);
-        const QRect geometry = screen->geometry();
-        result.append(QVariantMap{
-            {QStringLiteral("index"), index},
-            {QStringLiteral("name"), screen->name().isEmpty()
-                ? QStringLiteral("显示器 %1").arg(index + 1) : screen->name()},
-            {QStringLiteral("width"), geometry.width()},
-            {QStringLiteral("height"), geometry.height()},
-            {QStringLiteral("primary"), screen == QGuiApplication::primaryScreen()},
-            {QStringLiteral("running"), m_renderer.isRunningOnScreen(index)},
-            {QStringLiteral("wallpaperTitle"), runningWallpaper.isValid()
-                ? runningWallpaper.project.title : QString()},
-        });
-    }
-    return result;
+    return m_playback.displays();
 }
 
 QVariantList MirageController::savedPlaylists() const {
@@ -580,24 +269,17 @@ QVariantList MirageController::savedPlaylists() const {
     return result;
 }
 
-QVariantMap MirageController::playlistSettings() const {
-    return playlistSettingsMap(m_playlist.current(m_playlistScreen).settings);
-}
 
 double MirageController::selectedVolume() const {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    return item.isValid() ? m_runtimeStore.loadRuntime(item).volume : 1.0;
+    return m_playback.selectedVolume();
 }
 
 double MirageController::selectedSpeed() const {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    return item.isValid() ? m_runtimeStore.loadRuntime(item).speed : 1.0;
+    return m_playback.selectedSpeed();
 }
 
 QString MirageController::selectedFillMode() const {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return QStringLiteral("cover");
-    return RendererController::fillModeKey(m_runtimeStore.loadRuntime(item).fillMode);
+    return m_playback.selectedFillMode();
 }
 
 void MirageController::reloadWallpapers() {
@@ -623,32 +305,22 @@ void MirageController::selectWallpaper(const QString& id) {
 bool MirageController::isWallpaperTrusted(const QString& id) const {
     const Wallpaper item = wallpaper(id);
     if (!item.isValid() || item.kind() != WallpaperKind::Web) return false;
-    if (m_sessionTrustedWallpapers.contains(id)) return true;
-    return QSettings().value(QStringLiteral("TrustedWallpapers")).toStringList().contains(id);
+    return m_trusted.isTrusted(id);
 }
 
 void MirageController::trustWallpaper(const QString& id, bool persist) {
     const Wallpaper item = wallpaper(id);
     if (!item.isValid() || item.kind() != WallpaperKind::Web) return;
-
-    m_sessionTrustedWallpapers.insert(id);
-    if (!persist) return;
-
-    QSettings settings;
-    QStringList trusted = settings.value(QStringLiteral("TrustedWallpapers")).toStringList();
-    if (!trusted.contains(id)) {
-        trusted.append(id);
-        settings.setValue(QStringLiteral("TrustedWallpapers"), trusted);
-    }
+    m_trusted.trust(id, persist);
 }
 
 void MirageController::applySelected(bool allScreens) {
-    apply(wallpaper(m_selectedWallpaperId), allScreens);
+    m_playback.apply(wallpaper(m_selectedWallpaperId), allScreens);
 }
 
 void MirageController::applyWallpaper(const QString& id, bool allScreens) {
     selectWallpaper(id);
-    apply(wallpaper(id), allScreens);
+    m_playback.apply(wallpaper(id), allScreens);
 }
 
 void MirageController::toggleSelectedFavorite() {
@@ -688,7 +360,7 @@ void MirageController::deleteSelectedWallpaper() {
         return;
     }
     m_favorites.setFavorite(item.id(), false);
-    clearWallpaperTrust(item.id());
+    m_trusted.clear(item.id());
     setStatusMessage(QStringLiteral("已删除导入壁纸"));
 }
 
@@ -709,30 +381,15 @@ void MirageController::importWallpaperPath(const QString& path) {
 }
 
 void MirageController::stopWallpapers() {
-    m_renderer.stopAll();
-    setStatusMessage(QStringLiteral("已停止动态壁纸"));
+    m_playback.stopWallpapers();
 }
 
 void MirageController::applySelectedToScreen(int screen) {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return;
-
-    const int target = qBound(0, screen, screenCount() - 1);
-    QString error;
-    if (m_renderer.render(item, target, renderOptionsFor(item), &error)) {
-        m_playlist.setCurrentWallpaper(target, item);
-        m_playlist.kickRotator(target);
-        emit playlistChanged();
-        setStatusMessage(QStringLiteral("已应用到显示器 %1").arg(target + 1));
-    } else if (!error.isEmpty()) {
-        setStatusMessage(error);
-    }
+    m_playback.applySelectedToScreen(screen);
 }
 
 void MirageController::stopScreen(int screen) {
-    if (screen < 0 || screen >= screenCount()) return;
-    m_renderer.stop(screen);
-    setStatusMessage(QStringLiteral("已停止显示器 %1 的动态壁纸").arg(screen + 1));
+    m_playback.stopScreen(screen);
 }
 
 void MirageController::addSelectedToPlaylist() {
@@ -746,15 +403,7 @@ void MirageController::addSelectedToPlaylist() {
 void MirageController::playPlaylistItem(const QString& id) {
     const Wallpaper item = m_playlist.resolveWallpaper(id);
     if (!item.isValid()) return;
-    QString error;
-    if (m_renderer.render(item, m_playlistScreen, renderOptionsFor(item), &error)) {
-        m_playlist.setCurrentWallpaper(m_playlistScreen, item);
-        m_playlist.kickRotator(m_playlistScreen);
-        selectWallpaper(item.id());
-        setStatusMessage(QStringLiteral("已应用壁纸"));
-    } else if (!error.isEmpty()) {
-        setStatusMessage(error);
-    }
+    m_playback.playPlaylistItem(item);
 }
 
 void MirageController::removePlaylistItem(const QString& id) {
@@ -771,10 +420,6 @@ void MirageController::trimPlaylistItems(int limit) {
 
 void MirageController::movePlaylistItem(int source, int destination) {
     m_playlist.move(source, destination, m_playlistScreen);
-}
-
-void MirageController::removeSelectedPlaylistItem(const QString& id) {
-    removePlaylistItem(id);
 }
 
 void MirageController::savePlaylist(const QString& name) {
@@ -801,29 +446,12 @@ void MirageController::updatePlaylistSettings(const QVariantMap& values) {
     });
 }
 
-void MirageController::resetPlaylistSettings() {
-    m_playlist.resetSettings(m_playlistScreen);
-}
-
 void MirageController::setSelectedProperty(const QString& key, const QVariant& value) {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return;
-    const ProjectProperty property = m_runtimeStore.setProperty(item, key, value);
-    if (property.type.isEmpty()) return;
-    if (item.kind() == WallpaperKind::Scene || item.kind() == WallpaperKind::Web) {
-        m_renderer.setProperty(key, property);
-    }
+    m_playback.setSelectedProperty(key, value);
 }
 
 void MirageController::resetSelectedProperties() {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return;
-    m_runtimeStore.resetRuntime(item);
-    for (int screen : m_renderer.activeScreens()) {
-        if (m_playlist.currentWallpaper(screen).id() != item.id()) continue;
-        QString error;
-        m_renderer.render(item, screen, renderOptionsFor(item), &error);
-    }
+    m_playback.resetSelectedProperties();
 }
 
 void MirageController::completeFirstLaunch(bool hideUntilNextUpdate) {
@@ -908,58 +536,47 @@ void MirageController::clearCompletedDownloads() {
 }
 
 void MirageController::detectSteamCMD() {
-    m_steamInstallState = QStringLiteral("detecting");
-    emit steamChanged();
-    m_steamCMD.detectSteamCMD();
+    m_steamSetup.detect();
 }
 
 void MirageController::installSteamCMD() {
-    m_steamCMD.installSteamCMD();
+    m_steamSetup.install();
 }
 
 void MirageController::cancelSteamCMDInstallation() {
-    m_steamCMD.cancelInstallation();
+    m_steamSetup.cancelInstallation();
 }
 
 void MirageController::loginSteam(const QString& username, const QString& password) {
-    m_steamLoginLog.clear();
-    emit steamChanged();
-    m_steamCMD.login(username, password);
+    m_steamSetup.login(username, password);
 }
 
 void MirageController::submitSteamGuardCode(const QString& code) {
-    m_steamCMD.submitGuardCode(code);
+    m_steamSetup.submitGuardCode(code);
 }
 
 void MirageController::confirmSteamMobileLogin() {
-    m_steamCMD.confirmMobileLogin();
+    m_steamSetup.confirmMobileLogin();
 }
 
 void MirageController::useSavedSteamSession() {
-    m_steamLoginState = QStringLiteral("loggingIn");
-    m_steamLoginMessage = QStringLiteral("正在验证已保存的 SteamCMD 会话");
-    emit steamChanged();
-    m_steamCMD.refreshSession();
+    m_steamSetup.useSavedSession();
 }
 
 void MirageController::cancelSteamLogin() {
-    m_steamCMD.cancelLogin();
+    m_steamSetup.cancelLogin();
 }
 
 void MirageController::cancelPendingSteamWork() {
-    m_steamCMD.cancelLogin();
-    m_steamCMD.cancelInstallation();
+    m_steamSetup.cancelPendingWork();
 }
 
 void MirageController::logoutSteam() {
-    m_steamCMD.logout();
-    m_steamLoginState = QStringLiteral("idle");
-    m_steamLoginMessage = QStringLiteral("未登录");
-    emit steamChanged();
+    m_steamSetup.logout();
 }
 
 void MirageController::copySteamLoginLog() {
-    QGuiApplication::clipboard()->setText(m_steamLoginLog.join(QStringLiteral("\n")));
+    m_steamSetup.copyLoginLog();
 }
 
 void MirageController::revealWorkshopDownload(const QString& id) {
@@ -973,54 +590,19 @@ void MirageController::revealWorkshopDownload(const QString& id) {
 }
 
 void MirageController::pauseWallpapers() {
-    m_renderer.pause();
-}
-
-void MirageController::resumeWallpapers() {
-    m_renderer.resume();
+    m_playback.pauseWallpapers();
 }
 
 void MirageController::muteWallpapers() {
-    m_renderer.setMuted(true);
-}
-
-void MirageController::unmuteWallpapers() {
-    m_renderer.setMuted(false);
-}
-
-void MirageController::reloadCurrentWallpaper() {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return;
-    for (const int screen : m_renderer.activeScreens()) {
-        QString error;
-        m_renderer.render(item, screen, renderOptionsFor(item), &error);
-        if (!error.isEmpty()) setStatusMessage(error);
-    }
-}
-
-void MirageController::resetTrustedWallpapers() {
-    QSettings settings;
-    settings.setValue(QStringLiteral("TrustedWallpapers"), QStringList());
-    m_sessionTrustedWallpapers.clear();
-    setStatusMessage(QStringLiteral("已重置所有已信任壁纸"));
+    m_playback.muteWallpapers();
 }
 
 bool MirageController::applySettings(const QVariantMap& values) {
-    const GlobalSettings before = m_settings.settings();
-    GlobalSettings updated = m_settings.settings();
-    updateSettingsFromMap(updated, values);
-    QString error;
-    if (m_settings.setSettings(updated, &error)) {
-        const GlobalSettings& applied = m_settings.settings();
-        if (before.fps != applied.fps) m_renderer.setFps(applied.fps);
-        return true;
-    }
-    setStatusMessage(error.isEmpty() ? QStringLiteral("设置保存失败") : error);
-    return false;
+    return m_playback.applySettings(values);
 }
 
 void MirageController::previewFps(int fps) {
-    m_renderer.setFps(qBound(10, fps, 120));
+    m_playback.previewFps(fps);
 }
 
 void MirageController::setPlaylistScreen(int screen) {
@@ -1032,33 +614,15 @@ void MirageController::setPlaylistScreen(int screen) {
 }
 
 void MirageController::setSelectedVolume(double volume) {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return;
-    m_runtimeStore.setVolume(item, volume);
-    const GlobalSettings& settings = m_settings.settings();
-    const WallpaperRuntimeState runtime = m_runtimeStore.loadRuntime(item);
-    m_renderer.setVolume(runtime.volume * settings.masterVolume);
-    m_renderer.setMuted(runtime.muted || settings.globalMuted || runtime.volume <= 0.0);
-    emit selectedRuntimeChanged();
+    m_playback.setSelectedVolume(volume);
 }
 
 void MirageController::setSelectedSpeed(double speed) {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return;
-    m_runtimeStore.setSpeed(item, speed);
-    m_renderer.setSpeed(speed);
-    emit selectedRuntimeChanged();
+    m_playback.setSelectedSpeed(speed);
 }
 
 void MirageController::setSelectedFillMode(const QString& mode) {
-    const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return;
-    const FillMode fillMode = mode == QStringLiteral("contain")
-        ? FillMode::Contain
-        : mode == QStringLiteral("stretch") ? FillMode::Stretch : FillMode::Cover;
-    m_runtimeStore.setFillMode(item, fillMode);
-    m_renderer.setFillMode(fillMode);
-    emit selectedRuntimeChanged();
+    m_playback.setSelectedFillMode(mode);
 }
 
 Wallpaper MirageController::wallpaper(const QString& id) const {
@@ -1082,202 +646,14 @@ std::optional<WorkshopItem> MirageController::workshopItem(const QString& id) co
     return std::nullopt;
 }
 
-QVariantMap MirageController::wallpaperMap(const Wallpaper& item) const {
-    if (!item.isValid()) return {};
-    QString typeKey = item.isPreset() ? QStringLiteral("preset") : wallpaperKindKey(item.kind());
-    if (item.kind() == WallpaperKind::Unsupported
-        && item.project.type.compare(QStringLiteral("application"), Qt::CaseInsensitive) == 0) {
-        typeKey = QStringLiteral("application");
-    }
-    const QString typeLabel = typeKey == QStringLiteral("preset")
-        ? QStringLiteral("预设")
-        : typeKey == QStringLiteral("application") ? QStringLiteral("应用程序") : wallpaperKindName(item.kind());
-    const QString importedRoot = QDir::cleanPath(m_library.importedDirectory()) + QDir::separator();
-    const QString wallpaperPath = QDir::cleanPath(item.wallpaperDirectory) + QDir::separator();
-    const qint64 size = QFileInfo(item.previewPath()).size() + QFileInfo(item.entryPath()).size();
-    const QString searchText = QStringList{item.project.title,
-                                           item.project.resolvedAuthor(),
-                                           item.project.type,
-                                           item.project.description,
-                                           item.project.workshopId,
-                                           QFileInfo(item.wallpaperDirectory).fileName(),
-                                           item.project.tags.join(' ')}.join(' ');
-    return {
-        {QStringLiteral("id"), item.id()},
-        {QStringLiteral("title"), item.project.title},
-        {QStringLiteral("author"), item.project.resolvedAuthor()},
-        {QStringLiteral("type"), typeKey},
-        {QStringLiteral("typeLabel"), typeLabel},
-        {QStringLiteral("kind"), wallpaperKindKey(item.kind())},
-        {QStringLiteral("preview"), QUrl::fromLocalFile(item.previewPath())},
-        {QStringLiteral("tags"), item.project.tags},
-        {QStringLiteral("description"), item.project.description},
-        {QStringLiteral("location"), QUrl::fromLocalFile(item.wallpaperDirectory)},
-        {QStringLiteral("favorite"), m_favorites.contains(item.id())},
-        {QStringLiteral("customizable"), !item.project.properties.isEmpty()},
-        {QStringLiteral("approved"), item.project.approved},
-        {QStringLiteral("rating"), item.project.contentRating},
-        {QStringLiteral("source"), wallpaperPath.startsWith(importedRoot)
-                                        ? QStringLiteral("imported") : QStringLiteral("workshop")},
-        {QStringLiteral("size"), size},
-        {QStringLiteral("searchText"), searchText},
-        {QStringLiteral("preset"), item.isPreset()},
-        {QStringLiteral("presetStatus"), item.presetStatusDescription()},
-    };
-}
 
-QVariantMap MirageController::workshopItemMap(const WorkshopItem& item) const {
-    QString downloadState;
-    QString downloadMessage;
-    double downloadProgress = -1.0;
-    bool downloadActive = false;
-    if (const std::optional<DownloadState> state = m_workshop.downloadStateFor(item.publishedFileId)) {
-        downloadState = downloadStateKey(state->kind);
-        downloadMessage = state->message;
-        downloadProgress = state->percent;
-        downloadActive = isActiveDownload(state->kind);
-    }
-    return {
-        {QStringLiteral("id"), item.publishedFileId},
-        {QStringLiteral("title"), item.title},
-        {QStringLiteral("description"), item.description},
-        {QStringLiteral("preview"), item.previewImageUrl},
-        {QStringLiteral("tags"), item.tags},
-        {QStringLiteral("type"), item.isPreset() ? QStringLiteral("preset") : item.wallpaperType},
-        {QStringLiteral("typeLabel"), item.displayTypeName()},
-        {QStringLiteral("rating"), item.ageRating},
-        {QStringLiteral("subscriptions"), item.formattedSubscriptions()},
-        {QStringLiteral("favorited"), item.formattedFavorited()},
-        {QStringLiteral("views"), item.formattedViews()},
-        {QStringLiteral("creatorSteamId"), item.creatorSteamId},
-        {QStringLiteral("size"), item.fileSize},
-        {QStringLiteral("sizeLabel"), item.formattedFileSize()},
-        {QStringLiteral("updatedAt"), item.timeUpdated.toString(Qt::ISODate)},
-        {QStringLiteral("downloaded"), m_workshop.isItemDownloaded(item.publishedFileId)},
-        {QStringLiteral("needsDependency"), m_workshop.presetNeedsDependency(item.publishedFileId)},
-        {QStringLiteral("downloadState"), downloadState},
-        {QStringLiteral("downloadMessage"), downloadMessage},
-        {QStringLiteral("downloadProgress"), downloadProgress},
-        {QStringLiteral("downloadActive"), downloadActive},
-    };
-}
 
-QVariantMap MirageController::playlistMap(const Playlist& playlist) const {
-    return {
-        {QStringLiteral("id"), playlist.id.toString(QUuid::WithoutBraces)},
-        {QStringLiteral("name"), playlist.name},
-        {QStringLiteral("itemCount"), playlist.items.size()},
-        {QStringLiteral("updatedAt"), playlist.updatedAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))},
-    };
-}
 
-QVariantMap MirageController::propertyMap(const QString& key, const ProjectProperty& property) const {
-    QVariantList options;
-    options.reserve(property.options.size());
-    for (const ProjectPropertyOption& option : property.options) {
-        options.append(QVariantMap{
-            {QStringLiteral("label"), option.label},
-            {QStringLiteral("value"), option.value},
-            {QStringLiteral("condition"), option.condition},
-        });
-    }
-    return {
-        {QStringLiteral("key"), key},
-        {QStringLiteral("text"), property.text},
-        {QStringLiteral("type"), property.type.toLower()},
-        {QStringLiteral("condition"), property.condition},
-        {QStringLiteral("value"), property.value},
-        {QStringLiteral("min"), property.min},
-        {QStringLiteral("max"), property.max},
-        {QStringLiteral("step"), property.step},
-        {QStringLiteral("hasMin"), property.hasMin},
-        {QStringLiteral("hasMax"), property.hasMax},
-        {QStringLiteral("hasStep"), property.hasStep},
-        {QStringLiteral("fraction"), property.fraction},
-        {QStringLiteral("options"), options},
-    };
-}
-
-RenderOptions MirageController::renderOptionsFor(const Wallpaper& item) const {
-    const GlobalSettings& settings = m_settings.settings();
-    const WallpaperRuntimeState runtime = m_runtimeStore.loadRuntime(item);
-    RenderOptions options;
-    options.fps = settings.fps;
-    if (settings.textureResolution == QStringLiteral("highQuality"))
-        options.renderScale = 1.0;
-    else if (settings.textureResolution == QStringLiteral("highPerformance"))
-        options.renderScale = 0.5;
-    else
-        options.renderScale = 0.75;
-    if (settings.antiAliasing == QStringLiteral("none"))
-        options.msaaSamples = 1;
-    else if (settings.antiAliasing == QStringLiteral("msaa_x4"))
-        options.msaaSamples = 4;
-    else if (settings.antiAliasing == QStringLiteral("msaa_x8"))
-        options.msaaSamples = 8;
-    else
-        options.msaaSamples = 2;
-    options.volume = runtime.volume * settings.masterVolume;
-    options.muted = runtime.muted || settings.globalMuted || runtime.volume <= 0.0;
-    options.speed = runtime.speed;
-    options.fillMode = runtime.fillMode;
-    options.enableSpectrum = settings.enableSpectrum;
-    options.loadFromMemory = settings.wallpaperLoadSource == QStringLiteral("memory");
-    options.userProperties = m_runtimeStore.effectiveProperties(item, runtime);
-    return options;
-}
-
-void MirageController::apply(const Wallpaper& item, bool allScreens) {
-    if (!item.isValid()) return;
-    selectWallpaper(item.id());
-
-    bool applied = false;
-    QString error;
-    const RenderOptions options = renderOptionsFor(item);
-    const int count = allScreens ? qMax(1, QGuiApplication::screens().size()) : 1;
-    for (int screen = 0; screen < count; ++screen) {
-        QString screenError;
-        if (m_renderer.render(item, screen, options, &screenError)) {
-            applied = true;
-            m_playlist.setCurrentWallpaper(screen, item);
-            m_playlist.kickRotator(screen);
-        }
-        if (!screenError.isEmpty()) error = screenError;
-    }
-    if (applied) {
-        emit playlistChanged();
-        setStatusMessage(allScreens ? QStringLiteral("已应用到所有显示器") : QStringLiteral("已应用壁纸"));
-    } else if (!error.isEmpty()) {
-        setStatusMessage(error);
-    }
-}
-
-void MirageController::restoreStartupPlayback() {
-    const QHash<int, QString> lastApplied = m_playlist.lastAppliedIDs();
-    for (auto it = lastApplied.constBegin(); it != lastApplied.constEnd(); ++it) {
-        const Wallpaper item = m_playlist.resolveWallpaper(it.value());
-        if (!item.isValid()) continue;
-        QString error;
-        if (m_renderer.render(item, it.key(), renderOptionsFor(item), &error)) {
-            m_playlist.setCurrentWallpaper(it.key(), item);
-        }
-    }
-}
 
 void MirageController::setStatusMessage(const QString& message) {
     if (message.isEmpty()) return;
     m_statusMessage = message;
     emit statusMessageChanged();
-}
-
-void MirageController::clearWallpaperTrust(const QString& id) {
-    m_sessionTrustedWallpapers.remove(id);
-
-    QSettings settings;
-    QStringList trusted = settings.value(QStringLiteral("TrustedWallpapers")).toStringList();
-    if (trusted.removeAll(id) > 0) {
-        settings.setValue(QStringLiteral("TrustedWallpapers"), trusted);
-    }
 }
 
 } // namespace Mirage

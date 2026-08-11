@@ -1,4 +1,5 @@
 import QtQuick
+import "../MirageBridge.js" as MirageBridge
 
 QtObject {
     id: controller
@@ -7,12 +8,7 @@ QtObject {
     property var viewModel
 
     function invoke(name) {
-        var fn = mirage[name];
-        if (typeof fn !== "function")
-            return false;
-        var args = Array.prototype.slice.call(arguments, 1);
-        fn.apply(mirage, args);
-        return true;
+        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
     }
 
     function open() {

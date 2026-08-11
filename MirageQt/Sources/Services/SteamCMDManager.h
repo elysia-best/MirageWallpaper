@@ -12,6 +12,8 @@
 
 namespace Mirage {
 
+class SteamCMDPtySession;
+
 enum class SteamCMDInstallState {
     Detecting,
     Found,
@@ -96,8 +98,6 @@ signals:
     void diagnosticEvent(const QString& line);
 
 private:
-    class PtySession;
-
     void setSteamCMDPath(const QString& path);
     bool isUsableLauncher(const QString& path) const;
     bool isReadyLauncher(const QString& path) const;
@@ -141,7 +141,7 @@ private:
     QTimer* m_loginTimeout = nullptr;
     QNetworkReply* m_installReply = nullptr;
     QProcess* m_installProcess = nullptr;
-    PtySession* m_session = nullptr;
+    SteamCMDPtySession* m_session = nullptr;
     QStringList m_downloadQueue;
     QSet<QString> m_cancelledDownloads;
     QString m_activeDownload;

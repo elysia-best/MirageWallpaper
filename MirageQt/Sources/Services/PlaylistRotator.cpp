@@ -48,7 +48,6 @@ void PlaylistRotator::stop() {
 
 void PlaylistRotator::rebuildOnMain(StartReason reason) {
     stop();
-    if (!m_manager) return;
 
     const Playlist playlist = m_manager->current(m_screen);
     if (playlist.items.isEmpty()) return;
@@ -91,7 +90,7 @@ void PlaylistRotator::applyLaunchAnchor(const Playlist& playlist) {
 }
 
 Wallpaper PlaylistRotator::firstItemWallpaper(const Playlist& playlist) const {
-    if (!m_manager || playlist.items.isEmpty()) return {};
+    if (playlist.items.isEmpty()) return {};
     return m_manager->resolveWallpaper(playlist.items.first().wallpaperID);
 }
 
@@ -140,7 +139,6 @@ void PlaylistRotator::applyDayOfWeek(const Playlist& playlist) {
     const int qtDay = QDate::currentDate().dayOfWeek();
     const int today = qtDay % 7; // Sunday -> 0, Monday -> 1, ... Saturday -> 6
     if (today < 0 || today >= qMin(7, playlist.items.size())) return;
-    if (!m_manager) return;
     const Wallpaper wallpaper = m_manager->resolveWallpaper(playlist.items.at(today).wallpaperID);
     if (wallpaper.isValid()) apply(wallpaper);
 }
@@ -149,7 +147,6 @@ void PlaylistRotator::onVideoDidEnd(int screen) {
     if (screen != m_screen || !m_pendingVideoAdvance) return;
     m_pendingVideoAdvance = false;
     advanceNow();
-    if (!m_manager) return;
     const auto timing = m_manager->current(m_screen).settings.timing;
     if (timing == PlaylistTiming::Daytime || timing == PlaylistTiming::DayOfWeek) {
         rebuildOnMain(StartReason::ListChanged);
@@ -157,7 +154,6 @@ void PlaylistRotator::onVideoDidEnd(int screen) {
 }
 
 void PlaylistRotator::tick() {
-    if (!m_manager) return;
     const PlaylistSettings settings = m_manager->current(m_screen).settings;
     const Wallpaper current = m_manager->currentWallpaper(m_screen);
     if (settings.videoSequence && current.kind() == WallpaperKind::Video) {
@@ -172,7 +168,6 @@ void PlaylistRotator::tick() {
 }
 
 void PlaylistRotator::advanceNow() {
-    if (!m_manager) return;
     const Playlist playlist = m_manager->current(m_screen);
     const Wallpaper next = pickNext(playlist);
     if (!next.isValid()) return;
@@ -180,7 +175,7 @@ void PlaylistRotator::advanceNow() {
 }
 
 Wallpaper PlaylistRotator::pickNext(const Playlist& playlist) const {
-    if (!m_manager || playlist.items.isEmpty()) return {};
+    if (playlist.items.isEmpty()) return {};
     const QVector<Wallpaper> library = m_manager->resolvedItems(m_screen);
     // resolvedItems already filters missing IDs but preserves playlist order via manager helper.
     QHash<QString, Wallpaper> byID;
@@ -229,7 +224,7 @@ Wallpaper PlaylistRotator::pickNext(const Playlist& playlist) const {
 }
 
 void PlaylistRotator::apply(const Wallpaper& wallpaper) {
-    if (!m_manager || !wallpaper.isValid()) return;
+    if (!wallpaper.isValid()) return;
     m_lastPlayedID = wallpaper.id();
     m_manager->setCurrentWallpaper(m_screen, wallpaper);
     const PlaylistSettings settings = m_manager->current(m_screen).settings;

@@ -2,12 +2,17 @@
 
 #include "Services/FavoritesManager.h"
 #include "Services/GlobalSettingsService.h"
+#include "Services/PlaybackController.h"
 #include "Services/PlaylistManager.h"
+#include "Services/PlaylistModels.h"
 #include "Services/RendererController.h"
 #include "Services/SteamCMDManager.h"
+#include "Services/SteamSetupViewModel.h"
 #include "Services/SteamWebAPI.h"
+#include "Services/TrustedWallpaperService.h"
 #include "Services/WallpaperLibrary.h"
 #include "Services/WallpaperRuntimeStore.h"
+#include "Services/WorkshopModels.h"
 #include "Services/WorkshopViewModel.h"
 
 #include <QObject>
@@ -20,8 +25,40 @@
 
 namespace Mirage {
 
+// 序列化辅助（定义在 MirageControllerMapping.cpp）：
+// MirageController.cpp 的 downloadQueue()/updatePlaylistSettings()/workshopItem()
+// 与 Mapping 的序列化成员函数共享同一份实现。
+QString downloadStateKey(DownloadStateKind kind);
+bool isActiveDownload(DownloadStateKind kind);
+void updatePlaylistSettingsFromMap(PlaylistSettings& settings, const QVariantMap& values);
+// 发现页区块定义：集合 + 展示标题（inline 定义使所有使用方共享同一数组）。
+struct DiscoverSectionDefinition {
+    DiscoverCollection collection;
+    const char* title;
+};
+inline const DiscoverSectionDefinition kDiscoverSections[] = {
+    {DiscoverCollection::Trending, "本周最热"},
+    {DiscoverCollection::MostUpvoted, "最多投票"},
+    {DiscoverCollection::MostRecent, "最新上架"},
+    {DiscoverCollection::MostSubscribed, "订阅最多"},
+    {DiscoverCollection::TopRated, "评分最高"},
+    {DiscoverCollection::LastUpdated, "最近更新"},
+    {DiscoverCollection::PlaytimeTrend, "本周播放时长最多"},
+    {DiscoverCollection::AveragePlaytimeTrend, "本周平均播放时长最长"},
+    {DiscoverCollection::SessionsTrend, "本周播放次数最多"},
+    {DiscoverCollection::TotalPlaytime, "总播放时长最多"},
+    {DiscoverCollection::LifetimeAveragePlaytime, "终身平均播放时长"},
+    {DiscoverCollection::LifetimeSessions, "总播放次数最多"},
+    {DiscoverCollection::Anime, "动漫精选"},
+    {DiscoverCollection::Nature, "自然风光"},
+    {DiscoverCollection::Abstract, "抽象艺术"},
+    {DiscoverCollection::Landscape, "风景壁纸"},
+};
+
 class MirageController : public QObject {
     Q_OBJECT
+
+    friend class PlaybackController;
 
     Q_PROPERTY(QVariantList wallpapers READ wallpapers NOTIFY wallpapersChanged)
     Q_PROPERTY(QVariantMap selectedWallpaper READ selectedWallpaper NOTIFY selectedWallpaperChanged)
@@ -37,7 +74,6 @@ class MirageController : public QObject {
     Q_PROPERTY(int workshopPageCount READ workshopPageCount NOTIFY workshopStateChanged)
     Q_PROPERTY(int activeDownloadCount READ activeDownloadCount NOTIFY workshopStateChanged)
     Q_PROPERTY(QVariantList downloadQueue READ downloadQueue NOTIFY workshopStateChanged)
-    Q_PROPERTY(bool hasDownloadHistory READ hasDownloadHistory NOTIFY workshopStateChanged)
     Q_PROPERTY(bool steamReady READ steamReady NOTIFY workshopStateChanged)
     Q_PROPERTY(QString steamSetupSummary READ steamSetupSummary NOTIFY workshopStateChanged)
     Q_PROPERTY(QString steamCMDPath READ steamCMDPath NOTIFY steamChanged)
@@ -51,7 +87,6 @@ class MirageController : public QObject {
     Q_PROPERTY(QStringList steamLoginLog READ steamLoginLog NOTIFY steamChanged)
     Q_PROPERTY(QString steamGuardType READ steamGuardType NOTIFY steamChanged)
     Q_PROPERTY(bool steamSessionReusable READ steamSessionReusable NOTIFY steamChanged)
-    Q_PROPERTY(QStringList steamDiagnosticEvents READ steamDiagnosticEvents NOTIFY steamChanged)
     Q_PROPERTY(bool firstLaunch READ firstLaunch NOTIFY firstLaunchChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
@@ -83,7 +118,6 @@ public:
     int workshopPageCount() const;
     int activeDownloadCount() const;
     QVariantList downloadQueue() const;
-    bool hasDownloadHistory() const;
     bool steamReady() const;
     QString steamSetupSummary() const;
     QString steamCMDPath() const;
@@ -97,7 +131,6 @@ public:
     QStringList steamLoginLog() const;
     QString steamGuardType() const;
     bool steamSessionReusable() const;
-    QStringList steamDiagnosticEvents() const;
     bool firstLaunch() const;
     QString statusMessage() const;
     QVariantMap settings() const;
@@ -130,12 +163,10 @@ public:
     Q_INVOKABLE void clearPlaylist();
     Q_INVOKABLE void trimPlaylistItems(int limit);
     Q_INVOKABLE void movePlaylistItem(int source, int destination);
-    Q_INVOKABLE void removeSelectedPlaylistItem(const QString& id);
     Q_INVOKABLE void savePlaylist(const QString& name);
     Q_INVOKABLE void loadSavedPlaylist(const QString& id);
     Q_INVOKABLE void deleteSavedPlaylist(const QString& id);
     Q_INVOKABLE void updatePlaylistSettings(const QVariantMap& values);
-    Q_INVOKABLE void resetPlaylistSettings();
     Q_INVOKABLE void setSelectedProperty(const QString& key, const QVariant& value);
     Q_INVOKABLE void resetSelectedProperties();
     Q_INVOKABLE void completeFirstLaunch(bool hideUntilNextUpdate);
@@ -170,11 +201,7 @@ public:
     Q_INVOKABLE void copySteamLoginLog();
     Q_INVOKABLE void revealWorkshopDownload(const QString& id);
     Q_INVOKABLE void pauseWallpapers();
-    Q_INVOKABLE void resumeWallpapers();
     Q_INVOKABLE void muteWallpapers();
-    Q_INVOKABLE void unmuteWallpapers();
-    Q_INVOKABLE void reloadCurrentWallpaper();
-    Q_INVOKABLE void resetTrustedWallpapers();
     Q_INVOKABLE void previewFps(int fps);
     Q_INVOKABLE bool applySettings(const QVariantMap& values);
 
@@ -208,11 +235,7 @@ private:
     QVariantMap workshopItemMap(const WorkshopItem& item) const;
     QVariantMap playlistMap(const Playlist& playlist) const;
     QVariantMap propertyMap(const QString& key, const ProjectProperty& property) const;
-    RenderOptions renderOptionsFor(const Wallpaper& wallpaper) const;
-    void apply(const Wallpaper& wallpaper, bool allScreens);
-    void restoreStartupPlayback();
     void setStatusMessage(const QString& message);
-    void clearWallpaperTrust(const QString& id);
 
     GlobalSettingsService m_settings;
     FavoritesManager m_favorites;
@@ -223,18 +246,14 @@ private:
     RendererController m_renderer;
     WallpaperRuntimeStore m_runtimeStore;
     PlaylistManager m_playlist;
+    TrustedWallpaperService m_trusted;
+    SteamSetupViewModel m_steamSetup;
+    PlaybackController m_playback;
     QVector<Wallpaper> m_allWallpapers;
-    QSet<QString> m_sessionTrustedWallpapers;
     QString m_selectedWallpaperId;
     int m_playlistScreen = 0;
     bool m_firstLaunch = true;
     QString m_statusMessage;
-    QString m_steamInstallState = QStringLiteral("detecting");
-    double m_steamInstallProgress = 0.0;
-    QString m_steamInstallMessage;
-    QString m_steamLoginState = QStringLiteral("idle");
-    QString m_steamLoginMessage;
-    QStringList m_steamLoginLog;
 };
 
 } // namespace Mirage

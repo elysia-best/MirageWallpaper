@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
+import "../../../MirageBridge.js" as MirageBridge
 
 ColumnLayout {
     id: root
@@ -19,28 +20,19 @@ ColumnLayout {
     spacing: 12
 
     function value(name, fallback) {
-        var result = mirage[name];
-        return result === undefined || result === null ? fallback : result;
+        return MirageBridge.value(mirage, name, fallback);
     }
 
     function field(name, fallback) {
-        var result = root.item ? root.item[name] : undefined;
-        return result === undefined || result === null ? fallback : result;
+        return MirageBridge.field(root.item, name, fallback);
     }
 
     function invoke(name) {
-        var fn = mirage[name];
-        if (typeof fn !== "function")
-            return false;
-        fn.apply(mirage, Array.prototype.slice.call(arguments, 1));
-        return true;
+        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
     }
 
     function progressValue() {
-        var number = root.progress;
-        if (number > 1)
-            number /= 100;
-        return Math.max(0, Math.min(1, number));
+        return MirageBridge.progressValue(root.progress);
     }
 
     function workshopUrl() {

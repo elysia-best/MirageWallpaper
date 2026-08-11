@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
+import "../../../MirageBridge.js" as MirageBridge
 
 FluPopup {
     id: popup
@@ -22,8 +23,7 @@ FluPopup {
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     function value(name, fallback) {
-        var result = mirage[name];
-        return result === undefined || result === null ? fallback : result;
+        return MirageBridge.value(mirage, name, fallback);
     }
 
     function taskValue(task, name, fallback) {
@@ -49,11 +49,7 @@ FluPopup {
     }
 
     function invoke(name) {
-        var fn = mirage[name];
-        if (typeof fn !== "function")
-            return false;
-        fn.apply(mirage, Array.prototype.slice.call(arguments, 1));
-        return true;
+        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
     }
 
     function openFor(item) {

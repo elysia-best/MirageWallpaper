@@ -179,7 +179,6 @@ void PlaylistManager::deleteSaved(const QUuid& id) {
 
 QVector<Wallpaper> PlaylistManager::resolvedItems(int screen) const {
     QVector<Wallpaper> resolved;
-    if (!m_library) return resolved;
     const Playlist playlist = current(screen);
     resolved.reserve(playlist.items.size());
     for (const PlaylistItem& item : playlist.items) {
@@ -190,7 +189,7 @@ QVector<Wallpaper> PlaylistManager::resolvedItems(int screen) const {
 }
 
 Wallpaper PlaylistManager::resolveWallpaper(const QString& id) const {
-    if (!m_library || id.isEmpty()) return {};
+    if (id.isEmpty()) return {};
     for (const Wallpaper& wallpaper : m_library->loadAll()) {
         if (wallpaper.id() == id) return wallpaper;
     }

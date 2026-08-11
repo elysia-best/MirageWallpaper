@@ -56,7 +56,6 @@ MirageDialogWindow {
             ProjectFeedbackBanner {
                 Layout.fillWidth: true
                 showsActions: false
-                onCopyRequested: dialog.host.copyGroupNumber()
             }
             FluToggleSwitch {
                 text: "在下次更新前不再显示"
