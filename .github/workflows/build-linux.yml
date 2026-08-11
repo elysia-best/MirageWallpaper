@@ -14,7 +14,7 @@ permissions:
 jobs:
   build:
     name: Build Linux AppImage
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       CC: clang-21
@@ -36,7 +36,6 @@ jobs:
             desktop-file-utils \
             build-essential \
             file \
-            glslang-dev \
             glslang-tools \
             libasound2-dev \
             libass-dev \
@@ -48,43 +47,74 @@ jobs:
             libglvnd-dev \
             liblz4-dev \
             libpipewire-0.3-dev \
+            libplacebo-dev \
             libpulse-dev \
             libsdl2-dev \
+            libvulkan-dev \
             libx11-dev \
             nasm \
             ninja-build \
             patchelf \
-            pkg-config \
-            python3-jinja2 \
-            python3-pip
-      - name: Install LunarG Vulkan SDK 1.4.313
-        shell: bash
-        run: |
-          set -euo pipefail
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
-            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-1.4.313-jammy.list \
-            https://packages.lunarg.com/vulkan/1.4.313/lunarg-vulkan-1.4.313-jammy.list
-          sudo apt update
-          sudo apt install -y --no-install-recommends vulkan-sdk
-          pkg-config --modversion vulkan
-          pkg-config --atleast-version=1.3.277 vulkan
+            pkg-config
 
       - name: Install meson
         shell: bash
         run: |
           set -euo pipefail
-          # mpv 0.41 的 meson.build 要求 meson >= 1.3.0；ubuntu-22.04 的 apt
-          # meson 只有 0.61，且 ninja 已由 apt 提供（1.11，满足 meson 1.3 的
-          # ninja >= 1.8.2 要求），因此从 pip 安装新版 meson。
-          sudo python3 -m pip install --quiet 'meson>=1.3'
+          # mpv 0.41 的 meson.build 要求 meson >= 1.3.0；ubuntu-24.04 的 apt
+          # meson 是 1.3.2（22.04 只有 0.61 才需要从 pip 装），ninja 由依赖
+          # 关系自动带上。
+          sudo apt-get install -y --no-install-recommends meson
           version="$(meson --version)"
           test "$(printf '%s\n' '1.3' "$version" | sort -V | head -n1)" = "1.3"
+
+      - name: Install Vulkan SDK 1.4.357.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          # mpv 0.41 的 -Dvulkan=enabled 与 SceneRenderer 需要新版 Vulkan 头
+          # 文件（含 VK_KHR_surface_maintenance_1 等，v1.4.321+ 才有），
+          # Ubuntu 24.04 的 apt libvulkan-dev 头文件（1.3.275）不含，而
+          # LunarG 官方 SDK 1.4.357.1 完整提供头文件、vulkan loader、
+          # vulkan.pc 与 registry。用官方 tarball 安装，只使用 x86_64
+          # 编译组件，不装验证层/工具等。
+          version="1.4.357.1"
+          archive="$RUNNER_TEMP/vulkansdk-${version}.tar.xz"
+          # tarball 顶层目录是 ${version}/（无 vulkansdk/ 前缀）。
+          sdk_root="$RUNNER_TEMP/${version}/x86_64"
+          curl --fail --location --retry 3 --silent --show-error \
+            "https://sdk.lunarg.com/sdk/download/${version}/linux/vulkansdk-linux-x86_64-${version}.tar.xz" \
+            -o "$archive"
+          printf '%s  %s\n' \
+            4b41e3b30e8aedaa5dac7c136561ab463eb316a25a54e2c6245f2c299ea1fb85 \
+            "$archive" | sha256sum -c -
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+
+          test -f "$sdk_root/include/vulkan/vulkan_core.h"
+          test -f "$sdk_root/lib/VulkanLoader/lib/libvulkan.so.1"
+          # mpv 的 -Dvulkan=enabled 需要的 KHR 符号必须存在（1.4.321+ 才有）。
+          grep -q 'VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME' \
+            "$sdk_root/include/vulkan/vulkan_core.h"
+
+          # SDK 的 vulkan.pc 位于 loader 的 pkgconfig 目录（相对路径指向
+          # SDK 根）；加入 PKG_CONFIG_PATH 供 mpv（dependency('vulkan')
+          # >= 1.3.238）与版本断言使用。
+          export PKG_CONFIG_PATH="$sdk_root/lib/VulkanLoader/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          test "$(pkg-config --modversion vulkan)" = "1.4.357"
+          pkg-config --atleast-version=1.3.277 vulkan
+
+          {
+            printf 'VULKAN_SDK=%s\n' "$sdk_root"
+            printf 'PKG_CONFIG_PATH=%s\n' "$PKG_CONFIG_PATH"
+          } >> "$GITHUB_ENV"
 
       - name: Build FFmpeg 7.1.1
         shell: bash
         run: |
           set -euo pipefail
+          # 在 Vulkan SDK 步骤之后运行：--enable-vulkan 需要 vulkan 头文件，
+          # CPATH 指向官方 SDK 1.4.357.1 的头（apt libvulkan-dev 只有 1.3.275）。
+          export CPATH="$VULKAN_SDK/include${CPATH:+:$CPATH}"
           version="7.1.1"
           prefix="$RUNNER_TEMP/ffmpeg"
           archive="$RUNNER_TEMP/ffmpeg-${version}.tar.xz"
@@ -123,69 +153,18 @@ jobs:
             printf 'LD_LIBRARY_PATH=%s/lib:%s\n' "$prefix" "${LD_LIBRARY_PATH:-}"
           } >> "$GITHUB_ENV"
 
-      - name: Build libplacebo 7.360.1
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 此时 clang-21 尚未安装（Select Clang 步骤在其后），meson 会读取
-          # job 级 CC/CXX=clang-21；与 FFmpeg 步骤一致，这里显式用 gcc。
-          export CC=gcc CXX=g++
-          # mpv 0.41 无条件硬依赖 libplacebo>=6.338.2（meson 无禁用开关），而
-          # ubuntu-22.04 的 apt libplacebo 只有 4.208.0，因此从源码构建。
-          # 仅启用 vulkan 后端：libplacebo 的 opengl 后端依赖 3rdparty/glad
-          # submodule（GitHub tarball 不含，会导致构建失败），且 mpv 的 GL
-          # render API 走 mpv 自带的 ra_gl（video/out/opengl/ra_gl.c），不经
-          # libplacebo 的 opengl 后端，故 -Dopengl=disabled 既满足 mpv 需求
-          # 又避开了 glad。glslang 用于编译内置 shader，由 apt glslang-dev
-          # 提供库；glsl 预处理脚本需要 python3-jinja2（apt）。
-          version="7.360.1"
-          prefix="$RUNNER_TEMP/libplacebo"
-          archive="$RUNNER_TEMP/libplacebo-${version}.tar.gz"
-          source_dir="$RUNNER_TEMP/libplacebo-${version}"
-
-          curl --fail --location --retry 3 --silent --show-error \
-            "https://github.com/haasn/libplacebo/archive/refs/tags/v${version}.tar.gz" \
-            -o "$archive"
-          printf '%s  %s\n' \
-            d05fdf90bea2f629eaa2d115e909fd356388ac639e54f77b87a018a6d76224bd \
-            "$archive" | sha256sum -c -
-          tar -xzf "$archive" -C "$RUNNER_TEMP"
-
-          cd "$source_dir"
-          meson setup build \
-            --prefix="$prefix" \
-            -Dvulkan=enabled \
-            -Dopengl=disabled \
-            -Dglslang=enabled \
-            -Dshaderc=disabled \
-            -Dlcms=disabled \
-            -Ddovi=disabled \
-            -Dlibdovi=disabled \
-            -Ddemos=false \
-            -Dtests=false
-          meson compile -C build -j"$(nproc)"
-          ninja -C build install
-
-          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          test "$(pkg-config --modversion libplacebo)" = "7.360.1"
-          # mpv 的 -Dvulkan=enabled 会检查 libplacebo 的 pl_has_vulkan=1。
-          grep -q '^pl_has_vulkan=1$' "$prefix/lib/pkgconfig/libplacebo.pc"
-
-          {
-            printf 'LIBPLACEBO_PREFIX=%s\n' "$prefix"
-            printf 'PKG_CONFIG_PATH=%s\n' "$PKG_CONFIG_PATH"
-            printf 'LD_LIBRARY_PATH=%s/lib:%s\n' "$prefix" "${LD_LIBRARY_PATH:-}"
-          } >> "$GITHUB_ENV"
-
       - name: Build mpv 0.41.0
         shell: bash
         run: |
           set -euo pipefail
-          # 同 libplacebo 步骤：此时 clang-21 未安装，显式用 gcc 编译。
+          # 此时 clang-21 未安装，显式用 gcc 编译。
           export CC=gcc CXX=g++
-          # ubuntu-22.04 的 apt libmpv 是 1.4.x（pkg-config mpv<2.0），不满足
-          # VideoWallpaper 的 mpv>=2.0（libmpv API 版本），因此从源码构建与
-          # 本地开发环境一致的 mpv 0.41.0。要点：
+          # 优先引用官方 SDK 头文件（apt 的 1.3.275 头文件缺 KHR 符号）。
+          export CPATH="$VULKAN_SDK/include${CPATH:+:$CPATH}"
+          # libplacebo 由 apt libplacebo-dev 6.338.2 提供（满足 mpv 0.41 的
+          # >=6.338.2，且 pl_has_vulkan=1）；FFmpeg 为自编译。24.04 的 apt
+          # libmpv 是 0.37.0（libmpv API 2.1），虽满足 mpv>=2.0 但版本旧，
+          # 因此从源码构建与本地开发环境一致的 mpv 0.41.0。要点：
           #   -Dlibmpv=true 时 mpv.pc 的 Version 是 libmpv API 版本 2.5.0；
           #   -Dcplayer=false 跳过 mpv 可执行文件，只产 libmpv 共享库；
           #   VideoWallpaper 用 MPV_RENDER_API_TYPE_OPENGL（EGL surfaceless），
@@ -205,12 +184,16 @@ jobs:
             "$archive" | sha256sum -c -
           tar -xzf "$archive" -C "$RUNNER_TEMP"
 
-          export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig:$LIBPLACEBO_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-          export LD_LIBRARY_PATH="$FFMPEG_PREFIX/lib:$LIBPLACEBO_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export LD_LIBRARY_PATH="$FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
           cd "$source_dir"
+          # Debian/Ubuntu 的 apt meson 默认 libdir 是 lib/<multiarch>
+          # （如 lib/x86_64-linux-gnu），显式 --libdir=lib 保证 mpv.pc 与
+          # libmpv.so 落在 $prefix/lib 下，与后续 PKG_CONFIG_PATH/打包路径一致。
           meson setup build \
             --prefix="$prefix" \
+            --libdir=lib \
             -Dlibmpv=true \
             -Dcplayer=false \
             -Dgl=enabled \
@@ -317,15 +300,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 自编译的 FFmpeg、libplacebo、mpv 都装在 RUNNER_TEMP 下各自的
-          # prefix，pkg-config 与动态链接都依赖显式路径（不在系统默认搜索
-          # 路径内）。mpv.pc 的 Version 为 libmpv API 版本 2.5.0。
-          export PKG_CONFIG_PATH="$MPV_PREFIX/lib/pkgconfig:$LIBPLACEBO_PREFIX/lib/pkgconfig:$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-          export LD_LIBRARY_PATH="$MPV_PREFIX/lib:$LIBPLACEBO_PREFIX/lib:$FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          test "$(pkg-config --variable=prefix libavformat)" = "$FFMPEG_PREFIX"
+          # install-qt-action 会覆盖 GITHUB_ENV 里的 PKG_CONFIG_PATH（只留
+          # Python/Qt 路径），这里显式重建：自编译的 mpv/FFmpeg + 官方 SDK
+          # 的 vulkan.pc 都在自定义前缀下，必须手动加回。
+          export PKG_CONFIG_PATH="$MPV_PREFIX/lib/pkgconfig:$FFMPEG_PREFIX/lib/pkgconfig:$VULKAN_SDK/lib/VulkanLoader/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export LD_LIBRARY_PATH="$MPV_PREFIX/lib:$FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          ffmpeg_pc_prefix="$(pkg-config --variable=prefix libavformat)"
+          echo "libavformat pkg-config prefix: '${ffmpeg_pc_prefix:-<not-found>}' (expect '${FFMPEG_PREFIX}')"
+          test "$ffmpeg_pc_prefix" = "$FFMPEG_PREFIX"
           pkg-config --atleast-version=61 libavformat
           pkg-config --atleast-version=2.0 mpv
-          test "$(pkg-config --modversion mpv)" = "2.5.0"
+          mpv_pc_version="$(pkg-config --modversion mpv)"
+          echo "mpv pkg-config version: '${mpv_pc_version:-<not-found>}' (expect '2.5.0')"
+          test "$mpv_pc_version" = "2.5.0"
+          vulkan_pc_version="$(pkg-config --modversion vulkan)"
+          echo "vulkan pkg-config version: '${vulkan_pc_version:-<not-found>}' (expect '1.4.357')"
+          pkg-config --atleast-version=1.3.277 vulkan
           pkg-config --modversion libavformat libavcodec libavutil libswscale libswresample
           JOBS="$(nproc)" ./scripts/build_all_linux.sh renderers
 
@@ -356,11 +346,11 @@ jobs:
             "$appdir/usr/bin/VideoWallpaper"
           cp -a "$FFMPEG_PREFIX"/lib/libav*.so* "$appdir/usr/bin/"
           cp -a "$FFMPEG_PREFIX"/lib/libsw*.so* "$appdir/usr/bin/"
-          # libmpv 及其硬依赖 libplacebo（自编译）和 libass（apt 系统库）随
+          # libmpv（自编译）及其硬依赖 libplacebo、libass（apt 系统库）随
           # 渲染器一起打包进 AppDir/usr/bin：VideoWallpaper 的 RUNPATH 会被
           # patchelf 改为 $ORIGIN，ld 从同一目录解析 libmpv 及其 DT_NEEDED。
           cp -a "$MPV_PREFIX"/lib/libmpv.so* "$appdir/usr/bin/"
-          cp -a "$LIBPLACEBO_PREFIX"/lib/libplacebo.so* "$appdir/usr/bin/"
+          cp -a /usr/lib/x86_64-linux-gnu/libplacebo.so* "$appdir/usr/bin/"
           cp -a /usr/lib/x86_64-linux-gnu/libass.so* "$appdir/usr/bin/"
           cp -a assets "$appdir/usr/bin/assets"
 
@@ -376,7 +366,7 @@ jobs:
           test -x "$appdir/usr/bin/VideoWallpaper"
           test -d "$appdir/usr/bin/assets"
           test -f "$appdir/usr/bin/libmpv.so.2"
-          test -f "$appdir/usr/bin/libplacebo.so.360"
+          test -f "$appdir/usr/bin/libplacebo.so.338"
           test -f "$appdir/usr/bin/libass.so.9"
       - name: Download AppImage tooling
         shell: bash
