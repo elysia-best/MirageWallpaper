@@ -59,13 +59,13 @@ public:
     [[nodiscard]] static VRVideoEngineConfig defaultConfig() noexcept;
 
     [[nodiscard]] bool openWallpaper(const VRVideoManifest& manifest,
-                                     std::string* error = nullptr);
+                                     std::string* error = nullptr) const;
 
-    void play();
-    void pause();
-    void setVolume(float volume);
-    void setMuted(bool muted);
-    void setFillMode(VRVideoFillMode fillMode);
+    void play() const;
+    void pause() const;
+    void setVolume(float volume) const;
+    void setMuted(bool muted) const;
+    void setFillMode(VRVideoFillMode fillMode) const;
 
     [[nodiscard]] bool loaded() const noexcept;
     [[nodiscard]] float volume() const noexcept;
