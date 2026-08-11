@@ -100,6 +100,7 @@ add_subdirectory(Sources/VideoRenderer)
 
 option(VIDEORENDERER_BUILD_VIEWER    "Build the standalone VideoViewer window" ON)
 option(VIDEORENDERER_BUILD_WALLPAPER "Build the VideoWallpaper desktop host" ON)
+option(VIDEORENDERER_BUILD_TEST "Build the tests" OFF)
 
 if(VIDEORENDERER_BUILD_VIEWER)
     add_subdirectory(Tools/VideoViewer)
@@ -108,7 +109,9 @@ if(VIDEORENDERER_BUILD_WALLPAPER)
     add_subdirectory(Tools/VideoWallpaper)
 endif()
 
+if(VIDEORENDERER_BUILD_TEST)
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(Tests)
+endif()
 endif()
