@@ -9,6 +9,10 @@
 #include <assert.h>
 #include <cmath>
 
+/*
+ * Unit tests for MiragePointerForwarder event mapping.
+ */
+
 using Event = MiragePointerForwarder::Event;
 
 static bool close_enough(float left, float right) {

@@ -11,6 +11,10 @@
 #include <functional>
 #include <utility>
 
+/*
+ * Converts Qt pointer events into mirage-display pointer messages.
+ */
+
 /* Window-independent pointer state used by the Plasma wallpaper item. */
 class MiragePointerForwarder final {
 public:

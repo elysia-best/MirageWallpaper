@@ -25,6 +25,15 @@
 #include <cstdint>
 #include <qqml.h>
 
+/*
+ * Plasma Qt Quick display item that owns the mirage-display consumer session,
+ * imports DMA-BUF frames through EGL or Vulkan, and forwards pointer/window
+ * state back to the renderer.
+ *
+ * Rendering happens on the scene-graph render thread while protocol events run
+ * on the Qt main thread; the deferred-unbind path bridges the two.
+ */
+
 class QEvent;
 class QSGNode;
 class QSGSimpleTextureNode;

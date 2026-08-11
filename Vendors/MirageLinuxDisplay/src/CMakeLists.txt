@@ -1,16 +1,16 @@
 mirage_add_library(mirage_display
     SOURCES
-        codec.c
-        protocol.c
-        display.c
-        producer.c
-        broker.c
-        sync.c
-        common/drm.c
-        common/util.c
-        common/net.c
-        common/outbox.c
-        common/handshake.c
+        codec.cpp
+        protocol.cpp
+        display.cpp
+        producer.cpp
+        broker.cpp
+        sync.cpp
+        common/drm.cpp
+        common/util.cpp
+        common/net.cpp
+        common/outbox.cpp
+        common/handshake.cpp
     HEADERS
         ${PROJECT_SOURCE_DIR}/include/mirage_display.h
         ${PROJECT_SOURCE_DIR}/include/mirage_display_producer.h

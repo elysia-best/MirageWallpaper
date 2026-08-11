@@ -1,9 +1,9 @@
 mirage_add_library(mirage_display_vulkan
     SOURCES
-        vulkan_import.c
-        vulkan_export.c
-        vulkan_blit.c
-        vulkan_util.c
+        vulkan_import.cpp
+        vulkan_export.cpp
+        vulkan_blit.cpp
+        vulkan_util.cpp
     HEADERS
         ${PROJECT_SOURCE_DIR}/include/mirage_display_vulkan.h
         ${PROJECT_SOURCE_DIR}/include/mirage_display_vulkan_blit.h

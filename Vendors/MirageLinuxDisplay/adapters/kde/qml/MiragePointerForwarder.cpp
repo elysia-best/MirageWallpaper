@@ -3,6 +3,12 @@
 #include <algorithm>
 #include <cmath>
 
+/*
+ * Implementation of the Qt pointer forwarder: maps Qt mouse/wheel events to
+ * protocol pointer motion/button/axis messages with monotonic microsecond
+ * timestamps and Linux input modifier bits.
+ */
+
 namespace {
 
 constexpr uint32_t BtnLeft = 0x110u;
@@ -26,6 +32,11 @@ void MiragePointerForwarder::setGeometry(const QRectF& bounds, int physicalWidth
     m_physicalHeight = std::max(physicalHeight, 1);
 }
 
+
+/*
+ * Maps Qt mouse buttons onto the protocol's Linux BTN_* codes; unmapped
+ * buttons report 0.
+ */
 uint32_t MiragePointerForwarder::linuxButton(Qt::MouseButton button) {
     switch (button) {
     case Qt::LeftButton: return BtnLeft;
@@ -47,6 +58,11 @@ uint32_t MiragePointerForwarder::linuxModifiers(Qt::KeyboardModifiers modifiers)
     return result;
 }
 
+
+/*
+ * Maps a local item position to output physical pixels (top-left origin),
+ * clamping to the bounds during drags so coordinates never leave the surface.
+ */
 bool MiragePointerForwarder::mapPosition(const QPointF& localPosition, float& x, float& y,
                                          bool clampToBounds, bool* insideBounds) const {
     if (insideBounds != nullptr) *insideBounds = false;
@@ -76,6 +92,11 @@ void MiragePointerForwarder::emitEvent(const Event& event) {
     if (m_sink) m_sink(event);
 }
 
+
+/*
+ * Synthesizes a protocol enter event the first time the pointer is seen,
+ * keeping enter/leave balanced with the renderer's pointer state.
+ */
 void MiragePointerForwarder::ensureEnter(float x, float y, uint64_t timestamp) {
     if (m_pointerInside) return;
     m_pointerInside = true;
@@ -87,6 +108,11 @@ void MiragePointerForwarder::ensureEnter(float x, float y, uint64_t timestamp) {
     emitEvent(event);
 }
 
+
+/*
+ * Turns a Qt mouse-move into motion (or leave when the pointer exits without
+ * a drag button held) with Linux modifier bits and a monotonic timestamp.
+ */
 bool MiragePointerForwarder::handleMove(const QPointF& localPosition,
                                         Qt::KeyboardModifiers modifiers,
                                         uint64_t timestamp) {
