@@ -71,7 +71,7 @@ std::shared_ptr<VRVideoManifest> VRVideoManifest::loadFromDirectory(const std::s
     fs::path directory;
     try {
         directory = fs::canonical(fs::path(dir)); // This means standardised path.
-    } catch (const fs::filesystem_error &e) {
+    } catch ([[maybe_unused]] const fs::filesystem_error &e) {
         throw VideoRendererManifestError(VRManifestErrorOpenFailed,
                                          std::format("wallpaper directory not found: {}", directory.c_str()));
     }

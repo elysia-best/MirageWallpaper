@@ -24,7 +24,7 @@ public:
     [[nodiscard]] const std::string& title() const noexcept { return m_title; }
     [[nodiscard]] const std::string& preview() const noexcept { return m_preview; }
     [[nodiscard]] const std::string& videoFile() const noexcept { return m_videoFile; }
-    [[nodiscard]] const std::string& videoPath() const noexcept { return m_videoPath; }
+    [[nodiscard]] const std::filesystem::path& videoPath() const noexcept { return m_videoPath; }
     [[nodiscard]] const nlohmann::json& userProperties() const noexcept {
         return m_userProperties;
     }
@@ -39,6 +39,6 @@ private:
     std::string m_title;
     std::string m_preview;
     std::string m_videoFile;
-    std::string m_videoPath;
+    std::filesystem::path m_videoPath;
     nlohmann::json m_userProperties;
 };

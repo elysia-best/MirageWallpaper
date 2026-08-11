@@ -60,7 +60,7 @@ public:
             setError(error, "video engine is already open");
             return false;
         }
-        const std::string path = manifest.videoPath();
+        const auto& path = manifest.videoPath();
         if (path.empty()) {
             setError(error, "video manifest has no local file");
             return false;
@@ -460,15 +460,15 @@ VRVideoEngineConfig VRVideoRendererEngine::defaultConfig() noexcept {
     return VRDefaultVideoEngineConfig();
 }
 
-bool VRVideoRendererEngine::openWallpaper(const VRVideoManifest& manifest, std::string* error) {
+bool VRVideoRendererEngine::openWallpaper(const VRVideoManifest& manifest, std::string* error) const {
     return m_impl->open(manifest, error);
 }
 
-void VRVideoRendererEngine::play() { m_impl->play(); }
-void VRVideoRendererEngine::pause() { m_impl->pause(); }
-void VRVideoRendererEngine::setVolume(float volume) { m_impl->setVolume(volume); }
-void VRVideoRendererEngine::setMuted(bool muted) { m_impl->setMuted(muted); }
-void VRVideoRendererEngine::setFillMode(VRVideoFillMode mode) { m_impl->setFillMode(mode); }
+void VRVideoRendererEngine::play() const { m_impl->play(); }
+void VRVideoRendererEngine::pause() const { m_impl->pause(); }
+void VRVideoRendererEngine::setVolume(float volume) const { m_impl->setVolume(volume); }
+void VRVideoRendererEngine::setMuted(bool muted) const { m_impl->setMuted(muted); }
+void VRVideoRendererEngine::setFillMode(VRVideoFillMode mode) const { m_impl->setFillMode(mode); }
 
 bool VRVideoRendererEngine::loaded() const noexcept { return m_impl->loaded(); }
 float VRVideoRendererEngine::volume() const noexcept { return m_impl->volume(); }
