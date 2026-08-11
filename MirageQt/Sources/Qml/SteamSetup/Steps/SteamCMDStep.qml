@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../../MirageBridge.js" as MirageBridge
 
 ColumnLayout {
     id: root
@@ -25,11 +26,7 @@ ColumnLayout {
     }
 
     function invoke(name) {
-        var fn = mirage[name];
-        if (typeof fn !== "function")
-            return false;
-        fn.apply(mirage, Array.prototype.slice.call(arguments, 1));
-        return true;
+        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
     }
 
     FluText {

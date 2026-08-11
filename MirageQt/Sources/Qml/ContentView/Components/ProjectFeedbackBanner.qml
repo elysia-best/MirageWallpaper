@@ -6,9 +6,15 @@ FluFrame {
     id: banner
     property bool showsActions: true
     property string groupNumber: "2160040437"
-    signal copyRequested
     Layout.fillWidth: true
     implicitHeight: bannerContent.implicitHeight + 16
+
+    TextEdit {
+        id: groupNumberClipboard
+        visible: false
+        text: banner.groupNumber
+        selectByMouse: false
+    }
 
     RowLayout {
         id: bannerContent
@@ -47,7 +53,10 @@ FluFrame {
         FluFilledButton {
             visible: banner.showsActions
             text: "复制群号"
-            onClicked: banner.copyRequested()
+            onClicked: {
+                groupNumberClipboard.selectAll();
+                groupNumberClipboard.copy();
+            }
         }
     }
 }

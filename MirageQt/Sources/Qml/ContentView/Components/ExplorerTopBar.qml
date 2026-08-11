@@ -27,15 +27,8 @@ RowLayout {
         iconSource: FluentIcons.Search
         text: topBar.searchText
         onTextChanged: {
-            topBar.searchText = text;
-            if (topBar.host) {
-                if (topBar.currentTab === 0)
-                    topBar.host.searchText = text;
-                if (topBar.currentTab === 2) {
-                    topBar.host.workshopSearchText = text;
-                    mirage.setWorkshopSearchText(text);
-                }
-            }
+            if (topBar.host)
+                topBar.host.searchText = text;
         }
     }
     FluFilledButton {
@@ -87,7 +80,9 @@ RowLayout {
     }
     FluComboBox {
         Layout.preferredWidth: 120
-        model: topBar.currentTab === 0 ? ["名称", "评分", "文件大小"] : ["热门趋势", "最新发布", "订阅最多", "评分最高", "最多投票", "最近更新"]
+        model: topBar.host ? topBar.host.installedSortOptions.map(function (option) {
+            return option.label;
+        }) : []
         onActivated: topBar.sortChanged(currentText)
     }
 }

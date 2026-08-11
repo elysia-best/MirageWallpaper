@@ -601,7 +601,7 @@ void WorkshopViewModel::refreshInstalledState() {
         m_installedStateRefreshPending = true;
         return;
     }
-    const QStringList sources = m_library ? m_library->sourceDirectories() : QStringList();
+    const QStringList sources = m_library->sourceDirectories();
     m_installedStateWatcher.setFuture(QtConcurrent::run(scanInstalledWorkshopState, sources));
 }
 

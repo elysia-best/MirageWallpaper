@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../../../MirageBridge.js" as MirageBridge
 
 Item {
     id: root
@@ -20,23 +21,15 @@ Item {
     height: implicitHeight
 
     function field(name, fallback) {
-        var result = root.itemData ? root.itemData[name] : undefined;
-        return result === undefined || result === null ? fallback : result;
+        return MirageBridge.field(root.itemData, name, fallback);
     }
 
     function invoke(name) {
-        var fn = mirage[name];
-        if (typeof fn !== "function")
-            return false;
-        fn.apply(mirage, Array.prototype.slice.call(arguments, 1));
-        return true;
+        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
     }
 
     function progressValue() {
-        var number = root.progress;
-        if (number > 1)
-            number /= 100;
-        return Math.max(0, Math.min(1, number));
+        return MirageBridge.progressValue(root.progress);
     }
 
     FluFrame {

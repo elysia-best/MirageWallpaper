@@ -56,8 +56,11 @@ add_library(MirageQtCore STATIC
     Sources/Services/LinuxSystemIntegration.h
     Sources/Services/MirageController.cpp
     Sources/Services/MirageController.h
+    Sources/Services/MirageControllerMapping.cpp
     Sources/Services/Paths.cpp
     Sources/Services/Paths.h
+    Sources/Services/PlaybackController.cpp
+    Sources/Services/PlaybackController.h
     Sources/Services/PlaylistModels.cpp
     Sources/Services/PlaylistModels.h
     Sources/Services/PlaylistManager.cpp
@@ -70,10 +73,16 @@ add_library(MirageQtCore STATIC
     Sources/Services/RendererController.h
     Sources/Services/SteamCMDManager.cpp
     Sources/Services/SteamCMDManager.h
+    Sources/Services/SteamCMDPtySession.cpp
+    Sources/Services/SteamCMDPtySession.h
+    Sources/Services/SteamSetupViewModel.cpp
+    Sources/Services/SteamSetupViewModel.h
     Sources/Services/SteamWebAPI.cpp
     Sources/Services/SteamWebAPI.h
     Sources/Services/ThumbnailGenerator.cpp
     Sources/Services/ThumbnailGenerator.h
+    Sources/Services/TrustedWallpaperService.cpp
+    Sources/Services/TrustedWallpaperService.h
     Sources/Services/WallpaperLibrary.cpp
     Sources/Services/WallpaperLibrary.h
     Sources/Services/WallpaperRuntimeStore.cpp

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../../../MirageBridge.js" as MirageBridge
 
 Item {
     id: root
@@ -19,16 +20,11 @@ Item {
     property string steamUsername: String(value("steamUsername", ""))
 
     function value(name, fallback) {
-        var result = mirage[name];
-        return result === undefined || result === null ? fallback : result;
+        return MirageBridge.value(mirage, name, fallback);
     }
 
     function invoke(name) {
-        var fn = mirage[name];
-        if (typeof fn !== "function")
-            return false;
-        fn.apply(mirage, Array.prototype.slice.call(arguments, 1));
-        return true;
+        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
     }
 
     ColumnLayout {
