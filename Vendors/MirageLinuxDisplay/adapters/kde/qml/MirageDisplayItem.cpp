@@ -26,11 +26,23 @@
 #include <QtCore/qnativeinterface.h>
 #include <QtQuick/qsgtexture_platform.h>
 #include <algorithm>
+#include <bit>
+#include <cerrno>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <time.h>
 #include <unistd.h>
+
+/*
+ * Implementation of MirageDisplayItem.
+ *
+ * The EGL/Vulkan import paths are selected per scene-graph backend.  Pool
+ * replacement crosses from the protocol event thread into the render thread via
+ * md_display_defer_unbind, and the event filter returns false so Plasma keeps
+ * desktop clicks, context menus, drag-and-drop, and wheel events.
+ */
 
 namespace {
 
@@ -45,6 +57,62 @@ constexpr uint32_t DrmFormatXrgb8888 = fourcc('X', 'R', '2', '4');
 constexpr uint32_t DrmFormatArgb8888 = fourcc('A', 'R', '2', '4');
 constexpr uint32_t DrmFormatXbgr8888 = fourcc('X', 'B', '2', '4');
 constexpr uint32_t DrmFormatAbgr8888 = fourcc('A', 'B', '2', '4');
+
+/* Formats a DRM fourcc as a printable four-character code ("XBGR"). */
+QString fourccString(uint32_t fourccValue) {
+    QByteArray bytes(4, Qt::Uninitialized);
+    for (int index = 0; index < 4; ++index) {
+        const char value = static_cast<char>((fourccValue >> (index * 8)) & 0xFFU);
+        bytes[index] = (value >= 0x20 && value < 0x7F) ? value : '.';
+    }
+    return QString::fromLatin1(bytes);
+}
+
+#ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
+/*
+ * Turns the importer's structured failure record into a one-line diagnostic
+ * for the KDE wallpaper overlay, e.g.:
+ *   image creation failed (VkResult=VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT), fourcc=XBGR modifier=0x0, buffer=0
+ * The stage phrase plus VkResult/errno pin down which Vulkan call rejected the
+ * pool, which is what the previous single generic message could not tell.
+ */
+QString describeVkImportFailure(const md_vk_import_error_t* error) {
+    if (error == nullptr) return QStringLiteral("no failure record");
+    QString description = QString::fromLatin1(md_vk_import_stage_string(error->stage));
+    if (error->vk_result != VK_SUCCESS) {
+        description += QStringLiteral(" (VkResult=%1)")
+                           .arg(QString::fromLatin1(md_vk_result_string(error->vk_result)));
+    } else if (error->sys_errno != 0) {
+        description += QStringLiteral(" (errno=%1: %2)")
+                           .arg(error->sys_errno)
+                           .arg(QString::fromUtf8(strerror(error->sys_errno)));
+    }
+    if (error->candidate_count >= 0) {
+        description += QStringLiteral(", memory candidates tried=%1")
+                           .arg(error->candidate_count);
+    }
+    description += QStringLiteral(", fourcc=%1 modifier=0x%2")
+                       .arg(fourccString(error->fourcc))
+                       .arg(static_cast<qulonglong>(error->modifier), 0, 16);
+    if (error->buffer_index != UINT32_MAX) {
+        description += QStringLiteral(", buffer=%1").arg(error->buffer_index);
+    }
+    if (error->plane_index != UINT32_MAX) {
+        description += QStringLiteral(", plane=%1").arg(error->plane_index);
+    }
+    if (error->stage == MD_VK_IMPORT_STAGE_MEMORY_PROPERTIES &&
+        error->vk_result == VK_ERROR_EXTENSION_NOT_PRESENT) {
+        // Defensive fallback: initializeVulkanRenderer() should already have
+        // intercepted this case, but a late EXTENSION_NOT_PRESENT still needs
+        // the actionable hint instead of a bare result code.
+        description += QStringLiteral(
+            " (VK_EXT_external_memory_dma_buf is not enabled on the scene-graph "
+            "device; enable it via QT_VULKAN_DEVICE_EXTENSIONS or use the "
+            "OpenGL render backend)");
+    }
+    return description;
+}
+#endif
 
 class FunctionJob final : public QRunnable {
 public:
@@ -65,6 +133,12 @@ uint32_t positiveU32(int value, uint32_t fallback) {
 
 } // namespace
 
+
+/*
+ * Sets up the reconnect/output-update timers, derives the default broker
+ * socket path from $XDG_RUNTIME_DIR, and wires the pointer forwarder sink so Qt
+ * pointer events reach the display session.
+ */
 MirageDisplayItem::MirageDisplayItem(QQuickItem* parent): QQuickItem(parent) {
     setFlag(ItemHasContents, true);
 
@@ -101,6 +175,14 @@ void MirageDisplayItem::componentComplete() {
     if (window()) handleWindowChanged(window());
 }
 
+
+/*
+ * Tracks the owning QQuickWindow: installs the pointer event filter, requests
+ * the Vulkan device extensions the importer needs before the scene graph
+ * initializes, and connects the scene-graph lifecycle signals (render-thread
+ * jobs are executed with DirectConnection because they must run on the render
+ * thread).
+ */
 void MirageDisplayItem::handleWindowChanged(QQuickWindow* quickWindow) {
     if (m_filteredWindow && m_filteredWindow != quickWindow) {
         m_filteredWindow->removeEventFilter(this);
@@ -148,6 +230,12 @@ void MirageDisplayItem::handleWindowChanged(QQuickWindow* quickWindow) {
     }
 }
 
+
+/*
+ * Selects the import backend from the Qt Quick graphics API once the scene
+ * graph is initialized, then starts the broker connection on the main thread.
+ * Called from the render thread via BeforeSynchronizingStage.
+ */
 void MirageDisplayItem::initializeRenderer() {
     if (m_rendererReady.load()) return;
     if (window() == nullptr || window()->rendererInterface() == nullptr) return;
@@ -172,6 +260,13 @@ void MirageDisplayItem::initializeRenderer() {
     QMetaObject::invokeMethod(this, &MirageDisplayItem::startConnection, Qt::QueuedConnection);
 }
 
+
+/*
+ * Creates the EGL importer from the current QOpenGLContext and resolves
+ * glEGLImageTargetTexture2DOES through the EGL loader (it is not an exported
+ * linkable symbol).  Fails fast with a diagnostic when the extension is
+ * missing.
+ */
 bool MirageDisplayItem::initializeOpenGLRenderer() {
     QOpenGLContext* context = QOpenGLContext::currentContext();
     if (context == nullptr) {
@@ -186,7 +281,6 @@ bool MirageDisplayItem::initializeOpenGLRenderer() {
 
     md_egl_context_t importerContext {
         .display = eglContext->display(),
-        .get_proc_address = nullptr,
     };
     m_importer = md_egl_importer_new(&importerContext);
     if (m_importer == nullptr) {
@@ -194,7 +288,10 @@ bool MirageDisplayItem::initializeOpenGLRenderer() {
         return false;
     }
 
-    m_imageTargetTexture = reinterpret_cast<GlEglImageTargetTexture2D>(
+    /* glEGLImageTargetTexture2DOES is an EGL/GLES extension entry point that
+     * libEGL does not export as a linkable symbol, so it must be resolved once
+     * through the EGL loader and validated before the render path uses it. */
+    m_imageTargetTexture = std::bit_cast<GlEglImageTargetTexture2D>(
         eglGetProcAddress("glEGLImageTargetTexture2DOES"));
     if (m_imageTargetTexture == nullptr) {
         md_egl_importer_free(m_importer);
@@ -208,6 +305,56 @@ bool MirageDisplayItem::initializeOpenGLRenderer() {
 }
 
 #ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
+
+/*
+ * Renders a probe failure into an actionable, user-visible message. The
+ * message names the exact remediation instead of a generic import error:
+ * driver-side gaps (e.g. NVIDIA without nvidia-drm modeset) versus a scene
+ * graph that simply never enabled the extensions (plasmashell: the Qt Quick
+ * device is created before any plugin can register device extensions, and the
+ * supported workaround is the QT_VULKAN_DEVICE_EXTENSIONS environment
+ * variable).
+ */
+static QString describeDmaBufImportUnavailable(const md_vk_dma_buf_import_state_t state,
+                                               const char* const missingExtensions) {
+    switch (state) {
+    case MD_VK_DMA_BUF_IMPORT_DRIVER_UNSUPPORTED:
+        return QStringLiteral(
+                   "Vulkan DMA-BUF import unavailable: the driver does not expose %1. "
+                   "For NVIDIA GPUs enable nvidia-drm modeset=1 (kernel parameter or "
+                   "/etc/modprobe.d option, then update-initramfs and reboot); ensure "
+                   "your user can access /dev/dri/renderD* (the 'render' group); or "
+                   "use the OpenGL render backend (EGL DMA-BUF import).")
+            .arg(QString::fromUtf8(missingExtensions != nullptr && missingExtensions[0] != '\0'
+                                       ? missingExtensions
+                                       : "the required extensions"));
+    case MD_VK_DMA_BUF_IMPORT_DEVICE_NOT_ENABLED:
+        return QStringLiteral(
+                   "Vulkan DMA-BUF import unavailable: the scene-graph device did not "
+                   "enable VK_EXT_external_memory_dma_buf (device extensions must be "
+                   "requested before the scene graph initializes). Start plasmashell with "
+                   "QT_VULKAN_DEVICE_EXTENSIONS=\"VK_KHR_external_memory;"
+                   "VK_KHR_external_memory_fd;VK_EXT_external_memory_dma_buf;"
+                   "VK_EXT_queue_family_foreign;VK_EXT_image_drm_format_modifier;"
+                   "VK_KHR_external_semaphore;VK_KHR_external_semaphore_fd;"
+                   "VK_KHR_sampler_ycbcr_conversion;VK_KHR_bind_memory2;"
+                   "VK_KHR_get_memory_requirements2\", or use the OpenGL render "
+                   "backend (EGL DMA-BUF import).");
+    case MD_VK_DMA_BUF_IMPORT_UNAVAILABLE:
+        return QStringLiteral(
+                   "Vulkan DMA-BUF import unavailable: the required entry points or "
+                   "extension enumeration are not available on this device.");
+    case MD_VK_DMA_BUF_IMPORT_OK:
+    default:
+        return QStringLiteral("Vulkan DMA-BUF import unavailable");
+    }
+}
+
+/*
+ * Creates the Vulkan importer and blitter from Qt Quick's device resources,
+ * reads the device/driver UUIDs and DRM render node from the physical device,
+ * and enumerates importable RGB modifiers to advertise as consumer caps.
+ */
 bool MirageDisplayItem::initializeVulkanRenderer() {
     QVulkanInstance* qtInstance = window()->vulkanInstance();
     QSGRendererInterface* renderer = window()->rendererInterface();
@@ -227,6 +374,23 @@ bool MirageDisplayItem::initializeVulkanRenderer() {
         *physicalPointer == VK_NULL_HANDLE || *devicePointer == VK_NULL_HANDLE ||
         *queuePointer == VK_NULL_HANDLE) {
         setLastError(QStringLiteral("Qt Quick Vulkan device resources are incomplete"));
+        return false;
+    }
+    // Fail fast with an actionable message before any pool arrives: if the
+    // driver lacks the external-memory extensions (NVIDIA without modeset) or
+    // the Qt Quick device never enabled them (plasmashell scene graph), every
+    // import would otherwise fail only after the first frame with a black
+    // screen.
+    md_vk_dma_buf_import_state_t importState = MD_VK_DMA_BUF_IMPORT_UNAVAILABLE;
+    char missingExtensions[256] = {};
+    if (md_vk_query_dma_buf_import_support(*physicalPointer, *devicePointer, &importState,
+                                           missingExtensions,
+                                           sizeof(missingExtensions)) != MD_OK) {
+        setLastError(QStringLiteral("Vulkan DMA-BUF import support probe failed"));
+        return false;
+    }
+    if (importState != MD_VK_DMA_BUF_IMPORT_OK) {
+        setLastError(describeDmaBufImportUnavailable(importState, missingExtensions));
         return false;
     }
     const uint32_t queueFamily = familyPointer != nullptr ? *familyPointer : 0u;
@@ -429,6 +593,11 @@ void MirageDisplayItem::setOutputTransform(OutputTransform value) {
     m_outputUpdateTimer.start();
 }
 
+
+/*
+ * Enables or disables pointer forwarding; disabling releases the current
+ * pointer state (enter/leave) so the renderer does not keep a stale cursor.
+ */
 void MirageDisplayItem::setPointerForwarding(bool value) {
     if (m_pointerForwarding == value) return;
     if (!value) releasePointerState(monotonicTimestampUs());
@@ -437,6 +606,12 @@ void MirageDisplayItem::setPointerForwarding(bool value) {
     m_outputUpdateTimer.start();
 }
 
+
+/*
+ * Forwards the DE-computed window-state flags to the broker immediately when
+ * the session is READY; the value is also cached so it can be replayed after a
+ * reconnect.
+ */
 void MirageDisplayItem::setWindowStateFlags(quint32 value) {
     if (m_windowStateFlags == value) return;
     m_windowStateFlags = value;
@@ -477,6 +652,13 @@ void MirageDisplayItem::setImportedGeneration(uint64_t generation) {
     }
 }
 
+
+/*
+ * Derives the stable output identity from QScreen/Qt properties: the
+ * stable_id is the trimmed configured value (falling back to kde:unknown), the
+ * refresh rate prefers the QScreen value, and input_caps reflects whether pointer
+ * forwarding is enabled.  The returned struct borrows the byte arrays.
+ */
 md_output_info_t MirageDisplayItem::makeOutputInfo(QByteArray& stableId, QByteArray& name) const {
     stableId = m_outputStableId.trimmed().toUtf8();
     name = m_outputName.trimmed().toUtf8();
@@ -512,6 +694,12 @@ md_output_info_t MirageDisplayItem::makeOutputInfo(QByteArray& stableId, QByteAr
     };
 }
 
+
+/*
+ * Creates the display session, advertises the backend-specific formats and
+ * feature bits, and starts a nonblocking connection with QSocketNotifier-driven
+ * handshake.  Any failure closes the session and schedules a reconnect.
+ */
 void MirageDisplayItem::startConnection() {
     if (!isComponentComplete() || !m_rendererReady.load() || m_display != nullptr ||
         m_socketPath.isEmpty()) {
@@ -579,7 +767,7 @@ void MirageDisplayItem::startConnection() {
     const QByteArray socketBytes = m_socketPath.toUtf8();
 
     int result = md_display_begin_connect(m_display, socketBytes.constData(),
-                                          "mirage-plasma", "0.1.0",
+                                          "mirage-plasma", "0.2.0",
                                           &output, &capabilities);
     if (result != MD_OK) {
         setLastError(QStringLiteral("Cannot connect to Mirage display broker"));
@@ -604,6 +792,11 @@ void MirageDisplayItem::startConnection() {
     advanceHandshake();
 }
 
+
+/*
+ * Drives the nonblocking handshake from socket-notifier events; once READY,
+ * re-wires the notifiers to dispatch/flush and replays the cached window state.
+ */
 void MirageDisplayItem::advanceHandshake() {
     if (m_display == nullptr) return;
     for (int iteration = 0; iteration < 16; ++iteration) {
@@ -634,6 +827,11 @@ void MirageDisplayItem::advanceHandshake() {
     handleConnectionFailure();
 }
 
+
+/*
+ * Main-thread packet dispatch: drains readable packets, then re-arms the
+ * write notifier if the outbox has pending messages.
+ */
 void MirageDisplayItem::dispatchSocket() {
     if (m_display == nullptr) return;
     int result = md_display_dispatch(m_display);
@@ -670,6 +868,11 @@ void MirageDisplayItem::pushOutputUpdate() {
     armWritable();
 }
 
+
+/*
+ * Completes a deferred UNBIND on the protocol event thread after the render
+ * thread has destroyed GPU references (see onBuffersReleasing / updatePaintNode).
+ */
 void MirageDisplayItem::finishDeferredUnbind(qulonglong generation) {
     if (m_display == nullptr || generation == 0) return;
     if (md_display_finish_unbind(m_display, static_cast<uint64_t>(generation)) == MD_OK) {
@@ -677,6 +880,11 @@ void MirageDisplayItem::finishDeferredUnbind(qulonglong generation) {
     }
 }
 
+
+/*
+ * Tears down the session: releases pointer state, deletes socket notifiers,
+ * frees the display, and resets the connected/output Q_PROPERTY state.
+ */
 void MirageDisplayItem::closeConnection() {
     releasePointerState(monotonicTimestampUs());
     if (m_readNotifier != nullptr) {
@@ -712,6 +920,13 @@ void MirageDisplayItem::scheduleReconnect() {
     }
 }
 
+
+/*
+ * Protocol callbacks below run on the Qt main thread; they copy callback
+ * payloads into members guarded by m_stateMutex and call update() so the render
+ * thread picks them up on the next scene-graph pass.  Frame/release descriptors
+ * are owned by the callback path and consumed exactly once.
+ */
 void MirageDisplayItem::onConnected(void* userData, uint64_t outputIdValue) {
     auto* self = static_cast<MirageDisplayItem*>(userData);
     self->m_connected = true;
@@ -731,6 +946,12 @@ void MirageDisplayItem::onBuffersReady(void* userData, const md_buffer_pool_t* p
     self->update();
 }
 
+
+/*
+ * Broker requested UNBIND.  Defers the unbind so the render thread can destroy
+ * its GPU references, records the generation, and requests a repaint; the render
+ * thread later calls finishDeferredUnbind on the event thread.
+ */
 void MirageDisplayItem::onBuffersReleasing(void* userData, const md_buffer_pool_t* pool) {
     auto* self = static_cast<MirageDisplayItem*>(userData);
     bool deferred = self->m_display != nullptr &&
@@ -760,6 +981,11 @@ void MirageDisplayItem::onConfig(void* userData, const md_display_config_t* conf
     self->update();
 }
 
+
+/*
+ * Releases a frame that will not be sampled: closes the acquire sync_file and
+ * signals the release syncobj so the producer's slot is never blocked.
+ */
 void MirageDisplayItem::dropFrame(PendingFrame& frame) {
     if (!frame.valid) return;
     if (frame.value.acquire_sync_fd >= 0) close(frame.value.acquire_sync_fd);
@@ -792,13 +1018,39 @@ void MirageDisplayItem::onDisconnected(void* userData, md_result_t reason, const
         self->m_connected = false;
         emit self->connectedChanged();
     }
+    if (self->m_outputId != 0) {
+        self->m_outputId = 0;
+        emit self->outputIdChanged();
+    }
+    /* A broker can vanish at any time; the library may fail the session from
+     * a send path where no QSocketNotifier event follows. Tear down the dead
+     * session and resume the reconnect loop so the wallpaper recovers as soon
+     * as the broker comes back. */
+    QPointer<MirageDisplayItem> guard(self);
+    QMetaObject::invokeMethod(self, [guard]() {
+        if (guard != nullptr) {
+            guard->closeConnection();
+            guard->scheduleReconnect();
+        }
+    }, Qt::QueuedConnection);
 }
 
+
+/*
+ * Imports the current pool on the render thread: Vulkan imports through the
+ * importer, EGL creates one GL texture per EGLImage and wraps them as QSGTexture.
+ * Runs with the OpenGL context current.
+ */
 bool MirageDisplayItem::importPendingPool(const md_buffer_pool_t& pool) {
 #ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
     if (m_rendererBackend.load() == BackendVulkan) {
-        if (m_vkImporter == nullptr || md_vk_importer_import_pool(m_vkImporter, &pool) != MD_OK) {
-            setLastError(QStringLiteral("Vulkan DMA-BUF pool import failed"));
+        if (m_vkImporter == nullptr) {
+            setLastError(QStringLiteral("Vulkan DMA-BUF pool import failed: importer unavailable"));
+            return false;
+        }
+        if (md_vk_importer_import_pool(m_vkImporter, &pool) != MD_OK) {
+            setLastError(QStringLiteral("Vulkan DMA-BUF pool import failed: %1")
+                             .arg(describeVkImportFailure(md_vk_importer_last_error(m_vkImporter))));
             return false;
         }
         setImportedGeneration(pool.generation);
@@ -848,6 +1100,12 @@ bool MirageDisplayItem::importPendingPool(const md_buffer_pool_t& pool) {
     return true;
 }
 
+
+/*
+ * Releases the current pool's GPU resources on the render thread: finishes
+ * outstanding GL work, signals the release syncobj for the sampled frame, deletes
+ * textures and importer images, and resets the imported generation.
+ */
 void MirageDisplayItem::releaseRenderPool() {
     if (m_activeReleaseFd >= 0) {
         if (QOpenGLContext::currentContext() != nullptr) {
@@ -879,6 +1137,11 @@ void MirageDisplayItem::releaseRenderPool() {
     m_currentBuffer = -1;
 }
 
+
+/*
+ * After each frame is presented, attaches a fence from the current GL context
+ * to the release syncobj so the producer can recycle the sampled buffer.
+ */
 void MirageDisplayItem::releaseAfterRendering() {
     if (m_activeReleaseFd < 0) return;
     int releaseFd = m_activeReleaseFd;
@@ -889,6 +1152,13 @@ void MirageDisplayItem::releaseAfterRendering() {
     }
 }
 
+
+/*
+ * Builds the scene-graph node on the render thread: first completes any pending
+ * pool release (and deferred unbind), then imports a pending pool, samples the
+ * latest frame with backend-specific sync handling, and applies the configured
+ * transform.
+ */
 QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData* data) {
     Q_UNUSED(data);
 
@@ -975,7 +1245,9 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
                         (void)md_display_signal_release_syncobj(frame.value.release_syncobj_fd);
                         frame.value.release_syncobj_fd = -1;
                     }
-                    setLastError(QStringLiteral("Vulkan acquire sync import failed"));
+                    setLastError(QStringLiteral("Vulkan acquire sync import failed: %1")
+                                     .arg(describeVkImportFailure(
+                                         md_vk_importer_last_error(m_vkImporter))));
                 } else {
                     /* The producer's release object is a DRM syncobj fd, not a
                      * Vulkan opaque semaphore, so it must be signalled with
@@ -1001,7 +1273,8 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
                         if (releaseFd >= 0) {
                             (void)md_display_signal_release_syncobj(releaseFd);
                         }
-                        setLastError(QStringLiteral("Vulkan frame relay failed"));
+                        setLastError(QStringLiteral("Vulkan frame relay failed (rc=%1)")
+                                         .arg(static_cast<int>(rc)));
                     }
                 }
             }
@@ -1138,6 +1411,11 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
     return transformNode;
 }
 
+
+/*
+ * Monotonic microsecond timestamp used by all pointer messages, matching the
+ * protocol's clock requirement.
+ */
 uint64_t MirageDisplayItem::monotonicTimestampUs() {
     struct timespec value {};
     if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) return 0;
@@ -1149,6 +1427,11 @@ void MirageDisplayItem::releasePointerState(uint64_t timestamp) {
     m_pointer.reset(timestamp);
 }
 
+
+/*
+ * Maps a normalized pointer-forwarder event to the matching md_display_send_*
+ * call when the session is READY, then re-arms the write notifier.
+ */
 void MirageDisplayItem::forwardPointerEvent(const MiragePointerForwarder::Event& event) {
     if (m_display == nullptr || md_display_connection_state(m_display) != MD_CONNECTION_READY) {
         return;
@@ -1178,6 +1461,13 @@ void MirageDisplayItem::forwardPointerEvent(const MiragePointerForwarder::Event&
     armWritable();
 }
 
+
+/*
+ * Observes pointer events on the window and feeds them to the forwarder.
+ * Always returns false so Plasma keeps desktop clicks, context menus,
+ * drag-and-drop, and wheel events; drag is reconstructed from motion plus button
+ * state.
+ */
 bool MirageDisplayItem::eventFilter(QObject* watched, QEvent* event) {
     if (!m_pointerForwarding || watched != window() || m_display == nullptr ||
         md_display_connection_state(m_display) != MD_CONNECTION_READY) {

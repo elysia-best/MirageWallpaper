@@ -4,7 +4,15 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
 ColumnLayout {
+    id: root
     spacing: Kirigami.Units.largeSpacing
+
+    // Plasma 6 assigns these objects before opening the wallpaper settings
+    // page.  Declaring the documented properties keeps the assignment on the
+    // root object instead of producing binding errors in plasmashell.
+    property var configDialog
+    property var wallpaperConfiguration: wallpaper.configuration
+    property var parentLayout
 
     property string cfg_DisplayName
     property string cfg_SocketPath

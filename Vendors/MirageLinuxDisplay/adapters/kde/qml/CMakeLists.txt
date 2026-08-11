@@ -15,6 +15,8 @@ endif()
 set(MIRAGE_DISPLAY_QML_URI "Mirage.Display"
     CACHE STRING "QML module URI for the Mirage display item")
 string(REPLACE "." "/" MIRAGE_DISPLAY_QML_PATH "${MIRAGE_DISPLAY_QML_URI}")
+set(MIRAGE_DISPLAY_QML_OUTPUT_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/${MIRAGE_DISPLAY_QML_PATH}")
 
 qt_add_qml_module(mirage-display-qml
     URI ${MIRAGE_DISPLAY_QML_URI}
@@ -26,7 +28,7 @@ qt_add_qml_module(mirage-display-qml
         MiragePointerForwarder.hpp
         MiragePointerForwarder.cpp
     OUTPUT_DIRECTORY
-        ${CMAKE_CURRENT_BINARY_DIR}/${MIRAGE_DISPLAY_QML_PATH})
+        ${MIRAGE_DISPLAY_QML_OUTPUT_DIR})
 
 target_link_libraries(mirage-display-qml PRIVATE
     Qt6::Gui
@@ -55,13 +57,13 @@ if(MIRAGE_DISPLAY_BUILD_TESTS)
 endif()
 
 set(MIRAGE_DISPLAY_QML_INSTALL_DIR
-    "${CMAKE_INSTALL_FULL_LIBDIR}/qt6/qml"
+    "${CMAKE_INSTALL_LIBDIR}/qt6/qml"
     CACHE PATH "Qt 6 QML module install directory")
-install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${MIRAGE_DISPLAY_QML_PATH}/
+install(DIRECTORY ${MIRAGE_DISPLAY_QML_OUTPUT_DIR}/
     DESTINATION ${MIRAGE_DISPLAY_QML_INSTALL_DIR}/${MIRAGE_DISPLAY_QML_PATH})
 
 if(MIRAGE_DISPLAY_QML_URI MATCHES "Embed")
-    install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${MIRAGE_DISPLAY_QML_PATH}/
+    install(DIRECTORY ${MIRAGE_DISPLAY_QML_OUTPUT_DIR}/
         DESTINATION org.mirage.wallpaper/contents/ui/MirageDisplayEmbed
         COMPONENT kde_extension
         EXCLUDE_FROM_ALL)

@@ -3,13 +3,26 @@
 
 #include "mirage_display.h"
 
+/*
+ * Public C ABI for the MirageLinuxDisplay producer (renderer) library.
+ *
+ * Renderers use this library to advertise a stable output and format
+ * capabilities, lend DMA-BUF buffer pools, submit frames with explicit
+ * synchronization, and retire buffer generations.  It shares the handshake and
+ * transport rules of the consumer library.
+ */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* Producer DTOs have an explicit layout for C/C++ and FFI consumers. */
+#pragma pack(push, 8)
+
 typedef struct md_producer md_producer_t;
 
 typedef struct md_producer_info {
+    /* Borrowed, NUL-terminated strings and a borrowed format_count array. */
     const char* stable_output_id;
     const char* kind;
     uint32_t drm_render_major;
@@ -40,39 +53,46 @@ typedef struct md_producer_callbacks {
     void (*on_pointer_button)(void* user_data, const md_pointer_button_t* event);
     void (*on_pointer_axis)(void* user_data, const md_pointer_axis_t* event);
     void (*on_disconnected)(void* user_data, md_result_t reason, const char* message);
+    /* Borrowed opaque callback context. The library never frees it. */
     void* user_data;
 } md_producer_callbacks_t;
 
+/* Allocates a producer owned by the caller; release it with md_producer_free(). */
 md_producer_t* md_producer_new(const md_producer_callbacks_t* callbacks);
 void md_producer_free(md_producer_t* producer);
 
-int md_producer_begin_connect(md_producer_t* producer, const char* socket_path,
-                              const char* client_name, const char* client_version,
-                              const md_producer_info_t* info);
-int md_producer_begin_connected_fd(md_producer_t* producer, int connected_fd,
-                                  const char* client_name, const char* client_version,
-                                  const md_producer_info_t* info);
-int md_producer_advance_handshake(md_producer_t* producer);
-int md_producer_connect(md_producer_t* producer, const char* socket_path,
-                        const char* client_name, const char* client_version,
-                        const md_producer_info_t* info, int timeout_ms);
+md_result_t md_producer_begin_connect(md_producer_t* producer, const char* socket_path,
+                                      const char* client_name, const char* client_version,
+                                      const md_producer_info_t* info);
+md_result_t md_producer_begin_connected_fd(md_producer_t* producer, int32_t connected_fd,
+                                           const char* client_name, const char* client_version,
+                                           const md_producer_info_t* info);
+/* Returns an MD_HANDSHAKE_* progress value or a negative md_result_t value. */
+int32_t md_producer_advance_handshake(md_producer_t* producer);
+md_result_t md_producer_connect(md_producer_t* producer, const char* socket_path,
+                                const char* client_name, const char* client_version,
+                                const md_producer_info_t* info, int32_t timeout_ms);
 
 void md_producer_close(md_producer_t* producer);
-int md_producer_get_fd(const md_producer_t* producer);
+int32_t md_producer_get_fd(const md_producer_t* producer);
 md_connection_state_t md_producer_connection_state(const md_producer_t* producer);
 md_handshake_state_t md_producer_handshake_state(const md_producer_t* producer);
-bool md_producer_wants_writable(const md_producer_t* producer);
-int md_producer_handle_writable(md_producer_t* producer);
-int md_producer_dispatch(md_producer_t* producer);
+uint8_t md_producer_wants_writable(const md_producer_t* producer);
+md_result_t md_producer_handle_writable(md_producer_t* producer);
+int32_t md_producer_dispatch(md_producer_t* producer);
 
 /* Pool FDs are borrowed and duplicated internally for a queued send. */
-int md_producer_offer_buffers(md_producer_t* producer, const md_buffer_pool_t* pool);
-int md_producer_set_config(md_producer_t* producer, const md_display_config_t* config);
+md_result_t md_producer_offer_buffers(md_producer_t* producer, const md_buffer_pool_t* pool);
+md_result_t md_producer_set_config(md_producer_t* producer,
+                                   const md_display_config_t* config);
 /* Both frame FDs are consumed by this call, including on errors. */
-int md_producer_submit_frame(md_producer_t* producer, uint64_t generation,
-                             uint32_t buffer_index, uint64_t sequence,
-                             int acquire_sync_fd, int release_syncobj_fd);
-int md_producer_retire_done(md_producer_t* producer, uint64_t generation);
+md_result_t md_producer_submit_frame(md_producer_t* producer, uint64_t generation,
+                                     uint32_t buffer_index, uint64_t sequence,
+                                     int32_t acquire_sync_fd,
+                                     int32_t release_syncobj_fd);
+md_result_t md_producer_retire_done(md_producer_t* producer, uint64_t generation);
+
+#pragma pack(pop)
 
 #ifdef __cplusplus
 }

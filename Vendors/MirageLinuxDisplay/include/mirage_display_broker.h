@@ -3,13 +3,25 @@
 
 #include "mirage_display.h"
 
+/*
+ * Public C ABI for the MirageLinuxDisplay broker routing core.
+ *
+ * The broker binds the 0600 AF_UNIX SOCK_SEQPACKET endpoint, validates peers via
+ * SO_PEERCRED, routes one producer to many display consumers per stable output
+ * id, and forwards packets and descriptors without ever copying pixel data.
+ */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* Broker options cross the C ABI and therefore use the common 8-byte layout. */
+#pragma pack(push, 8)
+
 typedef struct md_broker md_broker_t;
 
 typedef struct md_broker_options {
+    /* Borrowed, NUL-terminated values copied by md_broker_new(). */
     const char* socket_path;
     const char* server_name;
     const char* server_version;
@@ -17,12 +29,12 @@ typedef struct md_broker_options {
     uint32_t max_routes;
 } md_broker_options_t;
 
-/* Creates an unbound broker. The options strings are copied. */
+/* Creates an unbound broker owned by the caller. The options strings are copied. */
 md_broker_t* md_broker_new(const md_broker_options_t* options);
 void md_broker_free(md_broker_t* broker);
 
 /* Binds the AF_UNIX SOCK_SEQPACKET endpoint and starts accepting peers. */
-int md_broker_listen(md_broker_t* broker);
+md_result_t md_broker_listen(md_broker_t* broker);
 void md_broker_stop(md_broker_t* broker);
 
 /*
@@ -30,10 +42,12 @@ void md_broker_stop(md_broker_t* broker);
  * timeout blocks until an event. This is suitable for a dedicated MirageQt
  * event thread; the broker remains independent of X11 and Wayland.
  */
-int md_broker_dispatch(md_broker_t* broker, int timeout_ms);
+int32_t md_broker_dispatch(md_broker_t* broker, int32_t timeout_ms);
 
-int md_broker_get_fd(const md_broker_t* broker);
+int32_t md_broker_get_fd(const md_broker_t* broker);
 const char* md_broker_socket_path(const md_broker_t* broker);
+
+#pragma pack(pop)
 
 #ifdef __cplusplus
 }

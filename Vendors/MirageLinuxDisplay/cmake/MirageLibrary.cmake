@@ -22,6 +22,13 @@ function(mirage_add_library target_name)
         SOVERSION ${PROJECT_VERSION_MAJOR})
 
     foreach(target ${target_name} ${target_name}_static)
+        # Library implementations are C++20, while installed headers remain C ABI only.
+        target_compile_features(${target} PRIVATE cxx_std_20)
+        set_target_properties(${target} PROPERTIES
+            CXX_STANDARD 20
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF
+            LINKER_LANGUAGE CXX)
         target_include_directories(${target}
             PUBLIC
                 $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
@@ -29,10 +36,13 @@ function(mirage_add_library target_name)
             PRIVATE ${ARG_PRIVATE_INCLUDE})
         target_compile_options(${target} PRIVATE
             -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror)
-        if(ARG_LINKS_SHARED)
-            target_link_libraries(${target} PUBLIC ${ARG_LINKS_SHARED})
-        endif()
     endforeach()
+    # The shared twin links the shared dependency set; the static twin links
+    # only static dependencies so it can be embedded in other binaries and
+    # shared modules without a runtime dependency on the shared libraries.
+    if(ARG_LINKS_SHARED)
+        target_link_libraries(${target_name} PUBLIC ${ARG_LINKS_SHARED})
+    endif()
     if(ARG_LINKS_STATIC)
         target_link_libraries(${target_name}_static PUBLIC ${ARG_LINKS_STATIC})
     endif()

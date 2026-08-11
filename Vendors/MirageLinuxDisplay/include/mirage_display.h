@@ -1,16 +1,30 @@
 #ifndef MIRAGE_DISPLAY_H
 #define MIRAGE_DISPLAY_H
 
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
+
+/*
+ * Public C ABI for the MirageLinuxDisplay consumer library.
+ *
+ * Desktop-environment adapters use this library to connect to the
+ * mirage-display-v1 broker, register a stable output, receive DMA-BUF buffer
+ * pools and frames, and report pointer/window state back to the renderer.  All
+ * public DTOs use an explicit eight-byte packing contract so C, C++, and FFI
+ * callers never depend on compiler-default layout.
+ */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/*
+ * Public protocol DTOs use an explicit eight-byte packing contract. This
+ * prevents C, C++, and FFI callers from relying on compiler-default layout.
+ */
+#pragma pack(push, 8)
+
 #define MIRAGE_DISPLAY_VERSION_MAJOR 0
-#define MIRAGE_DISPLAY_VERSION_MINOR 1
+#define MIRAGE_DISPLAY_VERSION_MINOR 2
 #define MIRAGE_DISPLAY_VERSION_PATCH 0
 
 #define MIRAGE_DISPLAY_PROTOCOL_MAJOR 1
@@ -113,6 +127,7 @@ typedef struct md_format_cap {
 } md_format_cap_t;
 
 typedef struct md_output_info {
+    /* Borrowed, NUL-terminated strings retained by the caller for each call. */
     const char* stable_id;
     const char* name;
     uint32_t physical_width;
@@ -135,12 +150,13 @@ typedef struct md_consumer_caps {
     uint32_t max_height;
     uint8_t device_uuid[16];
     uint8_t driver_uuid[16];
+    /* Borrowed array containing exactly format_count entries. */
     const md_format_cap_t* formats;
     uint32_t format_count;
 } md_consumer_caps_t;
 
 typedef struct md_plane {
-    int fd;
+    int32_t fd;
     uint32_t stride;
     uint32_t offset;
     uint64_t size;
@@ -203,8 +219,8 @@ typedef struct md_frame {
     uint64_t buffer_generation;
     uint32_t buffer_index;
     uint64_t sequence;
-    int acquire_sync_fd;
-    int release_syncobj_fd;
+    int32_t acquire_sync_fd;
+    int32_t release_syncobj_fd;
 } md_frame_t;
 
 typedef struct md_display_callbacks {
@@ -219,16 +235,19 @@ typedef struct md_display_callbacks {
     void (*on_config)(void* user_data, const md_display_config_t* config);
     void (*on_frame)(void* user_data, const md_frame_t* frame);
     void (*on_disconnected)(void* user_data, md_result_t reason, const char* message);
+    /* Borrowed opaque callback context. The library never frees it. */
     void* user_data;
 } md_display_callbacks_t;
 
+/* Allocates a display owned by the caller; release it with md_display_free(). */
 md_display_t* md_display_new(const md_display_callbacks_t* callbacks);
 void md_display_free(md_display_t* display);
 
-int md_display_begin_connect(md_display_t* display, const char* socket_path,
-                             const char* client_name, const char* client_version,
-                             const md_output_info_t* output,
-                             const md_consumer_caps_t* caps);
+/* All input strings are borrowed, NUL-terminated, and required. */
+md_result_t md_display_begin_connect(md_display_t* display, const char* socket_path,
+                                     const char* client_name, const char* client_version,
+                                     const md_output_info_t* output,
+                                     const md_consumer_caps_t* caps);
 
 /*
  * Starts the same handshake on an already-connected AF_UNIX SOCK_SEQPACKET FD.
@@ -236,35 +255,36 @@ int md_display_begin_connect(md_display_t* display, const char* socket_path,
  * broker handoff, socket activation and tests that cannot create pathname
  * sockets. The function enables O_NONBLOCK and FD_CLOEXEC.
  */
-int md_display_begin_connected_fd(md_display_t* display, int connected_fd,
-                                  const char* client_name, const char* client_version,
-                                  const md_output_info_t* output,
-                                  const md_consumer_caps_t* caps);
-int md_display_advance_handshake(md_display_t* display);
+md_result_t md_display_begin_connected_fd(md_display_t* display, int32_t connected_fd,
+                                          const char* client_name, const char* client_version,
+                                          const md_output_info_t* output,
+                                          const md_consumer_caps_t* caps);
+/* Returns an MD_HANDSHAKE_* progress value or a negative md_result_t value. */
+int32_t md_display_advance_handshake(md_display_t* display);
 
 /* Blocking convenience for command-line tools and tests. */
-int md_display_connect(md_display_t* display, const char* socket_path,
-                       const char* client_name, const char* client_version,
-                       const md_output_info_t* output,
-                       const md_consumer_caps_t* caps, int timeout_ms);
+md_result_t md_display_connect(md_display_t* display, const char* socket_path,
+                               const char* client_name, const char* client_version,
+                               const md_output_info_t* output,
+                               const md_consumer_caps_t* caps, int32_t timeout_ms);
 
 void md_display_close(md_display_t* display);
-int md_display_get_fd(const md_display_t* display);
+int32_t md_display_get_fd(const md_display_t* display);
 md_connection_state_t md_display_connection_state(const md_display_t* display);
 md_handshake_state_t md_display_handshake_state(const md_display_t* display);
 uint64_t md_display_output_id(const md_display_t* display);
 
 /* Dispatches all currently readable packets. Returns packet count or an error. */
-int md_display_dispatch(md_display_t* display);
-bool md_display_wants_writable(const md_display_t* display);
-int md_display_handle_writable(md_display_t* display);
+int32_t md_display_dispatch(md_display_t* display);
+uint8_t md_display_wants_writable(const md_display_t* display);
+md_result_t md_display_handle_writable(md_display_t* display);
 
 /*
  * Defers the current broker-requested UNBIND. This is only valid from inside
  * on_buffers_releasing. By default UNBIND is completed when the callback
  * returns, preserving the synchronous C API behavior.
  */
-int md_display_defer_unbind(md_display_t* display);
+md_result_t md_display_defer_unbind(md_display_t* display);
 /* Returns zero when no deferred UNBIND is pending. */
 uint64_t md_display_pending_unbind_generation(const md_display_t* display);
 /*
@@ -272,27 +292,30 @@ uint64_t md_display_pending_unbind_generation(const md_display_t* display);
  * are closed and UNBIND_DONE is sent or queued. Call on the display's event
  * thread, not directly from a Qt Quick render-thread callback.
  */
-int md_display_finish_unbind(md_display_t* display, uint64_t generation);
+md_result_t md_display_finish_unbind(md_display_t* display, uint64_t generation);
 
-int md_display_update_output(md_display_t* display, const md_output_info_t* output);
-int md_display_send_pointer_enter(md_display_t* display, float x, float y,
-                                  uint64_t timestamp_us);
-int md_display_send_pointer_leave(md_display_t* display, uint64_t timestamp_us);
-int md_display_send_pointer_motion(md_display_t* display, float x, float y,
-                                   uint64_t timestamp_us, uint32_t modifiers);
-int md_display_send_pointer_button(md_display_t* display, float x, float y,
-                                   uint32_t button, md_button_state_t state,
-                                   uint64_t timestamp_us, uint32_t modifiers);
-int md_display_send_pointer_axis(md_display_t* display, float x, float y,
-                                 float delta_x, float delta_y,
-                                 md_axis_source_t source, uint64_t timestamp_us,
-                                 uint32_t modifiers);
-int md_display_send_window_state(md_display_t* display, uint32_t flags);
+md_result_t md_display_update_output(md_display_t* display, const md_output_info_t* output);
+md_result_t md_display_send_pointer_enter(md_display_t* display, float x, float y,
+                                          uint64_t timestamp_us);
+md_result_t md_display_send_pointer_leave(md_display_t* display, uint64_t timestamp_us);
+md_result_t md_display_send_pointer_motion(md_display_t* display, float x, float y,
+                                           uint64_t timestamp_us, uint32_t modifiers);
+md_result_t md_display_send_pointer_button(md_display_t* display, float x, float y,
+                                           uint32_t button, md_button_state_t state,
+                                           uint64_t timestamp_us, uint32_t modifiers);
+md_result_t md_display_send_pointer_axis(md_display_t* display, float x, float y,
+                                         float delta_x, float delta_y,
+                                         md_axis_source_t source, uint64_t timestamp_us,
+                                         uint32_t modifiers);
+md_result_t md_display_send_window_state(md_display_t* display, uint32_t flags);
 
 /* CPU fallback for a release syncobj. Both descriptors are consumed. */
-int md_display_signal_release_syncobj(int release_syncobj_fd);
+md_result_t md_display_signal_release_syncobj(int32_t release_syncobj_fd);
 /* Connect a completed sync_file to a release syncobj. Both descriptors are consumed. */
-int md_display_release_after_sync_file(int release_syncobj_fd, int sync_file_fd);
+md_result_t md_display_release_after_sync_file(int32_t release_syncobj_fd,
+                                               int32_t sync_file_fd);
+
+#pragma pack(pop)
 
 #ifdef __cplusplus
 }
