@@ -71,7 +71,17 @@ PlaybackController::PlaybackController(GlobalSettingsService* settings,
     , m_renderer(renderer)
     , m_runtimeStore(runtimeStore)
     , m_playlist(playlist)
-    , m_owner(owner) {}
+    , m_owner(owner) {
+    // 属性下发防抖定时器：合并窗口 16ms（约 1 帧，对齐 macOS 的 1/60s
+    // propertyCommandWorkItem）。singleShot + 每次 start() 重启语义与
+    // macOS 的 cancel + asyncAfter 一致：拖动过程中持续重启，停止后
+    // 16ms 内下发最后一次合并结果。
+    m_propertyCommandTimer = new QTimer(this);
+    m_propertyCommandTimer->setSingleShot(true);
+    m_propertyCommandTimer->setInterval(16);
+    connect(m_propertyCommandTimer, &QTimer::timeout,
+            this, &PlaybackController::flushPropertyCommands);
+}
 
 RenderOptions PlaybackController::renderOptionsFor(const Wallpaper& item) const {
     const GlobalSettings& settings = m_settings->settings();
@@ -228,12 +238,18 @@ void PlaybackController::stopWallpapers() {
         m_paused = false;
         emit pausedChanged(false);
     }
+    // 渲染进程即将退出，丢弃未下发的属性命令，避免 flush 写向已停止的进程。
+    m_pendingPropertyCommands.clear();
+    m_propertyCommandTimer->stop();
     m_renderer->stopAll();
     m_owner->setStatusMessage(QStringLiteral("已停止动态壁纸"));
 }
 
 void PlaybackController::stopScreen(int screen) {
     if (screen < 0 || screen >= m_owner->screenCount()) return;
+    // 与 stopWallpapers 一致：丢弃未下发命令，避免 flush 写向已停止的进程。
+    m_pendingPropertyCommands.clear();
+    m_propertyCommandTimer->stop();
     m_renderer->stop(screen);
     m_owner->setStatusMessage(QStringLiteral("已停止显示器 %1 的动态壁纸").arg(screen + 1));
 }
@@ -291,14 +307,34 @@ void PlaybackController::setSelectedProperty(const QString& key, const QVariant&
     if (!item.isValid()) return;
     const ProjectProperty property = m_runtimeStore->setProperty(item, key, value);
     if (property.type.isEmpty()) return;
-    if (item.kind() == WallpaperKind::Scene || item.kind() == WallpaperKind::Web) {
-        m_renderer->setProperty(key, property);
+    if (item.kind() != WallpaperKind::Scene && item.kind() != WallpaperKind::Web) return;
+    // 属性实时下发防抖：滑块/开关拖动时 QML onMoved 每像素触发一次，若直接
+    // sendCommand 会向渲染进程洪水式灌命令（场景壁纸每帧重绘，且 GUI 线程
+    // 每像素全链路重建）。与 macOS propertyCommandWorkItem 对齐：命令进
+    // pending 表（同 key 只留最新值），16ms 合并窗口到期后批量下发。
+    m_pendingPropertyCommands.insert(key, {m_owner->m_selectedWallpaperId, property});
+    m_propertyCommandTimer->start();
+}
+
+void PlaybackController::flushPropertyCommands() {
+    if (m_pendingPropertyCommands.isEmpty()) return;
+    const QHash<QString, PendingPropertyCommand> commands = m_pendingPropertyCommands;
+    m_pendingPropertyCommands.clear();
+    for (auto it = commands.constBegin(); it != commands.constEnd(); ++it) {
+        // wallpaperId 守卫：合并窗口内若已切换选中壁纸，丢弃过期命令，
+        // 对应 macOS work item 的 currentWallpaper.id 检查。
+        if (it.value().wallpaperId != m_owner->m_selectedWallpaperId) continue;
+        m_renderer->setProperty(it.key(), it.value().property);
     }
 }
 
 void PlaybackController::resetSelectedProperties() {
     const Wallpaper item = m_owner->wallpaper(m_owner->m_selectedWallpaperId);
     if (!item.isValid()) return;
+    // 清空待发属性命令：拖动滑块期间点"重置"时，合并窗口内的旧编辑值
+    // 若在重置（渲染进程按默认值重启）后才 flush，会覆盖重置结果。
+    m_pendingPropertyCommands.clear();
+    m_propertyCommandTimer->stop();
     m_runtimeStore->resetRuntime(item);
     bool rendered = false;
     for (int screen : m_renderer->activeScreens()) {

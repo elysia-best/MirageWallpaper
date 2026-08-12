@@ -10,15 +10,69 @@ ColumnLayout {
     Repeater {
         model: root.properties
         delegate: ColumnLayout {
+            id: delegateItem
             required property var modelData
             property var propertyData: modelData
-                Layout.fillWidth: true
-                visible: root.host.propertyConditionVisible(propertyData.condition)
-                spacing: 6
+            Layout.fillWidth: true
+            visible: root.host.propertyConditionVisible(propertyData.condition)
+            spacing: 6
 
+            // 每个属性只实例化与类型匹配的一个分支（Loader 惰性实例化）。
+            // 原实现把 9 个类型分支全部作为子项实例化，visible:false 只隐藏
+            // 不省创建——属性多的壁纸在选中切换时 Repeater 销毁重建上千个
+            // QML 对象导致卡顿；与 macOS PropertyRow 的 switch(propertyType)
+            // 只构建匹配分支对齐。分支组件经 Loader 的动态作用域访问 delegate
+            // 的 propertyData / root.host / mirage（QML Loader 官方模式）。
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "bool"
+                sourceComponent: boolEditor
+            }
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "slider"
+                sourceComponent: sliderEditor
+            }
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "color"
+                sourceComponent: colorEditor
+            }
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "combo"
+                sourceComponent: comboEditor
+            }
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "textinput"
+                sourceComponent: textInputEditor
+            }
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "text"
+                sourceComponent: textEditor
+            }
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "group"
+                sourceComponent: groupEditor
+            }
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "file" || propertyData.type === "directory" || propertyData.type === "scenetexture"
+                sourceComponent: fileEditor
+            }
+            Loader {
+                Layout.fillWidth: true
+                active: propertyData.type === "usershortcut"
+                sourceComponent: userShortcutEditor
+            }
+
+            Component {
+                id: boolEditor
                 RowLayout {
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "bool"
+                    width: parent.width
                     spacing: 8
                     FluText {
                         Layout.fillWidth: true
@@ -34,10 +88,12 @@ ColumnLayout {
                         }
                     }
                 }
+            }
 
+            Component {
+                id: sliderEditor
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "slider"
+                    width: parent.width
                     spacing: 3
                     property real lowerBound: propertyData.hasMin ? Number(propertyData.min) : 0
                     property real upperBound: propertyData.hasMax ? Number(propertyData.max) : lowerBound + 1
@@ -62,10 +118,12 @@ ColumnLayout {
                         onMoved: mirage.setSelectedProperty(propertyData.key, propertyData.fraction ? value : Math.round(value))
                     }
                 }
+            }
 
+            Component {
+                id: colorEditor
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "color"
+                    width: parent.width
                     spacing: 4
                     FluText {
                         Layout.fillWidth: true
@@ -83,13 +141,15 @@ ColumnLayout {
                         }
                     }
                 }
+            }
 
+            Component {
+                id: comboEditor
                 ColumnLayout {
                     id: comboRow
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "combo"
-                    property var optionItems: root.host.propertyOptionItems(propertyData.options)
+                    width: parent.width
                     spacing: 4
+                    property var optionItems: root.host.propertyOptionItems(propertyData.options)
                     FluText {
                         Layout.fillWidth: true
                         text: root.host.propertyLabel(propertyData)
@@ -107,10 +167,12 @@ ColumnLayout {
                         }
                     }
                 }
+            }
 
+            Component {
+                id: textInputEditor
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "textinput"
+                    width: parent.width
                     spacing: 3
                     FluText {
                         Layout.fillWidth: true
@@ -123,17 +185,21 @@ ColumnLayout {
                         onCommit: mirage.setSelectedProperty(propertyData.key, text)
                     }
                 }
+            }
 
+            Component {
+                id: textEditor
                 FluText {
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "text"
+                    width: parent.width
                     text: root.host.propertyLabel(propertyData)
                     wrapMode: Text.WordWrap
                 }
+            }
 
+            Component {
+                id: groupEditor
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "group"
+                    width: parent.width
                     spacing: 3
                     FluText {
                         Layout.fillWidth: true
@@ -145,10 +211,12 @@ ColumnLayout {
                         Layout.fillWidth: true
                     }
                 }
+            }
 
+            Component {
+                id: fileEditor
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "file" || propertyData.type === "directory" || propertyData.type === "scenetexture"
+                    width: parent.width
                     spacing: 3
                     FluText {
                         Layout.fillWidth: true
@@ -177,10 +245,12 @@ ColumnLayout {
                         }
                     }
                 }
+            }
 
+            Component {
+                id: userShortcutEditor
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: propertyData.type === "usershortcut"
+                    width: parent.width
                     spacing: 4
                     FluText {
                         Layout.fillWidth: true
@@ -194,7 +264,7 @@ ColumnLayout {
                         onCommit: mirage.setSelectedProperty(propertyData.key, text)
                     }
                 }
-
+            }
         }
     }
 }
