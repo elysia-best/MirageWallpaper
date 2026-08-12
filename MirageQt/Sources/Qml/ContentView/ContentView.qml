@@ -31,15 +31,29 @@ FluWindow {
     autoDestroy: false
     fitsAppBarWindows: true
     appBar: FluAppBar {
-        // 高度需容纳菜单栏（FluMenuBar 隐式高度约 30px），否则菜单会溢出
-        // 与下方"已安装"等内容重叠。
-        height: 40
+        id: appBar
+        // 与 FluAppBar 默认高度一致，窗口按钮组贴顶，标签栏 30px 正好填满。
+        height: 30
+        titleVisible: false
+        icon: ""
         showDark: true
-        MainMenu {
+        showStayTop: true
+        TopTabBar {
+            id: appBarTabs
+            height: 30
             anchors.left: parent.left
             anchors.leftMargin: 10
+            anchors.right: appBar.layoutStandardbuttons.left
+            anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            host: window
+            currentIndex: window.currentTab
+            onSelected: index => window.currentTab = index
+            onMobileRequested: linuxNotice.open()
+            onDisplayRequested: displaySettingsSheet.open()
+            onSettingsRequested: settingsSheet.open()
+        }
+        Component.onCompleted: {
+            appBarTabs.registerHitTest(window);
         }
     }
 
@@ -431,21 +445,7 @@ FluWindow {
                 anchors.leftMargin: 16
                 anchors.rightMargin: 16
                 anchors.bottomMargin: 16
-                // 顶部避让覆盖绘制的 appBar（与右侧 detailScroll 的
-                // topPadding: appBar.height + 16 保持一致），否则左侧
-                // "已安装/发现/创意工坊" tab 会被菜单栏遮挡。
-                anchors.topMargin: appBar.height + 16
-                spacing: 6
-
-                TopTabBar {
-                    Layout.fillWidth: true
-                    currentIndex: window.currentTab
-                    downloadCount: mirage.activeDownloadCount
-                    onSelected: index => window.currentTab = index
-                    onMobileRequested: linuxNotice.open()
-                    onDisplayRequested: displaySettingsSheet.open()
-                    onSettingsRequested: settingsSheet.open()
-                }
+                anchors.topMargin: appBar.height
 
                 ProjectFeedbackBanner {
                     Layout.fillWidth: true

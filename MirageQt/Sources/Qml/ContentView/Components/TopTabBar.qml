@@ -6,47 +6,63 @@ RowLayout {
     id: bar
 
     property int currentIndex: 0
-    property int downloadCount: 0
     signal selected(int index)
     signal mobileRequested
     signal displayRequested
     signal settingsRequested
 
-    RowLayout {
-        spacing: 4
-        Repeater {
-            model: [qsTr("已安装"), qsTr("发现"), qsTr("创意工坊")]
-            delegate: FluToggleButton {
-                id: tabButton
-                required property string modelData
-                required property int index
-                text: modelData
-                checked: bar.currentIndex === index
-                clickListener: function() { bar.selected(index); }
-                FluBadge {
-                    position: "topRight"
-                    count: bar.downloadCount
-                    visible: index === 2 && bar.downloadCount > 0
-                }
-            }
+    onCurrentIndexChanged: pivot.currentIndex = currentIndex
+
+    // 把内部可交互控件注册为 frameless 顶栏的可点击区域，
+    // 这样标签和图标按钮能收到点击，而顶栏空白区仍可拖动窗口。
+    function registerHitTest(host) {
+        var stack = [bar];
+        while (stack.length > 0) {
+            var item = stack.pop();
+            if (item instanceof FluPivot || item instanceof FluIconButton)
+                host.setHitTestVisible(item);
+            for (var i = 0; i < item.children.length; ++i)
+                stack.push(item.children[i]);
+        }
+    }
+
+    FluPivot {
+        id: pivot
+        Component.onCompleted: currentIndex = bar.currentIndex
+        onCurrentIndexChanged: bar.selected(pivot.currentIndex)
+        Layout.preferredWidth: 190
+        Layout.preferredHeight: 30
+        headerHeight: 30
+        font: FluTextStyle.Caption
+        FluPivotItem {
+            title: qsTr("已安装")
+        }
+        FluPivotItem {
+            title: qsTr("发现")
+        }
+        FluPivotItem {
+            title: qsTr("创意工坊")
         }
     }
 
     Item { Layout.fillWidth: true }
     FluIconButton {
         iconSource: FluentIcons.MobileTablet
+        iconSize: 15
         text: qsTr("移动端")
         contentDescription: qsTr("移动端")
         onClicked: bar.mobileRequested()
     }
     FluIconButton {
         iconSource: FluentIcons.SettingsDisplaySound
+        iconSize: 15
         text: qsTr("显示器设置")
         contentDescription: qsTr("显示器设置")
         onClicked: bar.displayRequested()
     }
     FluIconButton {
         iconSource: FluentIcons.Settings
+        iconSize: 15
         text: qsTr("设置")
         contentDescription: qsTr("设置")
         onClicked: bar.settingsRequested()
