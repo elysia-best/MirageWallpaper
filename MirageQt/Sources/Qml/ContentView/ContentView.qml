@@ -201,6 +201,16 @@ FluWindow {
         return ContentViewLogic.propertyOptionItems(options, mirage.selectedProperties);
     }
 
+    Connections {
+        target: mirage
+        // 属性集变化（选中不同壁纸、编辑属性值）时使 ContentViewLogic 的条件
+        // 判定缓存失效；语义与 macOS WEConditionEvaluator 的 updateContext
+        // 清缓存一致。selectedRuntimeChanged 也会因音量/速度等变化触发，此时
+        // 属性判定并未改变，清空缓存只是多一次重建，无害。
+        function onSelectedRuntimeChanged() { ContentViewLogic.invalidatePropertyConditionCache(); }
+        function onSelectedWallpaperChanged() { ContentViewLogic.invalidatePropertyConditionCache(); }
+    }
+
     function resetDetailScroll() {
         Qt.callLater(function () {
             if (detailScroll.contentItem)
@@ -369,7 +379,6 @@ FluWindow {
 
     function setWallpaperPage(page) {
         wallpaperCurrentPage = Math.max(1, Math.min(wallpaperPageCount, Math.floor(Number(page) || 1)));
-        wallpaperGrid.positionViewAtBeginning();
     }
 
     function wallpaperPageItems() {
@@ -571,18 +580,20 @@ FluWindow {
 
             clip: true
 
-            // 用户修复：FluScrollablePage 内容列高跟随父级
-            columnHeight: parent.height
-
-            // The frameless window intentionally lets content fit behind the
-            // app bar. Keep the detail preview below that hit-test region so
-            // window controls never paint over wallpaper information.
-            // 包装层用普通 Item：ColumnLayout 的 fillWidth 在内容
-            // 切换（WallpaperPreview↔WorkshopItemDetail）时会被内容
-            // 隐式宽覆盖导致变窄，Item 隐式宽为 0，宽度稳定。
+            // 滚动模型：内容高度取当前可见内容的自然高度（implicitHeight），
+            // 与 macOS ScrollView + VStack 一致，超高时可滚动。
+            // 不要用 columnHeight 强制内容高度 = 视口高度：FluScrollablePage
+            // 的 contentHeight 即 container.height，被强制等于视口后滚动范围
+            // 恒为 0，滚动条形同虚设（"内容超高但滚不动"的根因）。
+            // 也不能用 fillHeight + anchors.fill：Item 高度由容器给、容器
+            // 高度由内容 implicitHeight 给、内容又 anchors.fill 依赖 Item
+            // 尺寸，形成循环依赖，内容高度会塌缩为 0（此前内容不可见的
+            // 根因，也是当初加 columnHeight: parent.height 的原因）。
+            // 子项高度自取自身 implicitHeight、Item 高度绑定可见子项的
+            // implicitHeight，打破循环。
             Item {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
+                Layout.preferredHeight: (window.currentTab === 0 ? wallpaperPreview : workshopDetail).implicitHeight
                 Layout.topMargin: appBar.height + 16
                 Layout.bottomMargin: 16
                 Layout.leftMargin: 16
@@ -590,7 +601,10 @@ FluWindow {
 
                 WallpaperPreview {
                     id: wallpaperPreview
-                    anchors.fill: parent
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: implicitHeight
                     visible: window.currentTab === 0
                     host: window
                     onMetadataEditRequested: wallpaperMetadataSheet.open()
@@ -599,7 +613,10 @@ FluWindow {
 
                 WorkshopItemDetail {
                     id: workshopDetail
-                    anchors.fill: parent
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: implicitHeight
                     visible: window.currentTab !== 0
                     host: window
                 }

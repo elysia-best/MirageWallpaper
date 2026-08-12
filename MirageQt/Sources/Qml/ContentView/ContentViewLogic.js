@@ -123,28 +123,68 @@ function propertyConditionValue(value, type) {
 /**
  * 解析 WE 条件表达式（如 "hasChild && gender == 'male'"），决定属性是否可见。
  * 条件来自创意工坊项目文件，语法非法时降级为可见并输出警告，避免阻塞 UI。
+ *
+ * 性能：与 macOS WEConditionEvaluator.cache 同构——同一属性集周期内，
+ * names/values 只构建一次（__buildPropertyConditionRuntime），每个 condition
+ * 的判定结果缓存到 verdicts，QML 侧每个属性 delegate 的 visible 绑定与每个
+ * combo 的 optionItems 绑定在重求值时不再各自 Function 构造（JS 编译）。
+ * 属性集变化（选中/属性编辑）时由 ContentView 调用
+ * invalidatePropertyConditionCache() 使缓存失效。本模块被 Qt.include 到
+ * ContentView.qml 的实例与 ContentViewModel.qml 的实例各自独立，缓存只影响
+ * 走 ContentView.host 的求值路径；filterWallpapers 等纯函数不依赖此缓存。
  * @param {string} condition - 条件表达式，空串视为无条件（可见）
  * @param {Array<Object>} properties - 当前选中壁纸的属性列表（mirage.selectedProperties）
  * @returns {boolean} true 表示可见
  */
+var __propertyConditionRuntime = null; // {names, values, verdicts}
+
+/**
+ * 使属性条件判定缓存失效。必须在属性集变化（选中不同壁纸、编辑属性值）
+ * 后、下一次求值前调用一次；缓存假定两次失效之间 properties 引用不变。
+ */
+function invalidatePropertyConditionCache() {
+    __propertyConditionRuntime = null;
+}
+
+/**
+ * 构建条件求值运行时：把属性列表压平为 JS 变量名与值数组（一次 O(N) 遍历），
+ * 供后续多个 condition 复用，避免每个 condition 各自重复遍历属性列表。
+ * @param {Array<Object>} properties - 属性列表
+ * @returns {{names: string[], values: Array<{value: *}>, verdicts: Object}} 运行时
+ */
+function __buildPropertyConditionRuntime(properties) {
+    var names = [];
+    var values = [];
+    var source = properties || [];
+    for (var index = 0; index < source.length; ++index) {
+        var property = source[index];
+        if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(property.key))
+            continue;
+        names.push(property.key);
+        values.push({
+            value: propertyConditionValue(property.value, property.type)
+        });
+    }
+    return {
+        names: names,
+        values: values,
+        verdicts: {}
+    };
+}
+
 function propertyConditionVisible(condition, properties) {
     if (!condition || String(condition).trim().length === 0)
         return true;
     try {
-        var names = [];
-        var values = [];
-        var source = properties || [];
-        for (var index = 0; index < source.length; ++index) {
-            var property = source[index];
-            if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(property.key))
-                continue;
-            names.push(property.key);
-            values.push({
-                value: propertyConditionValue(property.value, property.type)
-            });
-        }
-        var evaluate = Function.apply(null, names.concat(["return !!(" + condition + ");"]));
-        return evaluate.apply(null, values);
+        if (!__propertyConditionRuntime)
+            __propertyConditionRuntime = __buildPropertyConditionRuntime(properties);
+        var runtime = __propertyConditionRuntime;
+        if (runtime.verdicts[condition] !== undefined)
+            return runtime.verdicts[condition];
+        var evaluate = Function.apply(null, runtime.names.concat(["return !!(" + condition + ");"]));
+        var verdict = evaluate.apply(null, runtime.values);
+        runtime.verdicts[condition] = verdict;
+        return verdict;
     } catch (error) {
         console.warn("propertyConditionVisible: invalid condition:", condition, error);
         return true;

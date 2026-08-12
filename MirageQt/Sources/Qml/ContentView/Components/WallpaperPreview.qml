@@ -149,7 +149,14 @@ ColumnLayout {
 
     DetailSectionHeader {
         title: "壁纸属性"
-        visible: mirage.selectedWallpaperId.length > 0
+        // 参考 macOS WallpaperPreview.swift：该区域无条件渲染，无效/未选中
+        // 壁纸时以占位提示代替控件，避免属性区随选中状态整体消失。
+    }
+    FluText {
+        Layout.fillWidth: true
+        visible: mirage.selectedWallpaperId.length === 0
+        text: "请选择一个有效的壁纸"
+        wrapMode: Text.WordWrap
     }
     FluText {
         Layout.fillWidth: true

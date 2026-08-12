@@ -216,11 +216,35 @@ WallpaperRuntimeState WallpaperRuntimeStore::normalizedRuntime(const WallpaperRu
 
 QHash<QString, ProjectProperty>
 WallpaperRuntimeStore::loadBaseProperties(const Wallpaper& wallpaper) const {
-    QFile projectFile(QDir(wallpaper.renderDirectory).filePath(QStringLiteral("project.json")));
-    if (!projectFile.open(QIODevice::ReadOnly)) return {};
-    const QJsonDocument document = QJsonDocument::fromJson(projectFile.readAll());
-    if (!document.isObject()) return {};
-    return Project::fromJson(document.object()).properties;
+    const QString projectPath = QDir(wallpaper.renderDirectory).filePath(QStringLiteral("project.json"));
+
+    // 性能缓存：effectiveProperties() 对 preset 壁纸每次调用都会走到这里，
+    // 原实现每次读盘 + 解析整个 project.json（无缓存），而 QML 绑定风暴与
+    // 滑块拖动（每格触发 selectedRuntimeChanged → 重建 selectedProperties）
+    // 会让该重活反复执行。缓存以 project.json 的 mtime + size 作失效校验：
+    // 命中且两者未变时一次 stat 替代一次全量读盘解析；mtime 或 size 任一
+    // 变化（文件被更新）或文件不存在时重新解析。注：替换后同时保留 mtime
+    // 与 size 的极端场景可能命中陈旧缓存，属缓存一致性通用权衡。这是缓存
+    // 失效检查而非输入探测，解析结果语义与未缓存路径完全一致。
+    const QFileInfo fileInfo(projectPath);
+    const QDateTime modified = fileInfo.lastModified();
+    const qint64 fileSize = fileInfo.size();
+
+    const auto cached = m_basePropertiesCache.constFind(wallpaper.renderDirectory);
+    if (cached != m_basePropertiesCache.constEnd()
+        && cached->lastModified == modified
+        && cached->fileSize == fileSize) {
+        return cached->properties;
+    }
+
+    QHash<QString, ProjectProperty> properties;
+    QFile projectFile(projectPath);
+    if (projectFile.open(QIODevice::ReadOnly)) {
+        const QJsonDocument document = QJsonDocument::fromJson(projectFile.readAll());
+        if (document.isObject()) properties = Project::fromJson(document.object()).properties;
+    }
+    m_basePropertiesCache.insert(wallpaper.renderDirectory, {modified, fileSize, properties});
+    return properties;
 }
 
 bool WallpaperRuntimeStore::isWindowsAbsolutePath(const QString& path) const {

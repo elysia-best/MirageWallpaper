@@ -17,6 +17,17 @@ FluScrollablePage {
                             Math.floor(width / Math.max(1, Math.floor(width / root.host.explorerIconSize))))
         cellHeight: cellWidth
 
+        // 页码变化时把网格滚回顶部。原实现放在 ContentView.setWallpaperPage
+        // 里直接引用本组件内 id（wallpaperGrid），跨文件作用域不可见，每次
+        // 点击分页都抛 ReferenceError；滚动逻辑移到 grid 自身职责内，
+        // 由页码属性变化信号驱动。
+        Connections {
+            target: root.host
+            function onWallpaperCurrentPageChanged() {
+                wallpaperGrid.positionViewAtBeginning();
+            }
+        }
+
         delegate: Item {
             required property var modelData
             width: wallpaperGrid.cellWidth

@@ -239,6 +239,30 @@ private:
     QVariantMap propertyMap(const QString& key, const ProjectProperty& property) const;
     void setStatusMessage(const QString& message);
 
+    // 重建 m_selectedWallpaperCache。必须在任何 emit selectedWallpaperChanged
+    // 之前调用：QML 侧有约 13 处独立绑定引用 mirage.selectedWallpaper，每次
+    // 求值都会调用 getter；若 getter 直接走 wallpaperMap()（含 3 次文件 stat
+    // 与 O(N) 线性扫描），一次选中变化就会在 GUI 线程重复执行该重活导致卡顿。
+    // 缓存后 getter 仅返回 QVariantMap（隐式共享，拷贝 O(1)）。
+    // 线程假设：mirage 仅由 GUI 线程创建与访问，QML 绑定在 GUI 线程求值，
+    // 无需加锁。
+    void refreshSelectedWallpaperCache();
+    // 重建 m_selectedPropertiesCache。必须在任何 emit selectedRuntimeChanged
+    // 之前调用：PropertyEditor 中每个属性 delegate 的 visible 绑定与每个
+    // combo 的 optionItems 绑定都会各自调用一次 selectedProperties() getter
+    // （数量随属性数线性放大），而 getter 原实现每次执行 effectiveProperties()
+    // ——对 workshop preset 壁纸含读盘解析 project.json 与多次文件 stat。
+    // 重建本身仍执行该重活，但由 emit 前的一次集中调用替代 QML 侧的
+    // 多次重复调用；重复解析的残余成本由 WallpaperRuntimeStore 层缓存兜底。
+    void refreshSelectedPropertiesCache();
+    // 重建 m_wallpapersCache。必须在任何 emit wallpapersChanged 之前调用：
+    // 一次 wallpapersChanged（收藏切换/库刷新）后 QML 可能有多个独立绑定
+    // 引用 mirage.wallpapers，每个绑定各调用一次 getter；若 getter 每次都
+    // 对全部壁纸重建 QVariantMap（每壁纸 3 次文件 stat），收藏切换会重复
+    // 执行该全量重活。重建本身无法避免单次全量序列化（favorite/size 字段
+    // 变化必须重算），缓存只消除信号后的重复调用。
+    void refreshWallpapersCache();
+
     GlobalSettingsService m_settings;
     FavoritesManager m_favorites;
     WallpaperLibrary m_library;
@@ -253,6 +277,15 @@ private:
     PlaybackController m_playback;
     QVector<Wallpaper> m_allWallpapers;
     QString m_selectedWallpaperId;
+    // 选中壁纸的序列化缓存（mutable：getter 为 const）。失效时机见
+    // refreshSelectedWallpaperCache() 注释；此处仅存储值，无所有权语义。
+    mutable QVariantMap m_selectedWallpaperCache;
+    // 选中壁纸属性列表缓存（mutable：getter 为 const）。失效时机见
+    // refreshSelectedPropertiesCache() 注释。
+    mutable QVariantList m_selectedPropertiesCache;
+    // 全量壁纸列表序列化缓存（mutable：getter 为 const）。失效时机见
+    // refreshWallpapersCache() 注释。
+    mutable QVariantList m_wallpapersCache;
     int m_playlistScreen = 0;
     bool m_firstLaunch = true;
     QString m_statusMessage;
