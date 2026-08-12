@@ -9,17 +9,12 @@ import FluentUI
 // 组件只做读写转发，不保存自己的状态。
 // 注意：FluCheckBox 的 clickListener 在 onToggled 触发，checked 已是新值，
 // 因此这里直接使用 checked，而不是旧 ToggleSwitch 的 !checked。
-ScrollView {
+FluScrollablePage {
     id: root
     required property var host
-    clip: true
 
     ColumnLayout {
         Layout.fillWidth: true
-        // ScrollView 内容区是 Flickable，Layout.fillWidth 不生效，
-        // 需显式占满视口宽度，否则侧栏会缩成内容隐式宽度，
-        // 边框组等控件无法包住文字。
-        width: root.availableWidth
         spacing: 12
 
         FluText {

@@ -541,32 +541,35 @@ FluWindow {
             }
         }
 
-        ScrollView {
+        FluScrollablePage {
             id: detailScroll
             SplitView.minimumWidth: 288
             SplitView.preferredWidth: 320
             SplitView.maximumWidth: 340
             SplitView.fillHeight: true
+
             clip: true
-            leftPadding: 16
+
+            // 用户修复：FluScrollablePage 内容列高跟随父级
+            columnHeight: parent.height
+
             // The frameless window intentionally lets content fit behind the
             // app bar. Keep the detail preview below that hit-test region so
             // window controls never paint over wallpaper information.
-            topPadding: appBar.height + 16
-            rightPadding: 16
-            bottomPadding: 16
-            contentWidth: Math.max(0, width - leftPadding - rightPadding)
-
+            // 包装层用普通 Item：ColumnLayout 的 fillWidth 在内容
+            // 切换（WallpaperPreview↔WorkshopItemDetail）时会被内容
+            // 隐式宽覆盖导致变窄，Item 隐式宽为 0，宽度稳定。
             Item {
-                id: detailContent
-                width: detailScroll.contentWidth
-                implicitHeight: window.currentTab === 0 ? wallpaperPreview.implicitHeight : workshopDetail.implicitHeight
-                height: Math.max(detailScroll.availableHeight, implicitHeight)
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.topMargin: appBar.height + 16
+                Layout.bottomMargin: 16
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
 
                 WallpaperPreview {
                     id: wallpaperPreview
-                    width: parent.width
-                    height: parent.height
+                    anchors.fill: parent
                     visible: window.currentTab === 0
                     host: window
                     onMetadataEditRequested: wallpaperMetadataSheet.open()
@@ -575,8 +578,7 @@ FluWindow {
 
                 WorkshopItemDetail {
                     id: workshopDetail
-                    width: parent.width
-                    height: parent.height
+                    anchors.fill: parent
                     visible: window.currentTab !== 0
                     host: window
                 }
@@ -678,5 +680,4 @@ FluWindow {
                 window.showSuccess(mirage.statusMessage);
         }
     }
-
 }

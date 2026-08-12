@@ -11,8 +11,6 @@ ColumnLayout {
     signal metadataEditRequested
     signal deleteRequested
 
-    width: parent.width
-    height: parent.height
     spacing: 16
 
     component DetailSectionHeader: RowLayout {

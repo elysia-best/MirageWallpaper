@@ -50,7 +50,10 @@ FluWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: width
-            contentHeight: bodyColumn.implicitHeight
+            // 内容至少撑满视口高度，否则 Layout.fillHeight 的
+            // contentDelegate（如设置页的 FluScrollablePage）会被
+            // implicitHeight 塌缩成极小高度而不显示。
+            contentHeight: bodyColumn.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: FluScrollBar {
@@ -60,6 +63,7 @@ FluWindow {
             ColumnLayout {
                 id: bodyColumn
                 width: body.width
+                height: Math.max(implicitHeight, body.height)
                 spacing: 12
 
                 FluText {
@@ -72,7 +76,16 @@ FluWindow {
                 Loader {
                     id: contentLoader
                     Layout.fillWidth: true
+                    Layout.fillHeight: true
                     sourceComponent: dialog.visible ? dialog.contentDelegate : undefined
+                    // 把内容组件根尺寸绑定到 Loader，避免内容根（如
+                    // FluScrollablePage）的 implicitHeight 很小导致塌缩。
+                    onLoaded: {
+                        if (item) {
+                            item.width = Qt.binding(function () { return contentLoader.width; });
+                            item.height = Qt.binding(function () { return contentLoader.height; });
+                        }
+                    }
                 }
             }
         }

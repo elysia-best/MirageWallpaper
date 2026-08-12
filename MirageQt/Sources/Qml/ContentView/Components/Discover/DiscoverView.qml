@@ -35,17 +35,14 @@ Item {
             }
         }
 
-        ScrollView {
+        FluScrollablePage {
             id: discoverScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            contentWidth: Math.max(0, availableWidth)
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
             ColumnLayout {
                 id: discoverColumn
-                width: Math.max(0, discoverScroll.availableWidth)
+                Layout.fillWidth: true
                 spacing: 18
 
                 FluProgressRing {

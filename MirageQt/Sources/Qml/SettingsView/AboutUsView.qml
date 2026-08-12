@@ -2,8 +2,11 @@ import QtQuick
 import QtQuick.Layouts
 import FluentUI
 
-ColumnLayout {
+FluScrollablePage {
     required property var host
+
+    ColumnLayout {
+        Layout.fillWidth: true
 
                         spacing: 12
                         FluText {
@@ -19,3 +22,4 @@ ColumnLayout {
                             wrapMode: Text.WordWrap
                         }
                     }
+    }

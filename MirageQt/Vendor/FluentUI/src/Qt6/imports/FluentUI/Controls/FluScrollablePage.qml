@@ -8,6 +8,7 @@ FluPage {
     id: control
     property bool autoResetScroll: false
     default property alias content: container.data
+    property alias columnHeight: container.height
 
     Flickable{
         id: flickable
