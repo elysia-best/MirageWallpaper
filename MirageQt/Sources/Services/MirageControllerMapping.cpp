@@ -124,8 +124,9 @@ QString downloadStateKey(DownloadStateKind kind) {
     switch (kind) {
     case DownloadStateKind::Queued: return QStringLiteral("queued");
     case DownloadStateKind::Starting: return QStringLiteral("starting");
+    case DownloadStateKind::Connecting: return QStringLiteral("connecting");
     case DownloadStateKind::Downloading: return QStringLiteral("downloading");
-    case DownloadStateKind::Validating: return QStringLiteral("validating");
+    case DownloadStateKind::Resolving: return QStringLiteral("resolving");
     case DownloadStateKind::Completed: return QStringLiteral("completed");
     case DownloadStateKind::Failed: return QStringLiteral("failed");
     case DownloadStateKind::Cancelled: return QStringLiteral("cancelled");
@@ -134,8 +135,8 @@ QString downloadStateKey(DownloadStateKind kind) {
 }
 
 bool isActiveDownload(DownloadStateKind kind) {
-    return kind == DownloadStateKind::Starting || kind == DownloadStateKind::Downloading ||
-           kind == DownloadStateKind::Validating;
+    return kind == DownloadStateKind::Starting || kind == DownloadStateKind::Connecting ||
+           kind == DownloadStateKind::Downloading || kind == DownloadStateKind::Resolving;
 }
 
 QVariantList MirageController::discoverSections() const {

@@ -179,8 +179,8 @@ FluPopup {
                                         popup.taskValue(modelData, "message", "")));
                                     if (message.length > 0)
                                         return message;
-                                    if (state === "queued") return qsTr("等待 SteamCMD 按顺序下载…");
-                                    if (state === "starting") return qsTr("正在启动 SteamCMD…");
+                                    if (state === "queued") return qsTr("等待 Steam 服务按顺序下载…");
+                                    if (state === "starting") return qsTr("正在连接 Steam 服务…");
                                     if (state === "downloading") return qsTr("正在下载 (%1%)").arg(Math.round(popup.progress(modelData) * 100));
                                     if (state === "validating") return qsTr("验证中...");
                                     if (state === "completed") return qsTr("已完成");

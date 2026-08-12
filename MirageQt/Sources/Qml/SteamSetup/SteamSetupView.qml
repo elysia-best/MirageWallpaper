@@ -29,7 +29,7 @@ FluWindow {
 
     onVisibleChanged: {
         if (visible)
-            setupModel.detectSteamCMD();
+            setupModel.refreshFromService();
         else
             setupModel.cancelPendingWork();
     }
@@ -46,10 +46,10 @@ FluWindow {
             spacing: 4
 
             Repeater {
-                model: 4
+                model: 3
                 delegate: Item {
                     required property int index
-                    Layout.fillWidth: index < 3
+                    Layout.fillWidth: index < 2
                     Layout.preferredWidth: 28
                     implicitHeight: 44
 
@@ -83,7 +83,7 @@ FluWindow {
                         FluRectangle {
                             Layout.preferredHeight: 2
                             Layout.fillWidth: true
-                            visible: index < 3
+                            visible: index < 2
                             color: index < setup.currentStep
                                 ? FluTheme.primaryColor : FluTheme.dividerColor
                         }
@@ -198,7 +198,7 @@ FluWindow {
                             }
                             FluText {
                                 Layout.fillWidth: true
-                                text: qsTr("此功能依赖全球 Steam 的 Web API、SteamCMD 登录服务和内容 CDN。蒸汽平台兼容性不保证；网络线路只能改善个别环节，Mirage 不承诺任何线路一定能解决登录或下载问题。")
+                                text: qsTr("此功能依赖全球 Steam 的 Web API、Steam 登录服务和内容 CDN。蒸汽平台兼容性不保证；网络线路只能改善个别环节，Mirage 不承诺任何线路一定能解决登录或下载问题。")
                                 wrapMode: Text.WordWrap
                                 color: FluTheme.fontSecondaryColor
                                 font: FluTextStyle.Caption
@@ -213,7 +213,7 @@ FluWindow {
                         Repeater {
                             model: [
                                 [FluentIcons.Search, qsTr("搜索浏览"), qsTr("搜索、筛选、排序海量壁纸")],
-                                [FluentIcons.Download, qsTr("一键下载"), qsTr("通过 SteamCMD 直接下载到本地")],
+                                [FluentIcons.Download, qsTr("一键下载"), qsTr("通过 Steam 服务直接下载到本地")],
                                 [FluentIcons.BrushSize, qsTr("即刻使用"), qsTr("下载完成自动加入壁纸库")]
                             ]
                             delegate: RowLayout {
@@ -249,10 +249,6 @@ FluWindow {
                         }
                     }
                     Item { Layout.fillHeight: true }
-                }
-
-                SteamCMDStep {
-                    Layout.fillWidth: true
                 }
 
                 SteamLoginStep {
@@ -327,10 +323,10 @@ FluWindow {
             }
             Item { Layout.fillWidth: true }
             FluFilledButton {
-                text: setup.currentStep === 3 ? qsTr("完成") : qsTr("下一步")
+                text: setup.currentStep === 2 ? qsTr("完成") : qsTr("下一步")
                 enabled: setup.canProceed && !setupModel.busy
                 onClicked: {
-                    if (setup.currentStep === 3) {
+                    if (setup.currentStep === 2) {
                         setupModel.completeSetup();
                         setup.close();
                     } else {

@@ -71,10 +71,8 @@ add_library(MirageQtCore STATIC
     Sources/Services/PlaylistTransitionOverlay.h
     Sources/Services/RendererController.cpp
     Sources/Services/RendererController.h
-    Sources/Services/SteamCMDManager.cpp
-    Sources/Services/SteamCMDManager.h
-    Sources/Services/SteamCMDPtySession.cpp
-    Sources/Services/SteamCMDPtySession.h
+    Sources/Services/SteamServiceManager.cpp
+    Sources/Services/SteamServiceManager.h
     Sources/Services/SteamSetupViewModel.cpp
     Sources/Services/SteamSetupViewModel.h
     Sources/Services/SteamWebAPI.cpp

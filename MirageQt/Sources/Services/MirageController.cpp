@@ -56,14 +56,14 @@ MirageController::MirageController(QObject* parent)
     , m_settings(this)
     , m_favorites(this)
     , m_library(&m_settings, this)
-    , m_steamCMD(this)
+    , m_steamService(this)
     , m_steamAPI(&m_settings, this)
-    , m_workshop(&m_steamAPI, &m_steamCMD, &m_library, this)
+    , m_workshop(&m_steamAPI, &m_steamService, &m_library, this)
     , m_renderer(&m_settings, this)
     , m_runtimeStore(this)
     , m_playlist(&m_library, &m_renderer, this)
     , m_trusted(this)
-    , m_steamSetup(&m_steamCMD, this)
+    , m_steamSetup(&m_steamService, this)
     , m_playback(&m_settings, &m_renderer, &m_runtimeStore, &m_playlist, this) {
     m_firstLaunch = QSettings().value(QStringLiteral("IsFirstLaunch"), true).toBool();
     m_renderer.setWallpaperTrustChecker([this](const Wallpaper& item) {
@@ -127,8 +127,10 @@ MirageController::MirageController(QObject* parent)
     });
     connect(&m_workshop, &WorkshopViewModel::steamSetupChanged, this, &MirageController::workshopStateChanged);
     connect(&m_steamSetup, &SteamSetupViewModel::steamChanged, this, &MirageController::steamChanged);
-    connect(&m_steamCMD, &SteamCMDManager::authenticationChanged, this,
-            [this](bool, const QString&) { emit workshopStateChanged(); });
+    connect(&m_steamService, &SteamServiceManager::authenticationChanged, this,
+            [this](bool, const QString&, const QString&) { emit workshopStateChanged(); });
+    connect(&m_workshop, &WorkshopViewModel::subscriptionsChanged, this,
+            &MirageController::subscriptionsChanged);
     connect(&m_workshop, &WorkshopViewModel::installedWallpaperRequested, this, [this](const Wallpaper& item) {
         selectWallpaper(item.id());
         emit installedWallpaperSelected();
@@ -143,7 +145,9 @@ MirageController::MirageController(QObject* parent)
         setStatusMessage(QStringLiteral("创意工坊下载完成"));
     });
 
-    if (m_steamCMD.sessionReusable()) m_steamCMD.refreshSession();
+    // 启动 Steam 服务进程；若保存过会话则自动恢复。
+    m_steamService.start();
+    if (m_steamService.hasSavedSession()) m_steamService.restoreSessionIfNeeded();
     reloadWallpapers();
     m_playback.restoreStartupPlayback();
     m_playlist.startRotators();
@@ -219,17 +223,31 @@ QVariantList MirageController::downloadQueue() const {
 
 bool MirageController::steamReady() const { return m_workshop.steamSetupState() == SteamSetupState::Ready; }
 QString MirageController::steamSetupSummary() const { return m_workshop.steamSetupSummary(); }
-QString MirageController::steamCMDPath() const { return m_steamCMD.steamCMDPath(); }
-QString MirageController::steamUsername() const { return m_steamCMD.savedUsername(); }
-bool MirageController::steamLoggedIn() const { return m_steamCMD.isLoggedIn(); }
-QString MirageController::steamInstallState() const { return m_steamSetup.installState(); }
-double MirageController::steamInstallProgress() const { return m_steamSetup.installProgress(); }
-QString MirageController::steamInstallMessage() const { return m_steamSetup.installMessage(); }
+QString MirageController::steamUsername() const { return m_steamService.accountName(); }
+bool MirageController::steamLoggedIn() const { return m_steamService.isLoggedIn(); }
 QString MirageController::steamLoginState() const { return m_steamSetup.loginState(); }
 QString MirageController::steamLoginMessage() const { return m_steamSetup.loginMessage(); }
-QStringList MirageController::steamLoginLog() const { return m_steamSetup.loginLog(); }
 QString MirageController::steamGuardType() const { return m_steamSetup.guardType(); }
-bool MirageController::steamSessionReusable() const { return m_steamSetup.sessionReusable(); }
+QString MirageController::steamQRCodeUrl() const { return m_steamSetup.qrChallengeUrl(); }
+bool MirageController::steamSessionReusable() const { return m_steamSetup.hasSavedSession(); }
+bool MirageController::steamServiceRunning() const { return m_steamService.isRunning(); }
+
+QVariantList MirageController::subscriptions() const {
+    QVariantList result;
+    for (const WorkshopSubscription& sub : m_workshop.subscriptions()) {
+        result.append(QVariantMap{
+            {QStringLiteral("workshopId"), sub.publishedFileId},
+            {QStringLiteral("subscribedAt"), static_cast<qlonglong>(sub.subscribedAt)},
+            {QStringLiteral("updatedAt"), static_cast<qlonglong>(sub.updatedAt)},
+            {QStringLiteral("contentHash"), sub.contentHash},
+            {QStringLiteral("fileSize"), static_cast<qlonglong>(sub.fileSize)},
+        });
+    }
+    return result;
+}
+bool MirageController::subscriptionsLoading() const { return m_workshop.isSubscriptionsLoading(); }
+bool MirageController::hasMoreSubscriptions() const { return m_workshop.hasMoreSubscriptions(); }
+int MirageController::subscriptionTotal() const { return m_workshop.subscriptionTotal(); }
 
 bool MirageController::firstLaunch() const {
     return m_firstLaunch;
@@ -551,6 +569,10 @@ void MirageController::downloadWorkshopItem(const QString& id) {
     if (item) m_workshop.downloadItem(*item);
 }
 
+void MirageController::downloadWorkshopItemById(const QString& id) {
+    m_workshop.downloadItemById(id);
+}
+
 void MirageController::requestWorkshopPresetDependency(const QString& id) {
     m_workshop.requestPresetDependency(id);
 }
@@ -567,16 +589,8 @@ void MirageController::clearCompletedDownloads() {
     m_workshop.clearCompletedDownloads();
 }
 
-void MirageController::detectSteamCMD() {
-    m_steamSetup.detect();
-}
-
-void MirageController::installSteamCMD() {
-    m_steamSetup.install();
-}
-
-void MirageController::cancelSteamCMDInstallation() {
-    m_steamSetup.cancelInstallation();
+void MirageController::loginSteamQR() {
+    m_steamSetup.loginWithQR();
 }
 
 void MirageController::loginSteam(const QString& username, const QString& password) {
@@ -585,10 +599,6 @@ void MirageController::loginSteam(const QString& username, const QString& passwo
 
 void MirageController::submitSteamGuardCode(const QString& code) {
     m_steamSetup.submitGuardCode(code);
-}
-
-void MirageController::confirmSteamMobileLogin() {
-    m_steamSetup.confirmMobileLogin();
 }
 
 void MirageController::useSavedSteamSession() {
@@ -607,8 +617,24 @@ void MirageController::logoutSteam() {
     m_steamSetup.logout();
 }
 
-void MirageController::copySteamLoginLog() {
-    m_steamSetup.copyLoginLog();
+void MirageController::copyTextToClipboard(const QString& text) {
+    QGuiApplication::clipboard()->setText(text);
+}
+
+void MirageController::loadSubscriptions() {
+    m_workshop.loadSubscriptions(0);
+}
+
+void MirageController::loadNextSubscriptionsPage() {
+    m_workshop.loadNextSubscriptionsPage();
+}
+
+void MirageController::subscribeWorkshopItem(const QString& id) {
+    m_workshop.subscribe(id);
+}
+
+void MirageController::unsubscribeWorkshopItem(const QString& id) {
+    m_workshop.unsubscribe(id);
 }
 
 void MirageController::revealWorkshopDownload(const QString& id) {

@@ -20,6 +20,11 @@ Item {
     property var downloadQueue: value("downloadQueue", [])
     property bool steamLoggedIn: Boolean(value("steamLoggedIn", false))
     property string steamUsername: String(value("steamUsername", ""))
+    property bool subscriptionMode: false
+    property var subscriptions: value("subscriptions", [])
+    property bool subscriptionsLoading: Boolean(value("subscriptionsLoading", false))
+    property bool hasMoreSubscriptions: Boolean(value("hasMoreSubscriptions", false))
+    property int subscriptionTotal: Number(value("subscriptionTotal", 0))
 
     function value(name, fallback) {
         return MirageBridge.value(mirage, name, fallback);
@@ -55,6 +60,15 @@ Item {
                 onCommit: root.invoke("submitWorkshopSearch")
             }
             Item { Layout.fillWidth: true }
+            FluToggleButton {
+                text: qsTr("已订阅")
+                checked: root.subscriptionMode
+                onClicked: {
+                    root.subscriptionMode = !root.subscriptionMode;
+                    if (root.subscriptionMode)
+                        root.invoke("loadSubscriptions");
+                }
+            }
             FluIconButton {
                 iconSource: FluentIcons.Refresh
                 text: qsTr("刷新创意工坊")
@@ -149,7 +163,7 @@ Item {
                     }
                     FluText {
                         Layout.fillWidth: true
-                        text: root.steamSummary.length > 0 ? root.steamSummary : qsTr("需要先安装 SteamCMD")
+                        text: root.steamSummary.length > 0 ? root.steamSummary : qsTr("需要连接 Steam 服务")
                         wrapMode: Text.WordWrap
                         color: FluTheme.fontSecondaryColor
                     }
@@ -164,6 +178,91 @@ Item {
         FluScrollablePage {
             Layout.fillWidth: true
             Layout.fillHeight: true
+
+        // 订阅列表（对齐上游 SubscribedWorkshopView）。
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: root.subscriptionMode
+            spacing: 8
+
+            FluProgressRing {
+                Layout.alignment: Qt.AlignHCenter
+                visible: root.subscriptionsLoading && root.subscriptions.length === 0
+                indeterminate: true
+            }
+            FluText {
+                Layout.alignment: Qt.AlignHCenter
+                visible: !root.subscriptionsLoading && root.subscriptions.length === 0
+                text: qsTr("还没有订阅任何壁纸")
+                color: FluTheme.fontSecondaryColor
+            }
+            FluText {
+                Layout.alignment: Qt.AlignHCenter
+                visible: root.subscriptions.length > 0
+                text: qsTr("已订阅 %1 项").arg(root.subscriptionTotal)
+                color: FluTheme.fontSecondaryColor
+                font: FluTextStyle.Caption
+            }
+            ListView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: root.subscriptions
+                spacing: 4
+                delegate: RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+                    spacing: 10
+                    FluFrame {
+                        Layout.preferredWidth: 40
+                        Layout.preferredHeight: 40
+                        radius: 6
+                        FluIcon {
+                            anchors.centerIn: parent
+                            iconSource: FluentIcons.Library
+                            iconSize: 20
+                            iconColor: FluTheme.primaryColor
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+                        FluText {
+                            text: qsTr("创意工坊 #%1").arg(modelData.workshopId)
+                            elide: Text.ElideRight
+                        }
+                        FluText {
+                            text: modelData.fileSize > 0
+                                ? qsTr("%1 MB").arg((modelData.fileSize / 1048576).toFixed(1))
+                                : qsTr("订阅于 %2").arg(
+                                      modelData.subscribedAt > 0
+                                          ? new Date(modelData.subscribedAt * 1000).toLocaleDateString()
+                                          : "—")
+                            color: FluTheme.fontSecondaryColor
+                            font: FluTextStyle.Caption
+                        }
+                    }
+                    FluFilledButton {
+                        text: qsTr("下载")
+                        onClicked: root.invoke("downloadWorkshopItemById", modelData.workshopId)
+                    }
+                    FluButton {
+                        text: qsTr("取消订阅")
+                        onClicked: root.invoke("unsubscribeWorkshopItem", modelData.workshopId)
+                    }
+                }
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                visible: root.hasMoreSubscriptions
+                FluButton {
+                    text: qsTr("加载更多")
+                    onClicked: root.invoke("loadNextSubscriptionsPage")
+                }
+            }
+        }
 
         FluProgressRing {
             Layout.alignment: Qt.AlignHCenter

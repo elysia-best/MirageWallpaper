@@ -237,8 +237,8 @@ ColumnLayout {
             Layout.fillWidth: true
             visible: root.active
             text: {
-                if (root.state === "queued") return qsTr("等待 SteamCMD 按顺序下载…");
-                if (root.state === "starting") return qsTr("正在启动 SteamCMD…");
+                if (root.state === "queued") return qsTr("等待 Steam 服务按顺序下载…");
+                if (root.state === "starting") return qsTr("正在连接 Steam 服务…");
                 if (root.state === "validating") return qsTr("正在验证下载...");
                 if (root.state === "downloading") return root.progress < 0
                     ? qsTr("正在连接 Steam...")
@@ -292,6 +292,21 @@ ColumnLayout {
             visible: root.itemId.length > 0
             text: qsTr("在 Steam 中查看")
             onClicked: Qt.openUrlExternally(root.workshopUrl())
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: root.itemId.length > 0 && Boolean(root.value("steamLoggedIn", false))
+            spacing: 8
+            FluFilledButton {
+                Layout.fillWidth: true
+                text: qsTr("订阅")
+                onClicked: root.invoke("subscribeWorkshopItem", root.itemId)
+            }
+            FluButton {
+                Layout.fillWidth: true
+                text: qsTr("取消订阅")
+                onClicked: root.invoke("unsubscribeWorkshopItem", root.itemId)
+            }
         }
 
         FluDivider { Layout.fillWidth: true }

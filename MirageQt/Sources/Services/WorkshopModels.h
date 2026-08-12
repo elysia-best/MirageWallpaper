@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Services/SteamCMDManager.h"
 #include "Services/WEProject.h"
 
 #include <QDateTime>
@@ -103,12 +102,51 @@ enum class DownloadPurpose {
     PresetDependency,
 };
 
+// 下载状态（对齐 SteamService/WorkshopDownloader 的状态机）。
+// connecting/downloading → SteamService 正在下载；resolving/validating →
+// 已下载完成、正在校验展开；completed 时 outputPath 指向项目目录。
+enum class DownloadStateKind {
+    Queued,
+    Starting,
+    Connecting,
+    Downloading,
+    Resolving,
+    Completed,
+    Failed,
+    Cancelled,
+};
+
+struct DownloadState {
+    DownloadStateKind kind = DownloadStateKind::Queued;
+    double percent = -1.0;
+    QString message;
+    qint64 bytesReceived = 0;
+    qint64 totalBytes = 0;
+    double bytesPerSecond = 0.0;
+    QString outputPath;
+};
+
 struct WorkshopDownloadTask {
     WorkshopItem workshopItem;
     DownloadState state;
     QDateTime startedAt;
     QDateTime completedAt;
     DownloadPurpose purpose = DownloadPurpose::Wallpaper;
+};
+
+// Steam Workshop 订阅记录（对齐 WorkshopModels.swift 的 WorkshopSubscription）。
+struct WorkshopSubscription {
+    QString publishedFileId;
+    qint64 subscribedAt = 0;  // Unix 秒
+    qint64 updatedAt = 0;     // Unix 秒
+    QString contentHash;
+    qint64 fileSize = 0;
+};
+
+struct WorkshopSubscriptionPage {
+    int total = 0;
+    int startIndex = 0;
+    QVector<WorkshopSubscription> items;
 };
 
 QString workshopSortLabel(WorkshopSortOrder order);

@@ -1,11 +1,15 @@
 #include "Services/WorkshopViewModel.h"
 
+#include "Services/Paths.h"
+#include "Services/SteamServiceManager.h"
+
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QSettings>
 #include <QTimer>
 
@@ -16,8 +20,9 @@ constexpr int kItemsPerPage = 50;
 
 bool isActive(const DownloadState& state) {
     return state.kind == DownloadStateKind::Starting ||
+           state.kind == DownloadStateKind::Connecting ||
            state.kind == DownloadStateKind::Downloading ||
-           state.kind == DownloadStateKind::Validating;
+           state.kind == DownloadStateKind::Resolving;
 }
 
 InstalledWorkshopState scanInstalledWorkshopState(const QStringList& sources) {
@@ -55,12 +60,12 @@ InstalledWorkshopState scanInstalledWorkshopState(const QStringList& sources) {
 } // namespace
 
 WorkshopViewModel::WorkshopViewModel(SteamWebAPI* api,
-                                     SteamCMDManager* steamCMD,
+                                     SteamServiceManager* service,
                                      WallpaperLibrary* library,
                                      QObject* parent)
     : QObject(parent)
     , m_api(api)
-    , m_steamCMD(steamCMD)
+    , m_steamService(service)
     , m_library(library) {
     qRegisterMetaType<Mirage::WorkshopDownloadTask>();
     qRegisterMetaType<Mirage::WorkshopSortOrder>();
@@ -72,12 +77,13 @@ WorkshopViewModel::WorkshopViewModel(SteamWebAPI* api,
     connect(&m_searchDebounce, &QTimer::timeout, this, &WorkshopViewModel::search);
     connect(m_api, &SteamWebAPI::queryFinished, this, &WorkshopViewModel::handleQueryFinished);
     connect(m_api, &SteamWebAPI::detailsFinished, this, &WorkshopViewModel::handleDetailsFinished);
-    connect(m_steamCMD, &SteamCMDManager::downloadStateChanged, this, &WorkshopViewModel::handleDownloadState);
-    connect(m_steamCMD, &SteamCMDManager::authenticationChanged, this, [this] {
+    connect(m_steamService, &SteamServiceManager::downloadStateChanged, this,
+            &WorkshopViewModel::handleDownloadState);
+    connect(m_steamService, &SteamServiceManager::authenticationChanged, this, [this] {
         refreshSteamSetupState();
         processDownloadQueue();
     });
-    connect(m_steamCMD, &SteamCMDManager::steamCMDPathChanged, this, [this] {
+    connect(m_steamService, &SteamServiceManager::serviceStateChanged, this, [this] {
         refreshSteamSetupState();
     });
     connect(m_library, &WallpaperLibrary::libraryChanged, this, &WorkshopViewModel::refreshInstalledState);
@@ -124,9 +130,14 @@ SteamSetupState WorkshopViewModel::steamSetupState() const { return m_steamSetup
 
 QString WorkshopViewModel::steamSetupSummary() const {
     switch (m_steamSetupState) {
-    case SteamSetupState::SteamCMDMissing: return QStringLiteral("需要先安装 SteamCMD");
-    case SteamSetupState::NeedsLogin: return QStringLiteral("需要有效的 Steam 会话");
-    case SteamSetupState::Ready: return QStringLiteral("已登录 %1").arg(m_steamCMD->savedUsername());
+    case SteamSetupState::NeedsLogin: {
+        // 服务不可用（二进制缺失/未连接）与未登录统一视为需要 Steam 会话。
+        if (! m_steamService->isRunning()) {
+            return QStringLiteral("需要 Steam 服务（SteamService 未运行）");
+        }
+        return QStringLiteral("需要有效的 Steam 会话");
+    }
+    case SteamSetupState::Ready: return QStringLiteral("已登录 %1").arg(m_steamService->accountName());
     }
     return {};
 }
@@ -382,14 +393,14 @@ void WorkshopViewModel::handleQueryFinished(quint64 requestId, const WorkshopQue
 }
 
 void WorkshopViewModel::checkSteamSetup() {
-    if (m_steamCMD->steamCMDPath().isEmpty()) m_steamCMD->detectSteamCMD();
+    // SteamKit 服务无需安装步骤；仅刷新登录状态。
     refreshSteamSetupState();
 }
 
 void WorkshopViewModel::refreshSteamSetupState() {
-    if (m_steamCMD->steamCMDPath().isEmpty()) {
-        m_steamSetupState = SteamSetupState::SteamCMDMissing;
-    } else if (!m_steamCMD->isLoggedIn()) {
+    if (! m_steamService->isRunning()) {
+        m_steamSetupState = SteamSetupState::NeedsLogin;
+    } else if (! m_steamService->isLoggedIn()) {
         m_steamSetupState = SteamSetupState::NeedsLogin;
     } else {
         m_steamSetupState = SteamSetupState::Ready;
@@ -398,7 +409,7 @@ void WorkshopViewModel::refreshSteamSetupState() {
 }
 
 void WorkshopViewModel::logout() {
-    m_steamCMD->logout();
+    m_steamService->logout();
     refreshSteamSetupState();
 }
 
@@ -460,8 +471,7 @@ void WorkshopViewModel::handleDetailsFinished(quint64 requestId,
                                    dependency);
 }
 
-void WorkshopViewModel::downloadItem(const WorkshopItem& item, DownloadPurpose purpose) {
-    for (int i = 0; i < m_downloadQueue.size(); ++i) {
+void WorkshopViewModel::downloadItem(const WorkshopItem& item, DownloadPurpose purpose) {    for (int i = 0; i < m_downloadQueue.size(); ++i) {
         if (m_downloadQueue.at(i).workshopItem.publishedFileId != item.publishedFileId) continue;
         const DownloadStateKind kind = m_downloadQueue.at(i).state.kind;
         if (kind != DownloadStateKind::Failed && kind != DownloadStateKind::Completed && kind != DownloadStateKind::Cancelled) return;
@@ -472,11 +482,18 @@ void WorkshopViewModel::downloadItem(const WorkshopItem& item, DownloadPurpose p
     WorkshopDownloadTask task;
     task.workshopItem = item;
     task.state.kind = DownloadStateKind::Queued;
-    task.state.message = QStringLiteral("等待 SteamCMD 按顺序下载…");
+    task.state.message = QStringLiteral("等待 Steam 服务按顺序下载…");
     task.purpose = purpose;
     m_downloadQueue.push_back(task);
     emit downloadQueueChanged();
     processDownloadQueue();
+}
+
+void WorkshopViewModel::downloadItemById(const QString& workshopId) {
+    WorkshopItem item;
+    item.publishedFileId = workshopId;
+    item.title = QStringLiteral("创意工坊 #%1").arg(workshopId);
+    downloadItem(item);
 }
 
 void WorkshopViewModel::processDownloadQueue() {
@@ -488,15 +505,31 @@ void WorkshopViewModel::processDownloadQueue() {
     for (WorkshopDownloadTask& task : m_downloadQueue) {
         if (task.state.kind != DownloadStateKind::Queued) continue;
         task.state.kind = DownloadStateKind::Starting;
-        task.state.message = QStringLiteral("正在启动 SteamCMD…");
+        task.state.message = QStringLiteral("正在连接 Steam 服务…");
         task.startedAt = QDateTime::currentDateTime();
         emit downloadQueueChanged();
-        m_steamCMD->downloadItem(task.workshopItem.publishedFileId);
+        // taskId 用 workshopId 生成，方便队列按壁纸 ID 匹配进度事件。
+        m_steamService->downloadItem(task.workshopItem.publishedFileId,
+                                     task.workshopItem.publishedFileId,
+                                     Paths::importedDir());
         return;
     }
 }
 
-void WorkshopViewModel::handleDownloadState(const QString& workshopId, const DownloadState& state) {
+void WorkshopViewModel::handleDownloadState(const QString& workshopId, DownloadStateKind kind,
+                                            qint64 receivedBytes, qint64 totalBytes,
+                                            double bytesPerSecond, const QString& outputPath,
+                                            const QString& message) {
+    DownloadState state;
+    state.kind = kind;
+    state.message = message;
+    state.bytesReceived = receivedBytes;
+    state.totalBytes = totalBytes;
+    state.bytesPerSecond = bytesPerSecond;
+    state.outputPath = outputPath;
+    if (totalBytes > 0) {
+        state.percent = static_cast<double>(receivedBytes) * 100.0 / static_cast<double>(totalBytes);
+    }
     for (int i = 0; i < m_downloadQueue.size(); ++i) {
         WorkshopDownloadTask& task = m_downloadQueue[i];
         if (task.workshopItem.publishedFileId != workshopId) continue;
@@ -524,6 +557,59 @@ void WorkshopViewModel::handleDownloadState(const QString& workshopId, const Dow
     }
 }
 
+// ---- 订阅管理（对齐上游 WorkshopViewModel.swift）----
+
+const QVector<WorkshopSubscription>& WorkshopViewModel::subscriptions() const { return m_subscriptions; }
+int WorkshopViewModel::subscriptionTotal() const { return m_subscriptionTotal; }
+int WorkshopViewModel::subscriptionStartIndex() const { return m_subscriptionStartIndex; }
+bool WorkshopViewModel::isSubscriptionsLoading() const { return m_subscriptionsLoading; }
+bool WorkshopViewModel::hasMoreSubscriptions() const {
+    return m_subscriptionStartIndex + m_subscriptions.size() < m_subscriptionTotal;
+}
+
+void WorkshopViewModel::loadSubscriptions(int startIndex) {
+    if (m_subscriptionsLoading) return;
+    m_subscriptionsLoading = true;
+    emit subscriptionsChanged();
+    m_steamService->fetchSubscriptions(startIndex,
+        [this](bool ok, const SteamServiceManager::SubscriptionPage& page, const QString&) {
+            m_subscriptionsLoading = false;
+            if (ok) {
+                if (page.startIndex == 0) m_subscriptions.clear();
+                m_subscriptionTotal = page.total;
+                m_subscriptionStartIndex = page.startIndex;
+                for (const auto& item : page.items) {
+                    WorkshopSubscription sub;
+                    sub.publishedFileId = item.publishedFileId;
+                    sub.subscribedAt = item.subscribedAt;
+                    sub.updatedAt = item.updatedAt;
+                    sub.contentHash = item.contentHash;
+                    sub.fileSize = item.fileSize;
+                    m_subscriptions.append(sub);
+                }
+            }
+            emit subscriptionsChanged();
+        });
+}
+
+void WorkshopViewModel::loadNextSubscriptionsPage() {
+    loadSubscriptions(m_subscriptionStartIndex + m_subscriptions.size());
+}
+
+void WorkshopViewModel::subscribe(const QString& workshopId) {
+    m_steamService->subscribe(workshopId,
+        [this](bool ok, const QString&, const QString&, const QJsonObject&) {
+            if (ok) loadSubscriptions(0);
+        });
+}
+
+void WorkshopViewModel::unsubscribe(const QString& workshopId) {
+    m_steamService->unsubscribe(workshopId,
+        [this](bool ok, const QString&, const QString&, const QJsonObject&) {
+            if (ok) loadSubscriptions(0);
+        });
+}
+
 void WorkshopViewModel::cancelDownload(const QString& workshopId) {
     for (int i = 0; i < m_downloadQueue.size(); ++i) {
         WorkshopDownloadTask& task = m_downloadQueue[i];
@@ -533,7 +619,7 @@ void WorkshopViewModel::cancelDownload(const QString& workshopId) {
             emit downloadQueueChanged();
             processDownloadQueue();
         } else {
-            m_steamCMD->cancelDownload(workshopId);
+            m_steamService->cancelDownload(workshopId);
         }
         return;
     }
@@ -544,7 +630,7 @@ void WorkshopViewModel::retryDownload(const QString& workshopId) {
         if (task.workshopItem.publishedFileId != workshopId || task.state.kind != DownloadStateKind::Failed) continue;
         task.state = DownloadState();
         task.state.kind = DownloadStateKind::Queued;
-        task.state.message = QStringLiteral("等待 SteamCMD 按顺序下载…");
+        task.state.message = QStringLiteral("等待 Steam 服务按顺序下载…");
         emit downloadQueueChanged();
         processDownloadQueue();
         return;

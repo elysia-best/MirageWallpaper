@@ -13,6 +13,8 @@
 
 namespace Mirage {
 
+class SteamServiceManager;
+
 enum class DiscoverCollection {
     Trending,
     MostRecent,
@@ -33,9 +35,8 @@ enum class DiscoverCollection {
 };
 
 enum class SteamSetupState {
-    SteamCMDMissing,
-    NeedsLogin,
-    Ready,
+    NeedsLogin,  // Steam 未登录或服务不可用
+    Ready,       // 已登录，可下载
 };
 
 struct InstalledWorkshopState {
@@ -48,7 +49,7 @@ class WorkshopViewModel : public QObject {
 
 public:
     explicit WorkshopViewModel(SteamWebAPI* api,
-                               SteamCMDManager* steamCMD,
+                               SteamServiceManager* service,
                                WallpaperLibrary* library,
                                QObject* parent = nullptr);
 
@@ -79,6 +80,13 @@ public:
     std::optional<Wallpaper> installedItem(const QString& workshopId) const;
     std::optional<DownloadState> downloadStateFor(const QString& workshopId) const;
 
+    // 订阅管理（对齐上游 WorkshopViewModel.swift）。
+    const QVector<WorkshopSubscription>& subscriptions() const;
+    int subscriptionTotal() const;
+    int subscriptionStartIndex() const;
+    bool isSubscriptionsLoading() const;
+    bool hasMoreSubscriptions() const;
+
 public slots:
     void setSearchText(const QString& text);
     void submitSearch();
@@ -100,9 +108,17 @@ public slots:
     void checkSteamSetup();
     void logout();
 
+    // 订阅管理。
+    void loadSubscriptions(int startIndex = 0);
+    void loadNextSubscriptionsPage();
+    void subscribe(const QString& workshopId);
+    void unsubscribe(const QString& workshopId);
+
     void selectWorkshopItem(const Mirage::WorkshopItem& item);
     void downloadItem(const Mirage::WorkshopItem& item,
                       Mirage::DownloadPurpose purpose = Mirage::DownloadPurpose::Wallpaper);
+    // 仅凭 workshopId 下载（订阅列表等无完整详情场景）。
+    void downloadItemById(const QString& workshopId);
     void cancelDownload(const QString& workshopId);
     void retryDownload(const QString& workshopId);
     void clearCompletedDownloads();
@@ -130,6 +146,7 @@ signals:
     void steamSetupRequested();
     void navigateToWorkshopRequested();
     void workshopItemDownloaded(const QString& workshopId);
+    void subscriptionsChanged();
 
 private:
     struct PendingDependency {
@@ -142,7 +159,10 @@ private:
     void handleDetailsFinished(quint64 requestId,
                                const QVector<WorkshopItem>& items,
                                const QString& error);
-    void handleDownloadState(const QString& workshopId, const DownloadState& state);
+    // SteamServiceManager::downloadStateChanged 信号（taskId=workshopId）。
+    void handleDownloadState(const QString& taskId, DownloadStateKind kind,
+                             qint64 receivedBytes, qint64 totalBytes, double bytesPerSecond,
+                             const QString& outputPath, const QString& message);
     void refreshSteamSetupState();
     void processDownloadQueue();
     void handleCompletedDownload(const QString& workshopId);
@@ -156,7 +176,7 @@ private:
                               int trendDays = 7);
 
     SteamWebAPI* m_api = nullptr;
-    SteamCMDManager* m_steamCMD = nullptr;
+    SteamServiceManager* m_steamService = nullptr;
     WallpaperLibrary* m_library = nullptr;
 
     QVector<WorkshopItem> m_items;
@@ -178,7 +198,13 @@ private:
     bool m_isLoading = false;
     bool m_isDiscoverLoading = false;
     QString m_error;
-    SteamSetupState m_steamSetupState = SteamSetupState::SteamCMDMissing;
+    SteamSetupState m_steamSetupState = SteamSetupState::NeedsLogin;
+
+    // 订阅状态。
+    QVector<WorkshopSubscription> m_subscriptions;
+    int m_subscriptionTotal = 0;
+    int m_subscriptionStartIndex = 0;
+    bool m_subscriptionsLoading = false;
 
     QTimer m_searchDebounce;
     QFutureWatcher<InstalledWorkshopState> m_installedStateWatcher;

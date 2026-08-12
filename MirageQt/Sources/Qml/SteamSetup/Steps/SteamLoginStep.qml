@@ -12,9 +12,8 @@ ColumnLayout {
     property string loginState: String(value("steamLoginState", "idle"))
     property string loginMessage: String(value("steamLoginMessage", ""))
     property string guardType: String(value("steamGuardType", ""))
+    property string qrChallengeUrl: String(value("steamQRCodeUrl", ""))
     property bool sessionReusable: Boolean(value("steamSessionReusable", false))
-    property var loginLog: value("steamLoginLog", [])
-    property bool showLog: false
     spacing: 12
 
     function value(name, fallback) {
@@ -57,7 +56,7 @@ ColumnLayout {
             }
             FluText {
                 Layout.fillWidth: true
-                text: qsTr("若继续登录，密码仅通过本机的 Valve SteamCMD 安全终端提交，不会写入命令行或 Mirage 日志。SteamCMD 会在本机保存会话以便下载；您可随时在创意工坊页面“退出登录”清除它。")
+                text: qsTr("登录通过本机 Steam 服务（SteamKit）安全完成；密码只提交给 Valve 的登录接口，不会写入命令行或 Mirage 日志。会话令牌保存在本机，可随时在创意工坊页面“退出登录”清除。")
                 wrapMode: Text.WordWrap
                 color: FluTheme.fontSecondaryColor
                 font: FluTextStyle.Caption
@@ -93,6 +92,7 @@ ColumnLayout {
         }
     }
 
+    // 登录入口：手机扫码（推荐）或密码登录。
     ColumnLayout {
         Layout.fillWidth: true
         Layout.leftMargin: 70
@@ -100,6 +100,18 @@ ColumnLayout {
         visible: root.loginState === "idle" || root.loginState === "failed"
         spacing: 8
 
+        FluFilledButton {
+            Layout.fillWidth: true
+            text: qsTr("使用 Steam 手机应用扫码登录")
+            iconSource: FluentIcons.MobileTablet
+            onClicked: root.invoke("loginSteamQR")
+        }
+        FluText {
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("— 或使用密码登录 —")
+            color: FluTheme.fontSecondaryColor
+            font: FluTextStyle.Caption
+        }
         FluTextBox {
             Layout.fillWidth: true
             placeholderText: qsTr("全球 Steam 登录账户名（非昵称）")
@@ -118,6 +130,56 @@ ColumnLayout {
             text: qsTr("登录")
             enabled: root.username.trim().length > 0 && root.password.length > 0
             onClicked: root.invoke("loginSteam", root.username, root.password)
+        }
+    }
+
+    // QR 等待：显示挑战链接（Steam 手机应用扫码），并提供复制/打开。
+    ColumnLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: 70
+        Layout.rightMargin: 70
+        visible: root.loginState === "waitingForQR"
+        spacing: 10
+        FluIcon {
+            Layout.alignment: Qt.AlignHCenter
+            iconSource: FluentIcons.MobileTablet
+            iconSize: 42
+            iconColor: FluTheme.primaryColor
+        }
+        FluText {
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("打开 Steam 手机应用并扫描二维码登录")
+            font: FluTextStyle.BodyStrong
+        }
+        FluText {
+            Layout.fillWidth: true
+            text: root.qrChallengeUrl
+            wrapMode: Text.WrapAnywhere
+            horizontalAlignment: Text.AlignHCenter
+            color: FluTheme.fontSecondaryColor
+            font: FluTextStyle.Caption
+            visible: root.qrChallengeUrl.length > 0
+        }
+        RowLayout {
+            Layout.alignment: Qt.AlignHCenter
+            spacing: 8
+            FluFilledButton {
+                text: qsTr("在浏览器中打开")
+                enabled: root.qrChallengeUrl.length > 0
+                onClicked: Qt.openUrlExternally(root.qrChallengeUrl)
+            }
+            FluButton {
+                text: qsTr("复制链接")
+                enabled: root.qrChallengeUrl.length > 0
+                onClicked: {
+                    // 链接即挑战授权，复制后可在手机浏览器打开完成确认。
+                    root.invoke("copyTextToClipboard", root.qrChallengeUrl)
+                }
+            }
+            FluButton {
+                text: qsTr("取消")
+                onClicked: root.invoke("cancelSteamLogin")
+            }
         }
     }
 
@@ -202,11 +264,6 @@ ColumnLayout {
         }
         FluButton {
             Layout.alignment: Qt.AlignHCenter
-            text: qsTr("我已确认")
-            onClicked: root.invoke("confirmSteamMobileLogin")
-        }
-        FluButton {
-            Layout.alignment: Qt.AlignHCenter
             text: qsTr("取消登录")
             onClicked: root.invoke("cancelSteamLogin")
         }
@@ -252,30 +309,5 @@ ColumnLayout {
         wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignHCenter
         color: Qt.rgba(196 / 255, 43 / 255, 28 / 255, 1)
-    }
-
-    RowLayout {
-        Layout.alignment: Qt.AlignHCenter
-        visible: root.loginLog.length > 0
-        FluButton {
-            text: root.showLog ? qsTr("隐藏日志") : qsTr("显示 SteamCMD 日志")
-            onClicked: root.showLog = !root.showLog
-        }
-        FluIconButton {
-            iconSource: FluentIcons.Copy
-            text: qsTr("复制脱敏日志")
-            contentDescription: qsTr("复制脱敏日志")
-            onClicked: root.invoke("copySteamLoginLog")
-        }
-    }
-
-    FluMultilineTextBox {
-        Layout.fillWidth: true
-        Layout.preferredHeight: 120
-        visible: root.showLog
-        readOnly: true
-        text: root.loginLog.join("\n")
-        wrapMode: Text.WrapAnywhere
-        color: FluTheme.fontSecondaryColor
     }
 }

@@ -10,25 +10,18 @@ QtObject {
     property string guardCode: ""
     property bool passwordVisible: false
     property bool showLog: false
-    property bool busy: installBusy || loginBusy
-    property bool installBusy: ["detecting", "downloading", "extracting", "initializing"].indexOf(installState) >= 0
+    property bool busy: loginBusy
     property bool loginBusy: loginState === "loggingIn"
-        || (loginState === "waitingForGuard" && guardType === "mobileConfirm")
-    property string installState: mirage.steamInstallState
-    property double installProgress: mirage.steamInstallProgress
-    property string installMessage: mirage.steamInstallMessage
     property string loginState: mirage.steamLoginState
     property string loginMessage: mirage.steamLoginMessage
     property string guardType: String(mirageValue("steamGuardType", ""))
-    property bool sessionReusable: Boolean(mirageValue("steamSessionReusable", false))
+    property string qrChallengeUrl: String(mirageValue("steamQRCodeUrl", ""))
+    property bool hasSavedSession: Boolean(mirageValue("steamSessionReusable", false))
         || (Boolean(mirageValue("steamLoggedIn", false)) && username.length > 0)
-    property string sessionUsername: String(mirageValue("steamSessionUsername", username))
-    property var loginLog: mirage.steamLoginLog
+    property bool sessionReusable: hasSavedSession
     property bool canProceed: {
-        if (currentStep === 0 || currentStep === 3)
+        if (currentStep === 0 || currentStep === 2)
             return true;
-        if (currentStep === 1)
-            return installState === "found" || installState === "installed";
         return loginState === "success";
     }
 
@@ -40,12 +33,16 @@ QtObject {
         return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
     }
 
-    function detectSteamCMD() {
-        invoke("detectSteamCMD");
+    function refreshFromService() {
+        // 状态属性均为绑定，进入窗口时无需手动刷新。
+    }
+
+    function loginWithQR() {
+        invoke("loginSteamQR");
     }
 
     function nextStep() {
-        if (currentStep < 3 && canProceed)
+        if (currentStep < 2 && canProceed)
             currentStep += 1;
     }
 
@@ -53,8 +50,6 @@ QtObject {
         if (currentStep <= 0)
             return;
         if (currentStep === 1)
-            invoke("cancelSteamCMDInstallation");
-        if (currentStep === 2)
             invoke("cancelSteamLogin");
         currentStep -= 1;
     }
@@ -68,6 +63,6 @@ QtObject {
     }
 
     function completeSetup() {
-        invoke("useSavedSteamSession");
+        // 登录已完成（loginState === "success"）；关闭由视图层处理。
     }
 }
