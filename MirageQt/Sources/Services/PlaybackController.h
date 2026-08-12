@@ -3,7 +3,9 @@
 #include "Services/RendererController.h"
 #include "Services/WallpaperRuntimeStore.h"
 
+#include <QHash>
 #include <QObject>
+#include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -52,7 +54,16 @@ public:
     void restoreStartupPlayback();
 
 private:
+    // 属性实时下发防抖的待发命令：key → 命令（含所属壁纸 id 与属性值）。
+    // 合并窗口（16ms）内同 key 只保留最新值，窗口结束批量下发。
+    struct PendingPropertyCommand {
+        QString wallpaperId;
+        ProjectProperty property;
+    };
+
     RenderOptions renderOptionsFor(const Wallpaper& item) const;
+    // 把待发属性命令批量下发给渲染进程（合并窗口到期时由定时器调用）。
+    void flushPropertyCommands();
 
     GlobalSettingsService* m_settings;
     RendererController* m_renderer;
@@ -60,6 +71,8 @@ private:
     PlaylistManager* m_playlist;
     MirageController* m_owner;
     bool m_paused = false;
+    QHash<QString, PendingPropertyCommand> m_pendingPropertyCommands;
+    QTimer* m_propertyCommandTimer = nullptr;
 };
 
 } // namespace Mirage
