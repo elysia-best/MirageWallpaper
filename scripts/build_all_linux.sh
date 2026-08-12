@@ -62,6 +62,7 @@ Usage:
   scripts/build_all_linux.sh app             build only MirageQt (assumes renderers are ready)
   scripts/build_all_linux.sh scene           build SceneRenderer only
   scripts/build_all_linux.sh video           build VideoRenderer only
+  scripts/build_all_linux.sh steam           build SteamService (SteamKit2) bundle only
   scripts/build_all_linux.sh package         stage + pack existing artifacts into dist/*.tar.gz
   scripts/build_all_linux.sh clean           remove all sub-project build dirs and dist
   scripts/build_all_linux.sh -h|--help       show this help
@@ -82,7 +83,7 @@ CONFIG="release"      # lowercase preset name passed to renderers (release|debug
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
-        all|renderers|app|scene|video|package|clean) TARGET="$1"; shift ;;
+        all|renderers|app|scene|video|steam|package|clean) TARGET="$1"; shift ;;
         release|debug) CONFIG="$1"; shift ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
@@ -137,6 +138,15 @@ build_app() {
     good "MirageQt binary: $APP_BUILD_DIR/MirageQt"
 }
 
+# SteamService (SteamKit2) bundle: built by scripts/build_steam_service_linux.sh
+# into SteamService/build/linux-x64; the app locates it via the same layout
+# the macOS bundle uses (app/ + runtime/ + Licenses/).
+STEAM_SERVICE_DIR="$ROOT_DIR/SteamService/build/linux-x64"
+build_steam_service() {
+    step "Building SteamService ($CONFIG)"
+    bash "$ROOT_DIR/scripts/build_steam_service_linux.sh" "$STEAM_SERVICE_DIR"
+}
+
 # --- clean: remove all sub-project build dirs + dist ---
 clean_all() {
     step "Cleaning all build directories"
@@ -145,6 +155,10 @@ clean_all() {
     if [[ -d "$APP_BUILD_DIR" ]]; then
         info "Removing $APP_BUILD_DIR"
         rm -rf "$APP_BUILD_DIR"
+    fi
+    if [[ -d "$STEAM_SERVICE_DIR" ]]; then
+        info "Removing $STEAM_SERVICE_DIR"
+        rm -rf "$STEAM_SERVICE_DIR"
     fi
     if [[ -d "$PACKAGE_DIR" ]]; then
         info "Removing $PACKAGE_DIR"
@@ -216,6 +230,17 @@ package() {
     cp -f "$video_bin" "$pkg_dir/VideoWallpaper"
     chmod +x "$pkg_dir"/MirageQt "$pkg_dir"/SceneWallpaper "$pkg_dir"/VideoWallpaper
 
+    # SteamService (SteamKit2): bundle beside the app so Steam login/workshop
+    # works in the packaged tree without a system-wide dotnet runtime.
+    if [[ -d "$STEAM_SERVICE_DIR" ]]; then
+        info "bundling SteamService"
+        mkdir -p "$pkg_dir/SteamService"
+        cp -a "$STEAM_SERVICE_DIR" "$pkg_dir/SteamService/linux-x64"
+    else
+        warn "SteamService bundle not found at $STEAM_SERVICE_DIR;" \
+            "Steam login and workshop downloads will be unavailable"
+    fi
+
     # Renderers link libmirage_display.so.0 at runtime; bundle it beside them
     # and rewrite the RUNPATH to $ORIGIN so the package works outside the repo.
     local lib_dir
@@ -257,9 +282,10 @@ case "$TARGET" in
     video)     build_video ;;
     renderers) build_renderers ;;
     app)       build_app ;;
+    steam)     build_steam_service ;;
     package)   package ;;
     clean)     clean_all ;;
-    all)       build_renderers; build_app; [[ "${NO_PACKAGE:-0}" == "1" ]] || package ;;
+    all)       build_renderers; build_app; build_steam_service; [[ "${NO_PACKAGE:-0}" == "1" ]] || package ;;
 esac
 
 if [[ "$TARGET" == "all" || "$TARGET" == "app" ]]; then
