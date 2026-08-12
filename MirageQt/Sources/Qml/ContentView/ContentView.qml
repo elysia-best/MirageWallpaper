@@ -506,15 +506,11 @@ FluWindow {
 
                     RowLayout {
                         spacing: 10
-                        ScrollView {
+                        WorkshopFilterSidebar {
                             Layout.fillHeight: true
                             Layout.preferredWidth: 225
                             visible: window.filtersVisible
-                            clip: true
-                            WorkshopFilterSidebar {
-                                width: parent.width
-                                host: window
-                            }
+                            host: window
                         }
                         DiscoverView {
                             Layout.fillWidth: true
@@ -525,15 +521,11 @@ FluWindow {
 
                     RowLayout {
                         spacing: 10
-                        ScrollView {
+                        WorkshopFilterSidebar {
                             Layout.fillHeight: true
                             Layout.preferredWidth: 225
                             visible: window.filtersVisible
-                            clip: true
-                            WorkshopFilterSidebar {
-                                width: parent.width
-                                host: window
-                            }
+                            host: window
                         }
                         WorkshopView {
                             Layout.fillWidth: true
