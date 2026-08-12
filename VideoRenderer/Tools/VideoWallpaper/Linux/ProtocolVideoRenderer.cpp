@@ -431,24 +431,9 @@ public:
     }
 
     void play() {
-        {
-            std::lock_guard lock(m_control_mutex);
-            m_user_paused = false;
-            if (m_eof.load()) {
-                m_restart_requested = true;
-                m_eof.store(false);
-                m_eof_notified.store(false);
-            }
-        }
+        // 解除暂停必须在 mpv 线程；经命令队列 + mpv_wakeup 投递（见 postMpvCommand）。
+        // loop-file=inf 下循环由 mpv 内建处理，恢复播放即继续当前循环，无需 seek。
         postMpvCommand([this] {
-            // EOF 后重播：先 seek 到 0，再解除暂停。
-            if (m_restart_requested.load()) {
-                m_restart_requested.store(false);
-                const char* seek[] = {"seek", "0", "absolute", nullptr};
-                if (mpv_command(m_mpv, seek) < 0) {
-                    std::fprintf(stderr, "VideoWallpaper: mpv seek failed\n");
-                }
-            }
             int paused = 0;
             if (mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &paused) < 0) {
                 std::fprintf(stderr, "VideoWallpaper: mpv pause=0 failed\n");
@@ -457,10 +442,7 @@ public:
     }
 
     void pause() {
-        {
-            std::lock_guard lock(m_control_mutex);
-            m_user_paused = true;
-        }
+        // 暂停必须在 mpv 线程；经命令队列 + mpv_wakeup 投递（见 postMpvCommand）。
         postMpvCommand([this] {
             int paused = 1;
             if (mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &paused) < 0) {
@@ -973,8 +955,11 @@ private:
             {"vo", "libmpv"},
             {"hwdec", "auto"},
             {"ao", "pipewire,pulseaudio,alsa"},
-            {"loop-file", "no"},  // 无自动循环：EOF 触发 video-did-end，由外部 play() 重播
-            {"keep-open", "yes"}, // EOF 后保持核心存活，供 play() seek 0 重播
+            // 自动循环交由 mpv 内建 loop-file=inf（与 macOS AVPlayerLooper 的无缝
+            // 循环对齐）：每圈循环产生 MPV_EVENT_PLAYBACK_RESTART，由 handleMpvEvent
+            // 映射为 video-did-end 事件。keep-open 不可用：实测 keep-open=yes 会吞掉
+            // 结束事件，且 loop-file=inf 下 EOF 永不出现，keep-open 无意义。
+            {"loop-file", "inf"},
         };
         for (const auto& option : options) {
             if (mpv_set_option_string(m_mpv, option.name, option.value) < 0) {
@@ -1050,17 +1035,29 @@ private:
     void handleMpvEvent(const mpv_event* event) {
         switch (event->event_id) {
         case MPV_EVENT_END_FILE: {
+            // loop-file=inf 下 EOF 永不出现（无缝循环，不产生 END_FILE）；
+            // 此处仅处理加载错误。
             const auto* end = static_cast<const mpv_event_end_file*>(event->data);
-            if (end->reason == MPV_END_FILE_REASON_EOF) {
-                if (m_eof.exchange(true)) return;
-                if (!m_eof_notified.exchange(true) && m_config.videoDidEndCallback) {
-                    m_config.videoDidEndCallback();
-                }
-            } else if (end->reason == MPV_END_FILE_REASON_ERROR) {
+            if (end->reason == MPV_END_FILE_REASON_ERROR) {
                 const char* text = mpv_error_string(end->error);
                 fail(QStringLiteral("libmpv playback error: %1")
                          .arg(text != nullptr ? QString::fromUtf8(text)
                                               : QStringLiteral("unknown error")));
+            }
+            break;
+        }
+        case MPV_EVENT_PLAYBACK_RESTART: {
+            // loop-file=inf 每圈循环都会触发 PLAYBACK_RESTART（实测：7 圈 → 7 次）。
+            // 首次 loadfile 后的第一个 restart 是首圈开始，不发事件；此后每个 restart
+            // 表示上一圈播完、新一圈开始，映射为 video-did-end 事件——与 macOS
+            // AVPlayerLooper 每圈结束发 videoDidEndBlock 的语义对齐（供 playlist
+            // videoSequence 切壁纸）。仅在 mpv 线程执行，m_looped_once 无需原子。
+            if (!m_looped_once) {
+                m_looped_once = true;
+                break;
+            }
+            if (m_config.videoDidEndCallback) {
+                m_config.videoDidEndCallback();
             }
             break;
         }
@@ -1500,7 +1497,6 @@ private:
     std::vector<std::uint8_t> m_canvas;
     std::atomic<VRVideoFillMode> m_fill_mode { VRVideoFillModeCover };
     std::atomic_bool m_first_frame { false };
-    std::atomic_bool m_eof_notified { false };
     std::atomic_bool m_stopped { false };
     std::atomic<float> m_volume { 1.0f };
     std::atomic_bool m_muted { false };
@@ -1512,9 +1508,10 @@ private:
 
     std::thread m_render_thread;
     std::atomic_bool m_running { false };
-    std::atomic_bool m_user_paused { false };
-    std::atomic_bool m_eof { false };
-    std::atomic_bool m_restart_requested { false };
+    // 首圈标记：loop-file=inf 下首个 PLAYBACK_RESTART 是 loadfile 后的首圈开始，
+    // 需跳过不发 video-did-end；此后每圈 restart 才发事件。仅在 mpv 线程读写，
+    // 无需原子操作（与 m_mpv 同线程独占）。
+    bool m_looped_once { false };
     std::mutex m_control_mutex;
     std::condition_variable m_control_cv;
     // libmpv（渲染线程独占；m_mpv 置空/读取在 m_control_mutex 保护下）
