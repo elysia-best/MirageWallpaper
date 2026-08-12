@@ -2,6 +2,8 @@ module;
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <optional>
 #include <sstream>
 
 #include <rstd/macro.hpp>

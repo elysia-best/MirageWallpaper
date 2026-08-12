@@ -89,7 +89,6 @@ void* ExportMetalTexture(const Device& device, const ImageParameters& image) {
     export_metal_objects(*device.handle(), &export_info);
     return reinterpret_cast<void*>(texture_info.mtlTexture);
 }
-#endif
 
 void* ExportMetalCommandQueue(const Device& device) {
     auto export_metal_objects = device.handle().Dispatch().vkExportMetalObjectsEXT;
@@ -108,6 +107,7 @@ void* ExportMetalCommandQueue(const Device& device) {
     export_metal_objects(*device.handle(), &export_info);
     return reinterpret_cast<void*>(queue_info.mtlCommandQueue);
 }
+#endif // SCENERENDERER_ENABLE_METAL_EXPORT
 
 const char* EnvPath(const char* primary) {
     const char* value = std::getenv(primary);
