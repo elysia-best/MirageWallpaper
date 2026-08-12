@@ -311,23 +311,33 @@ ColumnLayout {
         }
     }
 
-    ColumnLayout {
+    // Qt 布局特性：嵌套 ColumnLayout 即使设置 Layout.fillWidth 也不会
+    // 拉伸超过自身隐式宽度（实测宽度仍=内容宽度），导致内部 AlignHCenter
+    // 无空间可居中（"只会随侧栏左边移动"）。普通 Item 作为 fillWidth
+    // 子项可正常拉伸，故用 Item 撑满、内部 ColumnLayout anchors.fill 布局，
+    // 空状态内容即可在详情区宽度内水平垂直居中。
+    Item {
         id: emptyState
         Layout.fillWidth: true
+        Layout.fillHeight: true
         visible: root.itemId.length === 0
-        spacing: 12
-        Item { Layout.fillHeight: true }
-        FluIcon {
-            Layout.alignment: Qt.AlignHCenter
-            iconSource: FluentIcons.PreviewLink
-            iconSize: 34
-            iconColor: FluTheme.fontTertiaryColor
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+            Item { Layout.fillHeight: true }
+            FluIcon {
+                Layout.alignment: Qt.AlignHCenter
+                iconSource: FluentIcons.PreviewLink
+                iconSize: 34
+                iconColor: FluTheme.fontTertiaryColor
+            }
+            FluText {
+                Layout.alignment: Qt.AlignHCenter
+                text: qsTr("选择创意工坊壁纸以查看详情")
+                color: FluTheme.fontSecondaryColor
+            }
+            Item { Layout.fillHeight: true }
         }
-        FluText {
-            Layout.alignment: Qt.AlignHCenter
-            text: qsTr("选择创意工坊壁纸以查看详情")
-            color: FluTheme.fontSecondaryColor
-        }
-        Item { Layout.fillHeight: true }
     }
 }
