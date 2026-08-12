@@ -2,11 +2,9 @@ import QtQuick
 import QtQuick.Layouts
 import FluentUI
 
-ColumnLayout {
+FluScrollablePage {
     id: page
     required property var host
-
-    spacing: 12
 
     function modeKeys(key) {
         if (key === "otherApplicationFocused" || key === "otherApplicationPlayingAudio")
@@ -37,10 +35,14 @@ ColumnLayout {
         host.setSetting("reflections", reflections);
     }
 
-    FluText {
-        text: "播放规则"
-        font: FluTextStyle.BodyStrong
-    }
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 12
+
+        FluText {
+            text: "播放规则"
+            font: FluTextStyle.BodyStrong
+        }
 
     Repeater {
         model: host.playbackOptions
@@ -172,11 +174,12 @@ ColumnLayout {
         }
     }
 
-    FluText {
-        Layout.fillWidth: true
-        text: "抗锯齿、渲染分辨率和壁纸加载方式在切换壁纸后生效；帧率会立即应用。"
-        font: FluTextStyle.Caption
-        color: FluTheme.fontSecondaryColor
-        wrapMode: Text.WordWrap
+        FluText {
+            Layout.fillWidth: true
+            text: "抗锯齿、渲染分辨率和壁纸加载方式在切换壁纸后生效；帧率会立即应用。"
+            font: FluTextStyle.Caption
+            color: FluTheme.fontSecondaryColor
+            wrapMode: Text.WordWrap
+        }
     }
 }

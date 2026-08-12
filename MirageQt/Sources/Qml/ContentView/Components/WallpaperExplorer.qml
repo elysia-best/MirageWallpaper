@@ -2,15 +2,15 @@ import QtQuick
 import QtQuick.Layouts
 import FluentUI
 
-ColumnLayout {
+FluScrollablePage {
     id: root
     required property var host
-    spacing: 6
 
     GridView {
         id: wallpaperGrid
         Layout.fillWidth: true
-        Layout.fillHeight: true
+        Layout.preferredHeight: contentHeight
+        interactive: false
         clip: true
         model: root.host.pagedWallpapers
         cellWidth: Math.max(root.host.explorerIconSize,
@@ -73,15 +73,20 @@ ColumnLayout {
                 }
             }
         }
-        FluText {
-            anchors.centerIn: parent
-            visible: wallpaperGrid.count === 0
-            text: "没有找到匹配的壁纸。"
-        }
+    }
+
+    FluText {
+        Layout.fillWidth: true
+        Layout.topMargin: 24
+        visible: wallpaperGrid.count === 0
+        text: "没有找到匹配的壁纸。"
+        horizontalAlignment: Text.AlignHCenter
+        color: FluTheme.fontSecondaryColor
     }
 
     RowLayout {
         Layout.alignment: Qt.AlignHCenter
+        Layout.topMargin: 6
         visible: root.host.wallpaperPageCount > 1
         spacing: 6
         FluIconButton {

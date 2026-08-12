@@ -71,6 +71,18 @@ MirageDialogWindow {
                 Layout.fillHeight: true
                 currentIndex: root.host.settingsPage
 
+                // FluPage（FluScrollablePage 的基类）onCompleted 会强制
+                // visible=true，覆盖 StackLayout 的可见性管理，导致所有
+                // 页面重叠显示，这里手动按 currentIndex 管理子项可见性。
+                function updatePageVisibility() {
+                    for (var i = 0; i < children.length; ++i)
+                        children[i].visible = (i === currentIndex);
+                }
+                // Qt.callLater 确保在 FluPage 的 onCompleted（强制 visible=true）
+                // 执行完之后再管理子项可见性，避免被覆盖。
+                Component.onCompleted: Qt.callLater(updatePageVisibility)
+                onCurrentIndexChanged: Qt.callLater(updatePageVisibility)
+
                 PerformancePage {
                     host: root.host
                 }

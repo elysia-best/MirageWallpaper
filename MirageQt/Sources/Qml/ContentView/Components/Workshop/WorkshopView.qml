@@ -6,6 +6,8 @@ import "../../../MirageBridge.js" as MirageBridge
 Item {
     id: root
     required property var host
+    // 窗口较窄时网格内容可能短暂超出容器，裁剪以免与右侧详情重叠。
+    clip: true
 
     property var items: mirage.workshopItems
     property bool loading: mirage.workshopLoading
@@ -159,6 +161,10 @@ Item {
             }
         }
 
+        FluScrollablePage {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
         FluProgressRing {
             Layout.alignment: Qt.AlignHCenter
             visible: root.loading && root.items.length === 0
@@ -182,17 +188,19 @@ Item {
         GridView {
             id: workshopGrid
             Layout.fillWidth: true
-            Layout.fillHeight: true
+            Layout.preferredHeight: contentHeight
+            interactive: false
             visible: root.items.length > 0
             clip: true
             model: root.items
-            cellWidth: Math.max(178, Math.floor(width / Math.max(1, Math.floor(width / 178))))
+            // cellWidth 不超过可用宽度，避免窄窗口下内容横向溢出
+            cellWidth: Math.max(1, Math.min(width, Math.max(178, Math.floor(width / Math.max(1, Math.floor(width / 178))))))
             cellHeight: 258
             delegate: WorkshopItemCard {
                 required property var modelData
                 host: root.host
                 itemData: modelData
-                width: Math.max(164, workshopGrid.cellWidth - 14)
+                width: Math.min(workshopGrid.cellWidth, Math.max(164, workshopGrid.cellWidth - 14))
             }
         }
 
@@ -216,6 +224,7 @@ Item {
                 disabled: root.page >= root.pageCount
                 onClicked: root.invoke("loadNextWorkshopPage")
             }
+        }
         }
     }
 

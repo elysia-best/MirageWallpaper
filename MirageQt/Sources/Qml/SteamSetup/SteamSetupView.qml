@@ -102,24 +102,21 @@ FluWindow {
             Layout.fillWidth: true
         }
 
-        ScrollView {
+        FluScrollablePage {
             id: bodyScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.topMargin: 10
             Layout.bottomMargin: 10
-            clip: true
-            contentWidth: availableWidth
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
             StackLayout {
                 id: bodyStack
-                width: bodyScroll.availableWidth
+                Layout.fillWidth: true
                 currentIndex: setup.currentStep
 
                 ColumnLayout {
                     spacing: 20
-                    width: bodyScroll.availableWidth
+                    Layout.fillWidth: true
 
                     Item { Layout.fillHeight: true }
                     FluIcon {
@@ -255,11 +252,11 @@ FluWindow {
                 }
 
                 SteamCMDStep {
-                    width: bodyScroll.availableWidth
+                    Layout.fillWidth: true
                 }
 
                 SteamLoginStep {
-                    width: bodyScroll.availableWidth
+                    Layout.fillWidth: true
                     username: setupModel.username
                     password: setupModel.password
                     guardCode: setupModel.guardCode
@@ -269,7 +266,7 @@ FluWindow {
                 }
 
                 ColumnLayout {
-                    width: bodyScroll.availableWidth
+                    Layout.fillWidth: true
                     spacing: 14
                     Item { Layout.fillHeight: true }
                     FluIcon {
@@ -293,7 +290,7 @@ FluWindow {
                     FluFrame {
                         id: accountFrame
                         Layout.alignment: Qt.AlignHCenter
-                        Layout.preferredWidth: Math.min(420, bodyScroll.availableWidth - 36)
+                        Layout.preferredWidth: Math.min(420, parent.width - 36)
                         Layout.preferredHeight: accountContent.implicitHeight + 24
                         RowLayout {
                             id: accountContent

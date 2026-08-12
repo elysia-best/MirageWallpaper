@@ -3,16 +3,15 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
 
-// 创意工坊/发现页的筛选侧栏：根为 ScrollView（与已安装页 FilterResults 一致），
-// 内部 ColumnLayout 用 availableWidth 严格占满视口，内容超长时在栏内滚动，
+// 创意工坊/发现页的筛选侧栏：根为 FluScrollablePage（与已安装页 FilterResults 一致），
+// 内部 ColumnLayout 用 Layout.fillWidth 严格占满视口，内容超长时在栏内滚动，
 // 不会被内容隐式宽度撑破而侵入右侧的壁纸列表。
-ScrollView {
+FluScrollablePage {
     id: root
     required property var host
-    clip: true
 
     ColumnLayout {
-        width: root.availableWidth
+        Layout.fillWidth: true
         spacing: 10
 
     FluText {
