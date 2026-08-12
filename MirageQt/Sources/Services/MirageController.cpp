@@ -71,6 +71,11 @@ MirageController::MirageController(QObject* parent)
     });
     connect(&m_library, &WallpaperLibrary::libraryChanged, this, &MirageController::reloadWallpapers);
     connect(&m_favorites, &FavoritesManager::changed, this, [this] {
+        // favorite 字段参与 wallpaperMap 序列化，必须先重建缓存再发信号，
+        // 保证 QML 在 selectedWallpaperChanged / wallpapersChanged 后重求值
+        // 读到最新收藏状态。
+        refreshSelectedWallpaperCache();
+        refreshWallpapersCache();
         emit wallpapersChanged();
         emit selectedWallpaperChanged();
     });
@@ -94,7 +99,12 @@ MirageController::MirageController(QObject* parent)
     });
     connect(&m_runtimeStore, &WallpaperRuntimeStore::runtimeChanged, this,
             [this](const QString& id, const WallpaperRuntimeState&) {
-                if (id == m_selectedWallpaperId) emit selectedRuntimeChanged();
+                if (id != m_selectedWallpaperId) return;
+                // 属性 override 变化（滑块/开关/combo 编辑）会改变
+                // effectiveProperties 结果，先重建缓存再发信号，避免
+                // PropertyEditor 各属性绑定在重求值时各自触发一次重活。
+                refreshSelectedPropertiesCache();
+                emit selectedRuntimeChanged();
             });
     connect(&m_workshop, &WorkshopViewModel::browseChanged, this, [this] {
         emit workshopItemsChanged();
@@ -144,14 +154,18 @@ MirageController::~MirageController() {
 }
 
 QVariantList MirageController::wallpapers() const {
+    return m_wallpapersCache;
+}
+
+void MirageController::refreshWallpapersCache() {
     QVariantList result;
     result.reserve(m_allWallpapers.size());
     for (const Wallpaper& item : m_allWallpapers) result.append(wallpaperMap(item));
-    return result;
+    m_wallpapersCache = result;
 }
 
 QVariantMap MirageController::selectedWallpaper() const {
-    return wallpaperMap(wallpaper(m_selectedWallpaperId));
+    return m_selectedWallpaperCache;
 }
 
 QString MirageController::selectedWallpaperId() const {
@@ -227,8 +241,15 @@ QString MirageController::statusMessage() const {
 
 
 QVariantList MirageController::selectedProperties() const {
+    return m_selectedPropertiesCache;
+}
+
+void MirageController::refreshSelectedPropertiesCache() {
     const Wallpaper item = wallpaper(m_selectedWallpaperId);
-    if (!item.isValid()) return {};
+    if (!item.isValid()) {
+        m_selectedPropertiesCache.clear();
+        return;
+    }
 
     const QHash<QString, ProjectProperty> properties = m_runtimeStore.effectiveProperties(item);
     QVector<QString> keys;
@@ -248,7 +269,7 @@ QVariantList MirageController::selectedProperties() const {
     QVariantList result;
     result.reserve(keys.size());
     for (const QString& key : keys) result.append(propertyMap(key, properties.value(key)));
-    return result;
+    m_selectedPropertiesCache = result;
 }
 
 int MirageController::playlistScreen() const {
@@ -286,12 +307,19 @@ QString MirageController::selectedFillMode() const {
 
 void MirageController::reloadWallpapers() {
     m_allWallpapers = m_library.loadAll();
+    refreshWallpapersCache();
+    // 选中 id 有效时直接以现有 id 重建选中缓存；无效时下方重置 id 后再建。
+    // 两个分支各重建一次，避免分支 2 先用旧（无效）id 建一次再被覆盖。
     if (wallpaper(m_selectedWallpaperId).isValid()) {
+        refreshSelectedWallpaperCache();
+        refreshSelectedPropertiesCache();
         emit wallpapersChanged();
         emit selectedWallpaperChanged();
         return;
     }
     m_selectedWallpaperId = m_allWallpapers.isEmpty() ? QString() : m_allWallpapers.first().id();
+    refreshSelectedWallpaperCache();
+    refreshSelectedPropertiesCache();
     emit wallpapersChanged();
     emit selectedWallpaperChanged();
     emit selectedRuntimeChanged();
@@ -300,6 +328,8 @@ void MirageController::reloadWallpapers() {
 void MirageController::selectWallpaper(const QString& id) {
     if (m_selectedWallpaperId == id || !wallpaper(id).isValid()) return;
     m_selectedWallpaperId = id;
+    refreshSelectedWallpaperCache();
+    refreshSelectedPropertiesCache();
     emit selectedWallpaperChanged();
     emit selectedRuntimeChanged();
 }
@@ -636,6 +666,10 @@ Wallpaper MirageController::wallpaper(const QString& id) const {
         if (item.id() == id) return item;
     }
     return {};
+}
+
+void MirageController::refreshSelectedWallpaperCache() {
+    m_selectedWallpaperCache = wallpaperMap(wallpaper(m_selectedWallpaperId));
 }
 
 std::optional<WorkshopItem> MirageController::workshopItem(const QString& id) const {

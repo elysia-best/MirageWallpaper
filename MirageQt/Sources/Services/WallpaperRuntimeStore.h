@@ -7,6 +7,7 @@
 #include "Services/RendererController.h"
 #include "Services/WEProject.h"
 
+#include <QDateTime>
 #include <QHash>
 #include <QObject>
 #include <QTimer>
@@ -46,6 +47,15 @@ signals:
     void runtimeChanged(const QString& wallpaperId, const Mirage::WallpaperRuntimeState& state);
 
 private:
+    // loadBaseProperties 的缓存条目：记录解析时的 project.json mtime 与
+    // size，命中缓存时用一次 lastModified/size stat 与之一致性校验（见
+    // .cpp 注释）。
+    struct BasePropertiesCacheEntry {
+        QDateTime lastModified;
+        qint64 fileSize = 0;
+        QHash<QString, ProjectProperty> properties;
+    };
+
     QString runtimeKey(const QString& wallpaperId) const;
     WallpaperRuntimeState normalizedRuntime(const WallpaperRuntimeState& source, const Wallpaper& wallpaper) const;
     QHash<QString, ProjectProperty> loadBaseProperties(const Wallpaper& wallpaper) const;
@@ -56,6 +66,7 @@ private:
 
     mutable QHash<QString, WallpaperRuntimeState> m_runtimes;
     mutable QHash<QString, Wallpaper> m_wallpapers;
+    mutable QHash<QString, BasePropertiesCacheEntry> m_basePropertiesCache;
     QHash<QString, QTimer*> m_saveTimers;
 };
 
