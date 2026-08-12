@@ -98,6 +98,7 @@ FluPopup {
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            Layout.alignment: Qt.AlignHCenter
             visible: popup.queue.length === 0
             spacing: 8
             FluIcon {
