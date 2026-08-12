@@ -4,6 +4,7 @@
 #include <QMenu>
 #include <QSystemTrayIcon>
 
+class QAction;
 class QQmlApplicationEngine;
 class QWindow;
 
@@ -25,11 +26,14 @@ private:
     QWindow* mainWindow() const;
     void showMainWindow();
     void invokeMainWindowAction(const char* action);
+    void setPaused(bool paused);
 
     QQmlApplicationEngine* m_engine = nullptr;
     MirageController* m_controller = nullptr;
     QMenu m_menu;
     QSystemTrayIcon m_tray;
+    QAction* m_pauseAction = nullptr;
+    bool m_paused = false;
 };
 
 } // namespace Mirage

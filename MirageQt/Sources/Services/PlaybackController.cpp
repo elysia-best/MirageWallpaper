@@ -174,6 +174,10 @@ void PlaybackController::apply(const Wallpaper& item, bool allScreens) {
         if (!screenError.isEmpty()) error = screenError;
     }
     if (applied) {
+        if (m_paused) {
+            m_paused = false;
+            emit pausedChanged(false);
+        }
         emit m_owner->playlistChanged();
         m_owner->setStatusMessage(allScreens
             ? QStringLiteral("已应用到所有显示器") : QStringLiteral("已应用壁纸"));
@@ -189,6 +193,10 @@ void PlaybackController::applySelectedToScreen(int screen) {
     const int target = qBound(0, screen, m_owner->screenCount() - 1);
     QString error;
     if (m_renderer->render(item, target, renderOptionsFor(item), &error)) {
+        if (m_paused) {
+            m_paused = false;
+            emit pausedChanged(false);
+        }
         m_playlist->setCurrentWallpaper(target, item);
         m_playlist->kickRotator(target);
         emit m_owner->playlistChanged();
@@ -202,6 +210,10 @@ void PlaybackController::playPlaylistItem(const Wallpaper& item) {
     if (!item.isValid()) return;
     QString error;
     if (m_renderer->render(item, m_owner->m_playlistScreen, renderOptionsFor(item), &error)) {
+        if (m_paused) {
+            m_paused = false;
+            emit pausedChanged(false);
+        }
         m_playlist->setCurrentWallpaper(m_owner->m_playlistScreen, item);
         m_playlist->kickRotator(m_owner->m_playlistScreen);
         m_owner->selectWallpaper(item.id());
@@ -212,6 +224,10 @@ void PlaybackController::playPlaylistItem(const Wallpaper& item) {
 }
 
 void PlaybackController::stopWallpapers() {
+    if (m_paused) {
+        m_paused = false;
+        emit pausedChanged(false);
+    }
     m_renderer->stopAll();
     m_owner->setStatusMessage(QStringLiteral("已停止动态壁纸"));
 }
@@ -223,7 +239,17 @@ void PlaybackController::stopScreen(int screen) {
 }
 
 void PlaybackController::pauseWallpapers() {
+    if (m_paused) return;
+    m_paused = true;
+    emit pausedChanged(true);
     m_renderer->pause();
+}
+
+void PlaybackController::resumeWallpapers() {
+    if (!m_paused) return;
+    m_paused = false;
+    emit pausedChanged(false);
+    m_renderer->resume();
 }
 
 void PlaybackController::muteWallpapers() {
@@ -274,10 +300,17 @@ void PlaybackController::resetSelectedProperties() {
     const Wallpaper item = m_owner->wallpaper(m_owner->m_selectedWallpaperId);
     if (!item.isValid()) return;
     m_runtimeStore->resetRuntime(item);
+    bool rendered = false;
     for (int screen : m_renderer->activeScreens()) {
         if (m_playlist->currentWallpaper(screen).id() != item.id()) continue;
         QString error;
-        m_renderer->render(item, screen, renderOptionsFor(item), &error);
+        if (m_renderer->render(item, screen, renderOptionsFor(item), &error))
+            rendered = true;
+    }
+    // 重新渲染启动的是全新播放进程，暂停状态随之解除。
+    if (rendered && m_paused) {
+        m_paused = false;
+        emit pausedChanged(false);
     }
 }
 

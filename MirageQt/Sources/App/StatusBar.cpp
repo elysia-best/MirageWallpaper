@@ -4,6 +4,7 @@
 
 #include <QAction>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDesktopServices>
 #include <QIcon>
 #include <QMetaObject>
@@ -54,7 +55,17 @@ bool StatusBar::start() {
 
     m_menu.addSeparator();
     m_menu.addAction(QStringLiteral("静音"), m_controller, &MirageController::muteWallpapers);
-    m_menu.addAction(QStringLiteral("暂停"), m_controller, &MirageController::pauseWallpapers);
+    m_pauseAction = m_menu.addAction(QStringLiteral("暂停"));
+    connect(m_pauseAction, &QAction::triggered, this, [this] {
+        if (m_paused)
+            m_controller->resumeWallpapers();
+        else
+            m_controller->pauseWallpapers();
+    });
+    // 菜单文字跟随 PlaybackController 的实际暂停状态：QML 界面应用新
+    // 壁纸/停止壁纸等路径也会通过 playbackPausedChanged 同步。
+    connect(m_controller, &MirageController::playbackPausedChanged,
+            this, &StatusBar::setPaused);
 
     auto* allScreensAction = m_menu.addAction(QStringLiteral("覆盖到所有显示器"));
     connect(allScreensAction, &QAction::triggered, this, [this] {
@@ -74,7 +85,10 @@ bool StatusBar::start() {
                     showMainWindow();
             });
     m_tray.show();
-    return true;
+    // 平台托盘可用性以 isSystemTrayAvailable() 为准：SNI/StatusNotifier
+    // 托盘经 DBus 异步激活，show() 后立即查 isVisible() 可能误报 false，
+    // 导致 main() 误设 quitOnLastWindowClosed=true、关闭窗口即退出。
+    return QSystemTrayIcon::isSystemTrayAvailable();
 }
 
 QWindow* StatusBar::mainWindow() const {
@@ -84,12 +98,17 @@ QWindow* StatusBar::mainWindow() const {
 
 void StatusBar::showMainWindow() {
     QWindow* window = mainWindow();
-    if (window == nullptr) return;
+    if (window == nullptr) {
+        qWarning() << "StatusBar: main window not available, cannot restore";
+        return;
+    }
 
-    if (window->visibility() == QWindow::Minimized)
-        window->showNormal();
-    else
-        window->show();
+    // 窗口关闭后处于 Hidden（autoDestroy: false），部分平台仅调用 show()
+    // 不足以恢复，需先显式切回 Windowed 再显示并激活。
+    const QWindow::Visibility visibility = window->visibility();
+    if (visibility == QWindow::Hidden || visibility == QWindow::Minimized)
+        window->setVisibility(QWindow::Windowed);
+    window->show();
     window->raise();
     window->requestActivate();
 }
@@ -100,6 +119,12 @@ void StatusBar::invokeMainWindowAction(const char* action) {
 
     showMainWindow();
     QMetaObject::invokeMethod(window, action, Qt::QueuedConnection);
+}
+
+void StatusBar::setPaused(bool paused) {
+    m_paused = paused;
+    if (m_pauseAction)
+        m_pauseAction->setText(paused ? QStringLiteral("恢复播放") : QStringLiteral("暂停"));
 }
 
 } // namespace Mirage

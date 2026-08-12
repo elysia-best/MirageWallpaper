@@ -78,6 +78,8 @@ MirageController::MirageController(QObject* parent)
         if (screen == m_playlistScreen) emit playlistChanged();
     });
     connect(&m_playlist, &PlaylistManager::savedChanged, this, &MirageController::playlistsSavedChanged);
+    connect(&m_playback, &PlaybackController::pausedChanged,
+            this, &MirageController::playbackPausedChanged);
     connect(&m_renderer, &RendererController::rendererMessage, this, &MirageController::setStatusMessage);
     connect(&m_renderer, &RendererController::rendererStateChanged,
             this, &MirageController::displaysChanged);
@@ -591,6 +593,10 @@ void MirageController::revealWorkshopDownload(const QString& id) {
 
 void MirageController::pauseWallpapers() {
     m_playback.pauseWallpapers();
+}
+
+void MirageController::resumeWallpapers() {
+    m_playback.resumeWallpapers();
 }
 
 void MirageController::muteWallpapers() {

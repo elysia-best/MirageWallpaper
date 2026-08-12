@@ -201,6 +201,7 @@ public:
     Q_INVOKABLE void copySteamLoginLog();
     Q_INVOKABLE void revealWorkshopDownload(const QString& id);
     Q_INVOKABLE void pauseWallpapers();
+    Q_INVOKABLE void resumeWallpapers();
     Q_INVOKABLE void muteWallpapers();
     Q_INVOKABLE void previewFps(int fps);
     Q_INVOKABLE bool applySettings(const QVariantMap& values);
@@ -227,6 +228,7 @@ signals:
     void playlistsSavedChanged();
     void displaysChanged();
     void steamChanged();
+    void playbackPausedChanged(bool paused);
 
 private:
     Wallpaper wallpaper(const QString& id) const;

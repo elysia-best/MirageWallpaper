@@ -20,6 +20,8 @@ class PlaylistManager;
 class PlaybackController : public QObject {
     Q_OBJECT
 public:
+    Q_SIGNAL void pausedChanged(bool paused);
+
     PlaybackController(GlobalSettingsService* settings,
                        RendererController* renderer,
                        WallpaperRuntimeStore* runtimeStore,
@@ -38,6 +40,7 @@ public:
     void stopWallpapers();
     void stopScreen(int screen);
     void pauseWallpapers();
+    void resumeWallpapers();
     void muteWallpapers();
     void setSelectedVolume(double volume);
     void setSelectedSpeed(double speed);
@@ -56,6 +59,7 @@ private:
     WallpaperRuntimeStore* m_runtimeStore;
     PlaylistManager* m_playlist;
     MirageController* m_owner;
+    bool m_paused = false;
 };
 
 } // namespace Mirage
