@@ -123,8 +123,7 @@ ColumnLayout {
 
     ColumnLayout {
         Layout.fillWidth: true
-        Layout.leftMargin: 70
-        Layout.rightMargin: 70
+        Layout.alignment: Qt.AlignHCenter
         visible: root.loginState === "loggingIn"
         spacing: 10
         FluProgressRing { Layout.alignment: Qt.AlignHCenter }
