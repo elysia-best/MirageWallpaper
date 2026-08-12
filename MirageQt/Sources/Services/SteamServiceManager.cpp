@@ -76,13 +76,15 @@ void SteamServiceManager::launchProcess() {
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
     m_process->setReadChannel(QProcess::StandardOutput);
 
-    // 启动参数：<dotnet> <assembly>。运行时目录由环境 DOTNET_ROOT 提供，
-    // 使 framework-dependent 的 MirageSteamService.dll 找到 shared runtime。
-    const QString assembly = QFileInfo(executable).dir().absolutePath() +
-                             QStringLiteral("/app/MirageSteamService.dll");
+    // 启动参数：<dotnet> <assembly>。布局对齐 macOS（serviceLaunchConfiguration）：
+    //   bundle 根 = executable 的上上级（linux-x64）
+    //   assembly   = bundle 根/app/MirageSteamService.dll
+    //   DOTNET_ROOT = bundle 根/runtime（framework-dependent dll 找 shared runtime）。
+    QDir bundleRoot = QFileInfo(executable).dir();  // runtime/
+    bundleRoot.cdUp();                              // bundle 根（linux-x64）
+    const QString assembly = bundleRoot.filePath(QStringLiteral("app/MirageSteamService.dll"));
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    const QString runtimeRoot = QFileInfo(executable).dir().absolutePath() +
-                                QStringLiteral("/runtime");
+    const QString runtimeRoot = bundleRoot.filePath(QStringLiteral("runtime"));
     env.insert(QStringLiteral("DOTNET_ROOT"), runtimeRoot);
     m_process->setProcessEnvironment(env);
 
@@ -577,8 +579,9 @@ QString SteamServiceManager::locateServiceExecutable() const {
         QDir(QCoreApplication::applicationDirPath())
             .filePath(QStringLiteral("SteamService/linux-x64/runtime/dotnet")),
         // 开发布局：<repo>/SteamService/build/linux-x64/runtime/dotnet
-        QDir(QCoreApplication::applicationDirPath())
-            .filePath(QStringLiteral("../../../SteamService/build/linux-x64/runtime/dotnet")),
+        // （MIRAGEQT_REPO_ROOT 由 CMake 定义为仓库根）。
+        QDir(QStringLiteral(MIRAGEQT_REPO_ROOT))
+            .filePath(QStringLiteral("SteamService/build/linux-x64/runtime/dotnet")),
     };
     for (const QString& root : candidateRoots) {
         if (QFileInfo(root).isExecutable()) return root;

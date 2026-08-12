@@ -103,7 +103,6 @@ ColumnLayout {
         FluFilledButton {
             Layout.fillWidth: true
             text: qsTr("使用 Steam 手机应用扫码登录")
-            iconSource: FluentIcons.MobileTablet
             onClicked: root.invoke("loginSteamQR")
         }
         FluText {
