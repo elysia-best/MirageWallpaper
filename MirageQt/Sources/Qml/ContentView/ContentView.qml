@@ -490,11 +490,20 @@ FluWindow {
                     RowLayout {
                         spacing: 10
 
-                        FilterResults {
+                        // FluPage（FluScrollablePage 基类）onCompleted 会强制
+                        // visible=true，永久破坏外部 visible 绑定，导致侧栏常驻
+                        // 无法收起（同 SettingsView.qml 的页面可见性问题）。
+                        // 故用普通 Item 承载显隐，FluScrollablePage 内部
+                        // anchors.fill 即可，Item 的 visible 绑定不受影响。
+                        Item {
                             Layout.fillHeight: true
                             Layout.preferredWidth: 225
                             visible: window.filtersVisible
-                            host: window
+
+                            FilterResults {
+                                anchors.fill: parent
+                                host: window
+                            }
                         }
 
                         WallpaperExplorer {
@@ -506,11 +515,17 @@ FluWindow {
 
                     RowLayout {
                         spacing: 10
-                        WorkshopFilterSidebar {
+                        // 同 tab 0：FluPage 基类 onCompleted 强制 visible=true，
+                        // 需用 Item 承载显隐，否则侧栏无法收起。
+                        Item {
                             Layout.fillHeight: true
                             Layout.preferredWidth: 225
                             visible: window.filtersVisible
-                            host: window
+
+                            WorkshopFilterSidebar {
+                                anchors.fill: parent
+                                host: window
+                            }
                         }
                         DiscoverView {
                             Layout.fillWidth: true
@@ -521,11 +536,17 @@ FluWindow {
 
                     RowLayout {
                         spacing: 10
-                        WorkshopFilterSidebar {
+                        // 同 tab 0：FluPage 基类 onCompleted 强制 visible=true，
+                        // 需用 Item 承载显隐，否则侧栏无法收起。
+                        Item {
                             Layout.fillHeight: true
                             Layout.preferredWidth: 225
                             visible: window.filtersVisible
-                            host: window
+
+                            WorkshopFilterSidebar {
+                                anchors.fill: parent
+                                host: window
+                            }
                         }
                         WorkshopView {
                             Layout.fillWidth: true
