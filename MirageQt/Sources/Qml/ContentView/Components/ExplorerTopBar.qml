@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../../GlobalComponents"
 
 RowLayout {
     id: topBar
@@ -40,34 +41,14 @@ RowLayout {
         iconSource: FluentIcons.Refresh
         onClicked: topBar.refreshRequested()
     }
-    FluDropDownButton {
+    // 视图菜单（图标尺寸/每页数量）：与订阅视图共用 WallpaperGridViewMenu
+    // （对齐 macOS 的共享视图菜单）。
+    WallpaperGridViewMenu {
         visible: topBar.currentTab === 0
-        text: "视图"
-        FluMenuItem {
-            text: "小图标"
-            onTriggered: topBar.iconSizeChanged(140)
-        }
-        FluMenuItem {
-            text: "中图标"
-            onTriggered: topBar.iconSizeChanged(170)
-        }
-        FluMenuItem {
-            text: "大图标"
-            onTriggered: topBar.iconSizeChanged(200)
-        }
-        FluMenuSeparator {}
-        FluMenuItem {
-            text: "每页 10 个"
-            onTriggered: topBar.pageSizeChanged(10)
-        }
-        FluMenuItem {
-            text: "每页 25 个"
-            onTriggered: topBar.pageSizeChanged(25)
-        }
-        FluMenuItem {
-            text: "每页 50 个"
-            onTriggered: topBar.pageSizeChanged(50)
-        }
+        explorerIconSize: topBar.explorerIconSize
+        wallpapersPerPage: topBar.wallpapersPerPage
+        onIconSizeChanged: size => topBar.iconSizeChanged(size)
+        onPageSizeChanged: count => topBar.pageSizeChanged(count)
     }
     Item {
         Layout.fillWidth: true

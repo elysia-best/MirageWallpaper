@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
+import "../../../GlobalComponents"
 import "../../../MirageBridge.js" as MirageBridge
 
 ColumnLayout {
@@ -50,13 +51,15 @@ ColumnLayout {
         spacing: 12
         visible: root.itemId.length > 0
 
-        FluImage {
+        WorkshopImage {
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: Math.min(280, Math.max(180, root.width - 30))
             Layout.preferredHeight: Layout.preferredWidth
-            source: String(root.field("preview", ""))
-            fillMode: Image.PreserveAspectCrop
-            asynchronous: true
+            imageUrl: String(root.field("preview", ""))
+            contentMode: Image.PreserveAspectCrop
+            // 规则 2：GIF 只在真实选中（selectedWorkshopItem 非空）时播放；
+            // 未选中时 itemId 为空串，isAnimating: false 显示静态首帧。
+            isAnimating: root.itemId.length > 0
         }
 
         FluText {

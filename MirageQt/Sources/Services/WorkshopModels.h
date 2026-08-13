@@ -149,6 +149,15 @@ struct WorkshopSubscriptionPage {
     QVector<WorkshopSubscription> items;
 };
 
+// "下载全部已订阅壁纸"的确认计划（对齐 macOS WorkshopViewModel.swift 的
+// SubscriptionDownloadPlan）：统计订阅总数与剩余未下载数，items 为本次将
+// 实际加入下载队列的作品（已安装、队列中活跃、不支持类型均已排除）。
+struct SubscriptionDownloadPlan {
+    int subscriptionCount = 0;  // 已订阅壁纸总数
+    int remainingCount = 0;     // 尚未下载（含队列中）的数量
+    QVector<WorkshopItem> items; // 本次待下载列表
+};
+
 QString workshopSortLabel(WorkshopSortOrder order);
 bool workshopSortUsesTrendPeriod(WorkshopSortOrder order);
 QString workshopAgeRatingLabel(WorkshopAgeRating rating);
@@ -156,6 +165,40 @@ QString workshopAgeRatingTag(WorkshopAgeRating rating);
 QString workshopTrendPeriodLabel(WorkshopTrendPeriod period);
 QString workshopTypeLabel(WorkshopTypeFilter filter);
 QVector<WorkshopTag> workshopTags();
+
+// ---- 分辨率过滤（对齐 FilterResultsViewModel.swift 的 FR*Resolution OptionSet）----
+// 订阅/已安装壁纸的分辨率过滤基于 Steam 创意工坊的 tag 匹配，而非本地视频测量。
+// 六组选项，每组每个选项占一个 bit（bit 0 = 第一个选项），"all" = 全部 bit 置位。
+enum WorkshopResolutionGroup {
+    WorkshopResolutionWidescreen = 0,
+    WorkshopResolutionUltraWidescreen,
+    WorkshopResolutionDualscreen,
+    WorkshopResolutionTriplescreen,
+    WorkshopResolutionPortrait,
+    WorkshopResolutionMisc,
+    WorkshopResolutionGroupCount,
+};
+
+// 六组选项的展示标签（供 QML 渲染 checkbox 组，顺序与 bit 位对应）。
+struct WorkshopResolutionOptions {
+    QStringList widescreen;      // 7 选项
+    QStringList ultraWidescreen; // 3 选项
+    QStringList dualscreen;      // 4 选项
+    QStringList triplescreen;    // 5 选项
+    QStringList portrait;        // 5 选项
+    QStringList misc;            // 2 选项
+};
+
+WorkshopResolutionOptions workshopResolutionOptions();
+// 每组"全选"掩码（所有 bit 置位）。用于 QML 的"全选/清空"按钮禁用判断。
+int workshopResolutionAllMask(int group);
+// 判定 tags 是否命中给定的分辨率过滤（六组掩码，bit 0 为各组第一个选项）。
+// 语义对齐 FRResolutionFilter.matches(tags:)：六组全选→true；
+// tags 中无任何分辨率 tag→等价于仅选中 misc.otherResolution（bit 0）。
+bool workshopResolutionMatches(const QStringList& tags,
+                               int widescreen, int ultraWidescreen,
+                               int dualscreen, int triplescreen,
+                               int portrait, int misc);
 
 } // namespace Mirage
 

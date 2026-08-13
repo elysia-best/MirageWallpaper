@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
+import "../OptionData.js" as OptionData
 
 // 已安装壁纸筛选侧栏：对应 macOS Components/FilterResults.swift。
 // 控件类型与 macOS 对齐：checkbox + 可折叠分组 + “仅显示”边框组。
@@ -12,6 +13,21 @@ import FluentUI
 FluScrollablePage {
     id: root
     required property var host
+
+    // 六组分辨率掩码全部置位/全部清零的判断（用于"全选/清空"按钮禁用态，
+    // 对齐订阅侧 SubscribedWorkshopFilterSidebar 的 resolutionAllSelected）。
+    function resolutionAllSelected() {
+        return OptionData.resolutionGroups.every(function (group) {
+            var allMask = (1 << group.options.length) - 1;
+            return (root.host[group.maskKey + "Mask"] & allMask) === allMask;
+        });
+    }
+
+    function resolutionNoneSelected() {
+        return OptionData.resolutionGroups.every(function (group) {
+            return root.host[group.maskKey + "Mask"] === 0;
+        });
+    }
 
     ColumnLayout {
         Layout.fillWidth: true
@@ -162,6 +178,61 @@ FluScrollablePage {
                     checked: root.host.isEnabled(root.host.enabledRatings, modelData.key)
                     clickListener: function () {
                         root.host.setEnabled("enabledRatings", modelData.key, checked);
+                    }
+                }
+            }
+        }
+
+        // 分辨率分组（对齐 macOS FilterResults 的"分辨率" FilterSection：
+        // 全选/清空 + 其他/宽屏/超宽屏/双/三/纵向六组）。掩码由 host
+        // （ContentView）持有，读取 host.<maskKey>Mask、写回 setResolutionOption；
+        // 分组数据与订阅侧共用 OptionData.resolutionGroups。
+        FilterSection {
+            Layout.fillWidth: true
+            title: "分辨率"
+            RowLayout {
+                width: parent.width
+                FluTextButton {
+                    text: "全选"
+                    enabled: !root.resolutionAllSelected()
+                    onClicked: root.host.selectAllResolutions()
+                }
+                Item {
+                    Layout.fillWidth: true
+                }
+                FluTextButton {
+                    text: "清空"
+                    enabled: !root.resolutionNoneSelected()
+                    onClicked: root.host.clearResolutions()
+                }
+            }
+            Repeater {
+                model: OptionData.resolutionGroups
+                delegate: Column {
+                    required property var modelData
+                    // 显式转发组信息，避免内层 Repeater 的 modelData 遮蔽后依赖 parent 链取值。
+                    property string maskKey: modelData.maskKey
+                    width: parent.width
+                    spacing: 4
+                    FluText {
+                        text: modelData.title
+                        font: FluTextStyle.Caption
+                        color: FluTheme.fontSecondaryColor
+                    }
+                    Repeater {
+                        model: modelData.options
+                        delegate: FluCheckBox {
+                            required property string modelData
+                            // 声明 required modelData 后 Qt6 Repeater 不再注入 context 属性 index，
+                            // 需显式声明 required index（否则绑定求值报 ReferenceError）。
+                            required property int index
+                            width: parent.width
+                            text: modelData
+                            checked: (root.host[maskKey + "Mask"] & (1 << index)) !== 0
+                            clickListener: function () {
+                                root.host.setResolutionOption(maskKey, index, checked);
+                            }
+                        }
                     }
                 }
             }

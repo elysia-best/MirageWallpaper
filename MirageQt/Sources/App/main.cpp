@@ -11,10 +11,15 @@
 #include <QtQml/qqmlextensionplugin.h>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QtWebEngineQuick/qtwebenginequickglobal.h>
 
 Q_IMPORT_QML_PLUGIN(FluentUIPlugin)
 
 int main(int argc, char** argv) {
+    // RichHTMLText 的 WebEngineView（远程富标签）需要 WebEngine 初始化；
+    // 必须在 QCoreApplication/QGuiApplication 创建之前调用
+    // （对齐 QtWebEngineQuick 的初始化要求，之后调用仅剩 deprecated 行为）。
+    QtWebEngineQuick::initialize();
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("MirageQt"));
     QCoreApplication::setOrganizationName(QStringLiteral("Mirage"));

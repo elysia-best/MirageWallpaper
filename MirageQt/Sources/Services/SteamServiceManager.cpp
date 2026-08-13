@@ -11,6 +11,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QDebug>
 
 namespace Mirage {
 
@@ -263,27 +264,27 @@ void SteamServiceManager::handleAuthEvent(const QJsonObject& event) {
         m_loginState = LoginState::WaitingForGuard;
         emit loginStateChanged();
     } else if (state == QLatin1String("loggedIn")) {
-        const bool wasRestoring = m_restoringSession;
         m_restoringSession = false;
         const QString resolvedUsername = ! username.isEmpty() ? username : m_accountName;
         const QString refreshToken = jsonString(event, "refreshToken");
         const QString guardData = jsonString(event, "guardData");
 
-        // 持久化会话（对齐上游 keychain 持久化语义，仅登录成功时写入）。
-        QSettings settings;
-        settings.beginGroup(QLatin1String(kSettingsGroup));
+        // 持久化会话（对齐上游 keychain 持久化语义，仅登录成功时写入；
+        // Linux 走系统密钥环 org.freedesktop.secrets，无明文兜底）。
+        // 注意：token 为空时**不删除**已保存凭据——服务端登录成功后可能
+        // 再发一次不带 token 的 loggedIn 事件（重连/恢复通知），删除分支
+        // 会把刚写入的凭据误删（此前导致"反复登录"）；对照 macOS 源码
+        // token 为空时仅记录 errSecDecode，删除只发生在 logout/AUTH_FAILED。
         if (! refreshToken.isEmpty()) {
-            settings.setValue(settingsKey(resolvedUsername) + QStringLiteral(":refreshToken"),
-                              refreshToken);
-        } else if (! wasRestoring) {
-            settings.remove(settingsKey(resolvedUsername) + QStringLiteral(":refreshToken"));
+            secretStoreWrite(QStringLiteral("refresh-token"), resolvedUsername, refreshToken);
         }
         if (! guardData.isEmpty()) {
-            settings.setValue(settingsKey(resolvedUsername) + QStringLiteral(":guardData"),
-                              guardData);
+            secretStoreWrite(QStringLiteral("guard-data"), resolvedUsername, guardData);
         }
-        settings.endGroup();
-        settings.sync();
+        // 诊断日志：登录成功时 token 是否随事件到达（服务端恢复/写入前提）。
+        qInfo().noquote() << QStringLiteral("[SteamSession] loggedIn user=%1 token=%2")
+            .arg(resolvedUsername,
+                 refreshToken.isEmpty() ? QStringLiteral("<empty>") : QStringLiteral("present"));
 
         if (! resolvedUsername.isEmpty()) m_accountName = resolvedUsername;
         m_loggedIn = true;
@@ -297,6 +298,8 @@ void SteamServiceManager::handleAuthEvent(const QJsonObject& event) {
         QString message = ! detail.isEmpty() ? detail : QStringLiteral("Steam 登录失败");
         if (errorCode == QLatin1String(kAuthFailedCode)) {
             message = QStringLiteral("保存的 Steam 会话已失效，请重新登录");
+            // 诊断日志：恢复/登录鉴权失败并清除已保存会话（下次启动需重新登录）。
+            qWarning().noquote() << QStringLiteral("[SteamSession] AUTH_FAILED: clearing saved session");
             clearSavedSession();
         }
         m_loggedIn = false;
@@ -364,21 +367,25 @@ void SteamServiceManager::handleDownloadEvent(const QJsonObject& event) {
 // ---- 认证命令 ----
 
 void SteamServiceManager::restoreSessionIfNeeded() {
-    QSettings settings;
-    settings.beginGroup(QLatin1String(kSettingsGroup));
-    // 找到任一已保存的 refresh-token:<username> 账户（用户名小写存储）。
-    QString savedUsername;
-    QString refreshToken;
-    const QStringList keys = settings.childKeys();
-    for (const QString& key : keys) {
-        if (key.endsWith(QLatin1String(":refreshToken"))) {
-            savedUsername = key.left(key.size() - QStringLiteral(":refreshToken").size());
-            refreshToken = settings.value(key).toString();
-            break;
-        }
+    // 枚举已保存会话（仅密钥环），取第一个
+    // refresh-token 账户恢复（对齐 macOS 枚举 keychain 找 savedUsername）。
+    const QStringList usernames = savedSessionUsernames();
+    if (usernames.isEmpty()) {
+        // 诊断日志：无已保存会话时不恢复（首次启动/已登出）。
+        qInfo().noquote() << QStringLiteral("[SteamSession] restore: no saved session");
+        return;
     }
-    settings.endGroup();
-    if (savedUsername.isEmpty() || refreshToken.isEmpty()) return;
+    const QString savedUsername = usernames.first();
+    const QString refreshToken =
+        secretStoreRead(QStringLiteral("refresh-token"), savedUsername);
+    if (refreshToken.isEmpty()) {
+        qWarning().noquote() << QStringLiteral("[SteamSession] restore: token empty for %1")
+                                .arg(savedUsername);
+        return;
+    }
+    // 诊断日志：记录枚举到的用户名与 token 长度（不输出 token 明文）。
+    qInfo().noquote() << QStringLiteral("[SteamSession] restore: user=%1 token=%2 bytes")
+        .arg(savedUsername, QString::number(refreshToken.toUtf8().size()));
     m_restoringSession = true;
     m_accountName = savedUsername;
     m_loginState = LoginState::LoggingIn;
@@ -415,11 +422,9 @@ void SteamServiceManager::login(const QString& username, const QString& password
     QJsonObject fields;
     fields.insert(QStringLiteral("username"), username);
     fields.insert(QStringLiteral("password"), password);
-    QSettings settings;
-    settings.beginGroup(QLatin1String(kSettingsGroup));
-    const QString guardData = settings.value(settingsKey(username) + QStringLiteral(":guardData"))
-                                  .toString();
-    settings.endGroup();
+    // 附带该用户的 guardData（仅密钥环），供服务端
+    // 免二次验证（对齐 macOS 登录时读取 guardData 的 keychain 行为）。
+    const QString guardData = secretStoreRead(QStringLiteral("guard-data"), username);
     if (! guardData.isEmpty()) fields.insert(QStringLiteral("guardData"), guardData);
     sendCommand(QStringLiteral("loginPassword"), fields,
                 [this](bool ok, const QString& message, const QString& errorCode,
@@ -452,6 +457,13 @@ void SteamServiceManager::logout() {
 }
 
 void SteamServiceManager::clearSavedSession() {
+    // 清除密钥环中的全部 Steam 会话项（枚举账户逐项删除）。
+    const QStringList usernames = savedSessionUsernames();
+    for (const QString& username : usernames) {
+        secretStoreRemove(QStringLiteral("refresh-token"), username);
+        secretStoreRemove(QStringLiteral("guard-data"), username);
+    }
+    // 兼容清理：遗留 QSettings 数据也一并清除。
     QSettings settings;
     settings.beginGroup(QLatin1String(kSettingsGroup));
     for (const QString& key : settings.childKeys()) settings.remove(key);
@@ -460,11 +472,75 @@ void SteamServiceManager::clearSavedSession() {
 }
 
 bool SteamServiceManager::hasSavedSession() const {
+    // 仅密钥环保存过会话即视为有（恢复/登出提示用；明文兜底已移除）。
+    return ! savedSessionUsernames().isEmpty();
+}
+
+// ---- 会话凭据持久化（仅系统密钥环；删除路径兼容清理遗留明文） ----
+
+// 密钥环账户前缀（带连字符，对齐 macOS）→ 遗留 QSettings 键后缀（无连字符），
+// 仅用于清除历史版本写入的明文凭据（读取/枚举已不再使用 QSettings）。
+static QString settingsSuffix(const QString& kind) {
+    if (kind == QLatin1String("refresh-token")) return QStringLiteral("refreshToken");
+    if (kind == QLatin1String("guard-data")) return QStringLiteral("guardData");
+    return kind;
+}
+
+QString SteamServiceManager::secretAccountKey(const QString& kind,
+                                              const QString& username) const {
+    // 对齐 macOS keychain 账户命名：refresh-token:<user> / guard-data:<user>。
+    return kind + QLatin1Char(':') + username.toLower();
+}
+
+bool SteamServiceManager::secretStoreWrite(const QString& kind, const QString& username,
+                                           const QString& value) {
+    const QString account = secretAccountKey(kind, username);
+    // 仅写入系统密钥环，不再回退 QSettings 明文（明文存储不安全；
+    // 对齐 macOS：写入失败仅记录，不阻断登录、不落明文）。
+    if (SecretService::write(account, value.toUtf8())) {
+        qInfo().noquote() << QStringLiteral("[SteamSession] write %1 -> keyring").arg(account);
+        return true;
+    }
+    qWarning().noquote() << QStringLiteral("[SteamSession] write %1 -> keyring FAILED")
+                            .arg(account);
+    return false;
+}
+
+QString SteamServiceManager::secretStoreRead(const QString& kind,
+                                             const QString& username) const {
+    const QString account = secretAccountKey(kind, username);
+    // 仅从密钥环读取（明文兜底已移除）；返回空串表示无会话。
+    QByteArray value;
+    if (SecretService::read(account, value)) return QString::fromUtf8(value);
+    qWarning().noquote() << QStringLiteral("[SteamSession] read %1 -> not found").arg(account);
+    return QString();
+}
+
+void SteamServiceManager::secretStoreRemove(const QString& kind,
+                                            const QString& username) {
+    const QString account = secretAccountKey(kind, username);
+    SecretService::remove(account);
+    // 兼容清理：删除遗留 QSettings 明文项（历史版本写入的凭据）。
     QSettings settings;
     settings.beginGroup(QLatin1String(kSettingsGroup));
-    const bool has = ! settings.childKeys().isEmpty();
+    settings.remove(settingsKey(username) + QLatin1Char(':') + settingsSuffix(kind));
     settings.endGroup();
-    return has;
+    settings.sync();
+}
+
+QStringList SteamServiceManager::savedSessionUsernames() const {
+    // 密钥环：枚举 refresh-token 账户 → 剥前缀得用户名。
+    QStringList usernames;
+    const QString prefix = QStringLiteral("refresh-token:");
+    const QStringList accounts = SecretService::accounts();
+    for (const QString& account : accounts) {
+        if (account.startsWith(prefix)) {
+            const QString username = account.mid(prefix.size());
+            if (!username.isEmpty() && !usernames.contains(username))
+                usernames.append(username);
+        }
+    }
+    return usernames;
 }
 
 // ---- 订阅命令 ----

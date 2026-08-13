@@ -48,6 +48,18 @@ std::optional<WorkshopAgeRating> workshopAgeRatingFor(const QString& key) {
     return std::nullopt;
 }
 
+// 类型过滤 enum → QML key（与 OptionData.js 的 workshopTypeFilters 对齐）。
+QString workshopTypeKey(WorkshopTypeFilter filter) {
+    switch (filter) {
+    case WorkshopTypeFilter::Scene: return QStringLiteral("scene");
+    case WorkshopTypeFilter::Web: return QStringLiteral("web");
+    case WorkshopTypeFilter::Video: return QStringLiteral("video");
+    case WorkshopTypeFilter::Preset: return QStringLiteral("preset");
+    case WorkshopTypeFilter::All: return QStringLiteral("all");
+    }
+    return QStringLiteral("all");
+}
+
 
 } // namespace
 
@@ -234,20 +246,53 @@ bool MirageController::steamServiceRunning() const { return m_steamService.isRun
 
 QVariantList MirageController::subscriptions() const {
     QVariantList result;
-    for (const WorkshopSubscription& sub : m_workshop.subscriptions()) {
-        result.append(QVariantMap{
-            {QStringLiteral("workshopId"), sub.publishedFileId},
-            {QStringLiteral("subscribedAt"), static_cast<qlonglong>(sub.subscribedAt)},
-            {QStringLiteral("updatedAt"), static_cast<qlonglong>(sub.updatedAt)},
-            {QStringLiteral("contentHash"), sub.contentHash},
-            {QStringLiteral("fileSize"), static_cast<qlonglong>(sub.fileSize)},
-        });
+    for (const WorkshopItem& item : m_workshop.subscriptions()) {
+        result.append(workshopItemMap(item));
     }
     return result;
 }
 bool MirageController::subscriptionsLoading() const { return m_workshop.isSubscriptionsLoading(); }
-bool MirageController::hasMoreSubscriptions() const { return m_workshop.hasMoreSubscriptions(); }
 int MirageController::subscriptionTotal() const { return m_workshop.subscriptionTotal(); }
+int MirageController::subscriptionPage() const { return m_workshop.subscriptionCurrentPage(); }
+int MirageController::subscriptionPageCount() const { return m_workshop.subscriptionPageCount(); }
+bool MirageController::subscriptionDownloadPreparing() const {
+    return m_workshop.isPreparingSubscriptionDownloads();
+}
+
+QVariantMap MirageController::subscriptionDownloadPlan() const {
+    const std::optional<SubscriptionDownloadPlan>& plan = m_workshop.subscriptionDownloadPlan();
+    if (!plan) return {};
+    QVariantList items;
+    items.reserve(plan->items.size());
+    for (const WorkshopItem& item : plan->items) {
+        items.append(QVariantMap{
+            {QStringLiteral("id"), item.publishedFileId},
+            {QStringLiteral("title"), item.title},
+        });
+    }
+    return {
+        {QStringLiteral("subscriptionCount"), plan->subscriptionCount},
+        {QStringLiteral("remainingCount"), plan->remainingCount},
+        {QStringLiteral("downloadCount"), plan->items.size()},
+        {QStringLiteral("items"), items},
+    };
+}
+
+QVariantMap MirageController::subscriptionFilters() const {
+    return {
+        {QStringLiteral("searchText"), m_workshop.subscriptionSearchText()},
+        {QStringLiteral("typeFilter"), workshopTypeKey(m_workshop.subscriptionTypeFilter())},
+        {QStringLiteral("ageRatingMask"), m_workshop.subscriptionAgeRatingMask()},
+        {QStringLiteral("widescreen"), m_workshop.subscriptionWidescreenMask()},
+        {QStringLiteral("ultraWidescreen"), m_workshop.subscriptionUltraWidescreenMask()},
+        {QStringLiteral("dualscreen"), m_workshop.subscriptionDualscreenMask()},
+        {QStringLiteral("triplescreen"), m_workshop.subscriptionTriplescreenMask()},
+        {QStringLiteral("portrait"), m_workshop.subscriptionPortraitMask()},
+        {QStringLiteral("misc"), m_workshop.subscriptionMiscMask()},
+        {QStringLiteral("selectedTags"), QStringList(m_workshop.subscriptionSelectedTags().values())},
+        {QStringLiteral("hasActiveFilters"), m_workshop.hasActiveSubscriptionFilters()},
+    };
+}
 
 bool MirageController::firstLaunch() const {
     return m_firstLaunch;
@@ -625,8 +670,65 @@ void MirageController::loadSubscriptions() {
     m_workshop.loadSubscriptions(0);
 }
 
-void MirageController::loadNextSubscriptionsPage() {
-    m_workshop.loadNextSubscriptionsPage();
+void MirageController::goToSubscriptionPage(int page) {
+    m_workshop.goToSubscriptionPage(page);
+}
+
+void MirageController::setSubscriptionSearchText(const QString& text) {
+    m_workshop.setSubscriptionSearchText(text);
+}
+
+void MirageController::setSubscriptionTypeFilter(const QString& key) {
+    m_workshop.setSubscriptionTypeFilter(workshopTypeFilterFor(key));
+}
+
+void MirageController::setSubscriptionAgeRatingEnabled(const QString& key, bool enabled) {
+    const std::optional<WorkshopAgeRating> rating = workshopAgeRatingFor(key);
+    if (rating) m_workshop.setSubscriptionAgeRatingEnabled(*rating, enabled);
+}
+
+void MirageController::setSubscriptionResolutionOption(int group, int bit, bool enabled) {
+    m_workshop.setSubscriptionResolutionOption(group, bit, enabled);
+}
+
+void MirageController::selectAllSubscriptionResolutions() {
+    m_workshop.selectAllSubscriptionResolutions();
+}
+
+void MirageController::clearSubscriptionResolutions() {
+    m_workshop.clearSubscriptionResolutions();
+}
+
+void MirageController::selectAllSubscriptionTags() {
+    m_workshop.selectAllSubscriptionTags();
+}
+
+void MirageController::clearSubscriptionTags() {
+    m_workshop.clearSubscriptionTags();
+}
+
+void MirageController::toggleSubscriptionTag(const QString& tag) {
+    m_workshop.toggleSubscriptionTag(tag);
+}
+
+void MirageController::clearSubscriptionFilters() {
+    m_workshop.clearSubscriptionFilters();
+}
+
+void MirageController::downloadAllSubscriptions() {
+    m_workshop.downloadAllSubscriptions();
+}
+
+void MirageController::confirmSubscriptionDownloads() {
+    m_workshop.confirmSubscriptionDownloads();
+}
+
+void MirageController::dismissSubscriptionDownloadPlan() {
+    m_workshop.dismissSubscriptionDownloadPlan();
+}
+
+void MirageController::setSubscriptionPerPage(int perPage) {
+    m_workshop.setSubscriptionPerPage(perPage);
 }
 
 void MirageController::subscribeWorkshopItem(const QString& id) {
@@ -709,6 +811,10 @@ std::optional<WorkshopItem> MirageController::workshopItem(const QString& id) co
     for (const DiscoverSectionDefinition& definition : kDiscoverSections) {
         if (const std::optional<WorkshopItem> item = find(m_workshop.discoverItems(definition.collection))) return item;
     }
+    // 已订阅项也纳入查找：订阅卡片点击（selectWorkshopItem）与双击下载
+    // （downloadWorkshopItem）复用与创意工坊浏览完全相同的查找/选中链路；
+    // 可点击的订阅卡片一定来自当前页（GridView model = subscriptions()）。
+    if (const std::optional<WorkshopItem> item = find(m_workshop.subscriptions())) return item;
     return std::nullopt;
 }
 

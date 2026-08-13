@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../../GlobalComponents"
 
 RowLayout {
     id: bar
@@ -28,10 +29,10 @@ RowLayout {
 
     FluPivot {
         id: pivot
+        Layout.preferredWidth: 240
+        Layout.preferredHeight: 30
         Component.onCompleted: currentIndex = bar.currentIndex
         onCurrentIndexChanged: bar.selected(pivot.currentIndex)
-        Layout.preferredWidth: 190
-        Layout.preferredHeight: 30
         headerHeight: 30
         font: FluTextStyle.Caption
         FluPivotItem {
@@ -42,6 +43,10 @@ RowLayout {
         }
         FluPivotItem {
             title: qsTr("创意工坊")
+        }
+        // 已订阅为独立分区（对齐 macOS MainSection.subscriptions）。
+        FluPivotItem {
+            title: qsTr("已订阅")
         }
     }
 

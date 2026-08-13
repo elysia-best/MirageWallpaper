@@ -454,21 +454,30 @@ void WorkshopViewModel::handleDetailsFinished(quint64 requestId,
                                               const QVector<WorkshopItem>& items,
                                               const QString&) {
     const auto it = m_dependencyRequests.find(requestId);
-    if (it == m_dependencyRequests.end()) return;
-    const PendingDependency pending = it.value();
-    m_dependencyRequests.erase(it);
+    if (it != m_dependencyRequests.end()) {
+        const PendingDependency pending = it.value();
+        m_dependencyRequests.erase(it);
 
-    WorkshopItem dependency = WorkshopItem::dependencyPlaceholder(pending.dependencyId);
-    for (const WorkshopItem& item : items) {
-        if (item.publishedFileId == pending.dependencyId) {
-            dependency = item;
-            break;
+        WorkshopItem dependency = WorkshopItem::dependencyPlaceholder(pending.dependencyId);
+        for (const WorkshopItem& item : items) {
+            if (item.publishedFileId == pending.dependencyId) {
+                dependency = item;
+                break;
+            }
         }
+        emit presetDependencyRequested(pending.presetId,
+                                       pending.presetTitle,
+                                       pending.dependencyId,
+                                       dependency);
+        return;
     }
-    emit presetDependencyRequested(pending.presetId,
-                                   pending.presetTitle,
-                                   pending.dependencyId,
-                                   dependency);
+
+    // 订阅详情请求：累积本批结果并继续请求下一批。
+    if (m_subscriptionDetailRequests.remove(requestId)) {
+        m_pendingSubscriptionDetails.append(items);
+        requestNextSubscriptionDetailBatch();
+        return;
+    }
 }
 
 void WorkshopViewModel::downloadItem(const WorkshopItem& item, DownloadPurpose purpose) {    for (int i = 0; i < m_downloadQueue.size(); ++i) {
@@ -559,41 +568,376 @@ void WorkshopViewModel::handleDownloadState(const QString& workshopId, DownloadS
 
 // ---- 订阅管理（对齐上游 WorkshopViewModel.swift）----
 
-const QVector<WorkshopSubscription>& WorkshopViewModel::subscriptions() const { return m_subscriptions; }
+const QVector<WorkshopItem>& WorkshopViewModel::subscriptions() const { return m_subscriptionItems; }
 int WorkshopViewModel::subscriptionTotal() const { return m_subscriptionTotal; }
-int WorkshopViewModel::subscriptionStartIndex() const { return m_subscriptionStartIndex; }
+int WorkshopViewModel::subscriptionCurrentPage() const {
+    const int pageCount = subscriptionPageCount();
+    return qMin(pageCount, m_subscriptionStartIndex / m_subscriptionPerPage + 1);
+}
+int WorkshopViewModel::subscriptionPageCount() const {
+    return qMax(1, (m_subscriptionTotal + m_subscriptionPerPage - 1) / m_subscriptionPerPage);
+}
 bool WorkshopViewModel::isSubscriptionsLoading() const { return m_subscriptionsLoading; }
-bool WorkshopViewModel::hasMoreSubscriptions() const {
-    return m_subscriptionStartIndex + m_subscriptions.size() < m_subscriptionTotal;
+
+QString WorkshopViewModel::subscriptionSearchText() const { return m_subscriptionSearchText; }
+WorkshopTypeFilter WorkshopViewModel::subscriptionTypeFilter() const { return m_subscriptionTypeFilter; }
+int WorkshopViewModel::subscriptionAgeRatingMask() const { return m_subscriptionAgeRatingMask; }
+int WorkshopViewModel::subscriptionWidescreenMask() const { return m_subscriptionWidescreen; }
+int WorkshopViewModel::subscriptionUltraWidescreenMask() const { return m_subscriptionUltraWidescreen; }
+int WorkshopViewModel::subscriptionDualscreenMask() const { return m_subscriptionDualscreen; }
+int WorkshopViewModel::subscriptionTriplescreenMask() const { return m_subscriptionTriplescreen; }
+int WorkshopViewModel::subscriptionPortraitMask() const { return m_subscriptionPortrait; }
+int WorkshopViewModel::subscriptionMiscMask() const { return m_subscriptionMisc; }
+const QSet<QString>& WorkshopViewModel::subscriptionSelectedTags() const { return m_subscriptionSelectedTags; }
+bool WorkshopViewModel::hasActiveSubscriptionFilters() const {
+    const bool tagsActive = !m_subscriptionSelectedTags.isEmpty() &&
+                            m_subscriptionSelectedTags.size() < workshopTags().size();
+    return !m_subscriptionSearchText.trimmed().isEmpty() ||
+           m_subscriptionTypeFilter != WorkshopTypeFilter::All ||
+           (m_subscriptionAgeRatingMask != 0 && m_subscriptionAgeRatingMask != 0x7) ||
+           tagsActive ||
+           m_subscriptionWidescreen != 0x7F ||
+           m_subscriptionUltraWidescreen != 0x07 ||
+           m_subscriptionDualscreen != 0x0F ||
+           m_subscriptionTriplescreen != 0x1F ||
+           m_subscriptionPortrait != 0x1F ||
+           m_subscriptionMisc != 0x03;
 }
 
 void WorkshopViewModel::loadSubscriptions(int startIndex) {
     if (m_subscriptionsLoading) return;
+    if (!m_steamService->isLoggedIn()) {
+        // 未登录时清空订阅态（对齐 refreshSubscriptions 的 guard 分支）。
+        m_pendingSubscriptionIds.clear();
+        m_subscriptionCatalogItems.clear();
+        m_subscriptionItems.clear();
+        m_subscriptionTotal = 0;
+        m_subscriptionStartIndex = 0;
+        emit subscriptionsChanged();
+        return;
+    }
     m_subscriptionsLoading = true;
+    m_requestedSubscriptionStart = qMax(0, startIndex);
+    m_pendingSubscriptionIds.clear();
+    m_seenSubscriptionIds.clear();
     emit subscriptionsChanged();
-    m_steamService->fetchSubscriptions(startIndex,
-        [this](bool ok, const SteamServiceManager::SubscriptionPage& page, const QString&) {
-            m_subscriptionsLoading = false;
-            if (ok) {
-                if (page.startIndex == 0) m_subscriptions.clear();
-                m_subscriptionTotal = page.total;
-                m_subscriptionStartIndex = page.startIndex;
-                for (const auto& item : page.items) {
-                    WorkshopSubscription sub;
-                    sub.publishedFileId = item.publishedFileId;
-                    sub.subscribedAt = item.subscribedAt;
-                    sub.updatedAt = item.updatedAt;
-                    sub.contentHash = item.contentHash;
-                    sub.fileSize = item.fileSize;
-                    m_subscriptions.append(sub);
-                }
+    fetchSubscriptionPage(0, m_requestedSubscriptionStart);
+}
+
+void WorkshopViewModel::fetchSubscriptionPage(int serviceStart, int requestedStart) {
+    // 服务端订阅记录是分页的，逐页拉取并去重累积 publishedFileId，
+    // 直到拉完（page.items 为空或 nextStart >= page.total）为止。
+    m_steamService->fetchSubscriptions(serviceStart,
+        [this, requestedStart](bool ok, const SteamServiceManager::SubscriptionPage& page, const QString&) {
+            if (!ok) {
+                m_subscriptionsLoading = false;
+                m_pendingSubscriptionIds.clear();
+                m_seenSubscriptionIds.clear();
+                emit subscriptionsChanged();
+                return;
             }
-            emit subscriptionsChanged();
+            for (const auto& item : page.items) {
+                if (m_seenSubscriptionIds.contains(item.publishedFileId)) continue;
+                m_seenSubscriptionIds.insert(item.publishedFileId);
+                m_pendingSubscriptionIds.append(item.publishedFileId);
+            }
+            const int nextStart = page.startIndex + page.items.size();
+            if (page.items.isEmpty() || nextStart >= page.total) {
+                startSubscriptionDetailsLoad();
+            } else {
+                fetchSubscriptionPage(nextStart, requestedStart);
+            }
         });
 }
 
-void WorkshopViewModel::loadNextSubscriptionsPage() {
-    loadSubscriptions(m_subscriptionStartIndex + m_subscriptions.size());
+void WorkshopViewModel::startSubscriptionDetailsLoad() {
+    m_pendingSubscriptionDetailBatches.clear();
+    m_pendingSubscriptionDetails.clear();
+    m_subscriptionDetailRequests.clear();
+    // getFileDetails 每批 100 个（对齐 upstream loadSubscriptionItems 的 stride 100）。
+    for (int start = 0; start < m_pendingSubscriptionIds.size(); start += 100) {
+        m_pendingSubscriptionDetailBatches.append(m_pendingSubscriptionIds.mid(start, 100));
+    }
+    requestNextSubscriptionDetailBatch();
+}
+
+void WorkshopViewModel::requestNextSubscriptionDetailBatch() {
+    if (m_pendingSubscriptionDetailBatches.isEmpty()) {
+        finishSubscriptionLoad();
+        return;
+    }
+    const QStringList batch = m_pendingSubscriptionDetailBatches.takeFirst();
+    const quint64 requestId = m_api->getFileDetails(batch);
+    m_subscriptionDetailRequests.insert(requestId);
+}
+
+void WorkshopViewModel::finishSubscriptionLoad() {
+    // 按订阅顺序重建详情列表（对齐 loadSubscriptionItems 的 byID 映射 + records.map），
+    // 缺详情时用占位项（对齐 unavailableSubscription）。
+    QHash<QString, WorkshopItem> byId;
+    for (const WorkshopItem& item : m_pendingSubscriptionDetails) {
+        if (!byId.contains(item.publishedFileId)) byId.insert(item.publishedFileId, item);
+    }
+    m_subscriptionCatalogItems.clear();
+    m_subscriptionCatalogItems.reserve(m_pendingSubscriptionIds.size());
+    for (const QString& id : m_pendingSubscriptionIds) {
+        const auto it = byId.constFind(id);
+        if (it != byId.constEnd()) {
+            m_subscriptionCatalogItems.append(it.value());
+        } else {
+            m_subscriptionCatalogItems.append(WorkshopItem::dependencyPlaceholder(id));
+        }
+    }
+    m_pendingSubscriptionIds.clear();
+    m_seenSubscriptionIds.clear();
+    m_pendingSubscriptionDetails.clear();
+    m_pendingSubscriptionDetailBatches.clear();
+    m_subscriptionsLoading = false;
+    rebuildSubscriptionPage(m_requestedSubscriptionStart);
+    // "下载全部"在目录为空时发起：订阅加载完成后延续生成确认计划。
+    if (m_buildPlanAfterSubscriptionLoad) {
+        buildSubscriptionDownloadPlan();
+        return;
+    }
+    emit subscriptionsChanged();
+}
+
+void WorkshopViewModel::rebuildSubscriptionPage(int startIndex) {
+    QVector<WorkshopItem> filtered;
+    filtered.reserve(m_subscriptionCatalogItems.size());
+    for (const WorkshopItem& item : m_subscriptionCatalogItems) {
+        if (matchesSubscriptionFilters(item)) filtered.append(item);
+    }
+    const int maximumStart = filtered.isEmpty() ? 0 : (filtered.size() - 1) / m_subscriptionPerPage * m_subscriptionPerPage;
+    const int clampedStart = qBound(0, startIndex, maximumStart);
+    m_subscriptionTotal = filtered.size();
+    m_subscriptionStartIndex = clampedStart;
+    m_subscriptionItems = filtered.mid(clampedStart, m_subscriptionPerPage);
+    emit subscriptionsChanged();
+}
+
+bool WorkshopViewModel::matchesSubscriptionFilters(const WorkshopItem& item) const {
+    const QString query = m_subscriptionSearchText.trimmed();
+    if (!query.isEmpty()) {
+        const QStringList searchable = QStringList{item.title, item.description,
+                                                   item.creatorSteamId, item.publishedFileId} + item.tags;
+        bool matched = false;
+        for (const QString& value : searchable) {
+            if (value.contains(query, Qt::CaseInsensitive)) { matched = true; break; }
+        }
+        if (!matched) return false;
+    }
+
+    switch (m_subscriptionTypeFilter) {
+    case WorkshopTypeFilter::All: break;
+    case WorkshopTypeFilter::Scene: if (item.kind() != WallpaperKind::Scene) return false; break;
+    case WorkshopTypeFilter::Web: if (item.kind() != WallpaperKind::Web) return false; break;
+    case WorkshopTypeFilter::Video: if (item.kind() != WallpaperKind::Video) return false; break;
+    case WorkshopTypeFilter::Preset: if (!item.isPreset()) return false; break;
+    }
+
+    // 分级过滤：非空且非全选时，排除未选中的分级（对齐 subscriptionAgeRatingFilter 语义）。
+    if (m_subscriptionAgeRatingMask != 0 && m_subscriptionAgeRatingMask != 0x7) {
+        int bit = 0;
+        if (item.ageRating == QLatin1String("Questionable")) bit = 1;
+        else if (item.ageRating == QLatin1String("Mature")) bit = 2;
+        if ((m_subscriptionAgeRatingMask & (1 << bit)) == 0) return false;
+    }
+
+    // 标签过滤：要求 item 同时命中所有已选标签（全选时等价于不过滤）。
+    const int selectableCount = workshopTags().size();
+    if (!m_subscriptionSelectedTags.isEmpty() && m_subscriptionSelectedTags.size() < selectableCount) {
+        QSet<QString> itemTags;
+        for (const QString& tag : item.tags) itemTags.insert(tag.toLower());
+        for (const QString& selected : m_subscriptionSelectedTags) {
+            if (!itemTags.contains(selected.toLower())) return false;
+        }
+    }
+
+    return workshopResolutionMatches(item.tags,
+                                     m_subscriptionWidescreen,
+                                     m_subscriptionUltraWidescreen,
+                                     m_subscriptionDualscreen,
+                                     m_subscriptionTriplescreen,
+                                     m_subscriptionPortrait,
+                                     m_subscriptionMisc);
+}
+
+void WorkshopViewModel::goToSubscriptionPage(int page) {
+    const int target = qBound(1, page, subscriptionPageCount());
+    if (m_subscriptionsLoading || target == subscriptionCurrentPage()) return;
+    rebuildSubscriptionPage((target - 1) * m_subscriptionPerPage);
+}
+
+void WorkshopViewModel::setSubscriptionPerPage(int perPage) {
+    // 对齐 macOS subscriptionPageSizeDidChange：每页数量变化后重算当前页。
+    const int clamped = qBound(1, perPage, 200);
+    if (clamped == m_subscriptionPerPage) return;
+    m_subscriptionPerPage = clamped;
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::setSubscriptionSearchText(const QString& text) {
+    if (m_subscriptionSearchText == text) return;
+    m_subscriptionSearchText = text;
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::setSubscriptionTypeFilter(WorkshopTypeFilter filter) {
+    if (m_subscriptionTypeFilter == filter) return;
+    m_subscriptionTypeFilter = filter;
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::setSubscriptionAgeRatingEnabled(WorkshopAgeRating rating, bool enabled) {
+    const int bit = 1 << static_cast<int>(rating);
+    const int updated = enabled ? (m_subscriptionAgeRatingMask | bit) : (m_subscriptionAgeRatingMask & ~bit);
+    if (updated == m_subscriptionAgeRatingMask) return;
+    m_subscriptionAgeRatingMask = updated;
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::setSubscriptionResolutionOption(int group, int bit, bool enabled) {
+    if (group < 0 || group >= WorkshopResolutionGroupCount) return;
+    int* mask = nullptr;
+    switch (group) {
+    case WorkshopResolutionWidescreen: mask = &m_subscriptionWidescreen; break;
+    case WorkshopResolutionUltraWidescreen: mask = &m_subscriptionUltraWidescreen; break;
+    case WorkshopResolutionDualscreen: mask = &m_subscriptionDualscreen; break;
+    case WorkshopResolutionTriplescreen: mask = &m_subscriptionTriplescreen; break;
+    case WorkshopResolutionPortrait: mask = &m_subscriptionPortrait; break;
+    case WorkshopResolutionMisc: mask = &m_subscriptionMisc; break;
+    }
+    if (!mask) return;
+    const int updated = enabled ? (*mask | (1 << bit)) : (*mask & ~(1 << bit));
+    if (updated == *mask) return;
+    *mask = updated;
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::selectAllSubscriptionResolutions() {
+    m_subscriptionWidescreen = 0x7F;
+    m_subscriptionUltraWidescreen = 0x07;
+    m_subscriptionDualscreen = 0x0F;
+    m_subscriptionTriplescreen = 0x1F;
+    m_subscriptionPortrait = 0x1F;
+    m_subscriptionMisc = 0x03;
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::clearSubscriptionResolutions() {
+    m_subscriptionWidescreen = 0;
+    m_subscriptionUltraWidescreen = 0;
+    m_subscriptionDualscreen = 0;
+    m_subscriptionTriplescreen = 0;
+    m_subscriptionPortrait = 0;
+    m_subscriptionMisc = 0;
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::selectAllSubscriptionTags() {
+    for (const WorkshopTag& tag : workshopTags()) m_subscriptionSelectedTags.insert(tag.value);
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::clearSubscriptionTags() {
+    m_subscriptionSelectedTags.clear();
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::toggleSubscriptionTag(const QString& tag) {
+    if (m_subscriptionSelectedTags.contains(tag)) m_subscriptionSelectedTags.remove(tag);
+    else m_subscriptionSelectedTags.insert(tag);
+    rebuildSubscriptionPage(0);
+}
+
+void WorkshopViewModel::clearSubscriptionFilters() {
+    m_subscriptionSearchText.clear();
+    m_subscriptionSelectedTags.clear();
+    m_subscriptionTypeFilter = WorkshopTypeFilter::All;
+    m_subscriptionAgeRatingMask = 0x7;
+    m_subscriptionWidescreen = 0x7F;
+    m_subscriptionUltraWidescreen = 0x07;
+    m_subscriptionDualscreen = 0x0F;
+    m_subscriptionTriplescreen = 0x1F;
+    m_subscriptionPortrait = 0x1F;
+    m_subscriptionMisc = 0x03;
+    rebuildSubscriptionPage(0);
+}
+
+bool WorkshopViewModel::isPreparingSubscriptionDownloads() const {
+    return m_isPreparingSubscriptionDownloads;
+}
+
+const std::optional<SubscriptionDownloadPlan>& WorkshopViewModel::subscriptionDownloadPlan() const {
+    return m_subscriptionDownloadPlan;
+}
+
+void WorkshopViewModel::downloadAllSubscriptions() {
+    // 对齐 macOS downloadAllSubscriptions：未登录或正在准备时直接返回。
+    if (!m_steamService->isLoggedIn() || m_isPreparingSubscriptionDownloads) return;
+    m_isPreparingSubscriptionDownloads = true;
+    m_subscriptionDownloadPlan.reset();
+    emit subscriptionsChanged();
+    if (!m_subscriptionCatalogItems.isEmpty()) {
+        buildSubscriptionDownloadPlan();
+        return;
+    }
+    // 目录尚未加载（如直接点击"下载全部"）：先拉取订阅，
+    // loadSubscriptions 完成后由 finishSubscriptionLoad 延续生成计划。
+    m_buildPlanAfterSubscriptionLoad = true;
+    loadSubscriptions(0);
+}
+
+void WorkshopViewModel::buildSubscriptionDownloadPlan() {
+    m_isPreparingSubscriptionDownloads = false;
+    m_buildPlanAfterSubscriptionLoad = false;
+
+    // 过滤：去重、排除不支持类型与已安装项（对齐 macOS 的 remaining 计算）。
+    QVector<WorkshopItem> remaining;
+    QSet<QString> seen;
+    remaining.reserve(m_subscriptionCatalogItems.size());
+    for (const WorkshopItem& item : m_subscriptionCatalogItems) {
+        if (seen.contains(item.publishedFileId)) continue;
+        seen.insert(item.publishedFileId);
+        if (item.kind() == WallpaperKind::Unsupported) continue;
+        if (isItemDownloaded(item.publishedFileId)) continue;
+        remaining.append(item);
+    }
+    // 排除下载队列中活跃的任务（starting/connecting/downloading/resolving），
+    // 避免重复入队；已下载任务仍在队列时也由 isItemDownloaded 覆盖。
+    QSet<QString> active;
+    for (const WorkshopDownloadTask& task : m_downloadQueue) {
+        if (isActive(task.state)) active.insert(task.workshopItem.publishedFileId);
+    }
+    QVector<WorkshopItem> pending;
+    for (const WorkshopItem& item : remaining) {
+        if (!active.contains(item.publishedFileId)) pending.append(item);
+    }
+
+    SubscriptionDownloadPlan plan;
+    plan.subscriptionCount = seen.size();
+    plan.remainingCount = remaining.size();
+    plan.items = pending;
+    m_subscriptionDownloadPlan = plan;
+    emit subscriptionsChanged();
+}
+
+void WorkshopViewModel::confirmSubscriptionDownloads() {
+    // 对齐 macOS confirmSubscriptionDownloads：取走计划后逐项入队下载。
+    if (!m_subscriptionDownloadPlan) return;
+    const QVector<WorkshopItem> items = m_subscriptionDownloadPlan->items;
+    m_subscriptionDownloadPlan.reset();
+    emit subscriptionsChanged();
+    for (const WorkshopItem& item : items) {
+        downloadItem(item, DownloadPurpose::Wallpaper);
+    }
+}
+
+void WorkshopViewModel::dismissSubscriptionDownloadPlan() {
+    if (!m_subscriptionDownloadPlan) return;
+    m_subscriptionDownloadPlan.reset();
+    emit subscriptionsChanged();
 }
 
 void WorkshopViewModel::subscribe(const QString& workshopId) {

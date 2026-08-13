@@ -131,6 +131,24 @@ var workshopTypeFilters = [
     { label: "预设", key: "preset" }
 ];
 
+/**
+ * 分辨率过滤分组（其他/宽屏/超宽屏/双显示器/三显示器/纵向）。
+ * 已安装壁纸（FilterResults）与已订阅（SubscribedWorkshopFilterSidebar）共用，
+ * 对齐 macOS 的 FR*Resolution OptionSet（FilterResults 与订阅侧引用同一组定义）。
+ * group 为后端 WorkshopResolutionGroup 枚举值（bit 组），maskKey 对应
+ * mirage.subscriptionFilters / ContentView 中的掩码字段名（+ "Mask" 后缀）；
+ * options 顺序与 bit 位一一对应（bit 0 = 第一个选项），
+ * 与 C++ workshopResolutionOptions() 保持一致。
+ */
+var resolutionGroups = [
+    { title: "其他", group: 5, maskKey: "misc", options: ["其他分辨率", "动态分辨率"] },
+    { title: "宽屏", group: 0, maskKey: "widescreen", options: ["标清", "1280 x 720", "1366 x 768", "1920 x 1080 - 全高清", "2560 x 1440", "3840 x 2160 - 4K", "7680 x 4320 - 8K"] },
+    { title: "超宽屏", group: 1, maskKey: "ultraWidescreen", options: ["超宽（标准）", "2560 x 1080", "3440 x 1440"] },
+    { title: "双显示器", group: 2, maskKey: "dualscreen", options: ["双显示器（标准）", "3840 x 1080", "5120 x 1440", "7680 x 2160"] },
+    { title: "三显示器", group: 3, maskKey: "triplescreen", options: ["三显示器（标准）", "4096 x 768", "5760 x 1080", "7680 x 1440", "11520 x 2160"] },
+    { title: "纵向监视器/手机", group: 4, maskKey: "portrait", options: ["纵向（标准）", "720 x 1280", "1080 x 1920", "1440 x 2560", "2160 x 3840"] }
+];
+
 /** 创意工坊 - 标签筛选选项（key 使用 Steam 创意工坊标签原值，区分大小写） */
 var workshopTagFilters = [
     { label: "动漫", key: "Anime" },

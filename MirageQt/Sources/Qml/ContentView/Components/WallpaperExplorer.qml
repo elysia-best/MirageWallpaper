@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../ContentViewLogic.js" as ContentViewLogic
 
 FluScrollablePage {
     id: root
@@ -13,8 +14,10 @@ FluScrollablePage {
         interactive: false
         clip: true
         model: root.host.pagedWallpapers
-        cellWidth: Math.max(root.host.explorerIconSize,
-                            Math.floor(width / Math.max(1, Math.floor(width / root.host.explorerIconSize))))
+        // 自适应列宽（对齐 macOS GridItem(.adaptive(minimum:explorerIconSize,
+        // maximum:2×explorerIconSize), spacing:14)）：列宽随 explorerIconSize
+        // 变化（140/170/200 三档在宽窗口下均有差异），间隔统一 14。
+        cellWidth: ContentViewLogic.adaptiveGridCellWidth(width, root.host.explorerIconSize, 14)
         cellHeight: cellWidth
 
         // 页码变化时把网格滚回顶部。原实现放在 ContentView.setWallpaperPage
@@ -28,61 +31,16 @@ FluScrollablePage {
             }
         }
 
-        delegate: Item {
+        // 已安装卡片：继承公共卡片基类（悬停放大/选中态/列表不播 GIF），
+        // 点击/双击/右键回调见 InstalledWallpaperCard.qml。
+        // 卡片四周留 7px（cell - 14），与创意工坊/订阅网格的 14px 间隔一致
+        // （对齐 macOS GridItem spacing 14）。
+        delegate: InstalledWallpaperCard {
             required property var modelData
-            width: wallpaperGrid.cellWidth
-            height: wallpaperGrid.cellHeight
-
-            FluFrame {
-                anchors.fill: parent
-                anchors.margins: 7
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 6
-                    spacing: 0
-                    Image {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        source: modelData.preview
-                        fillMode: Image.PreserveAspectCrop
-                        asynchronous: true
-                        cache: false
-                    }
-                    FluText {
-                        id: titleText
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: titleText.implicitHeight + 12
-                        text: modelData.title
-                        elide: Text.ElideRight
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                }
-                FluFocusRectangle {
-                    anchors.fill: parent
-                    visible: modelData.id === mirage.selectedWallpaperId
-                    radius: 4
-                }
-            }
-            MouseArea {
-                anchors.fill: parent
-                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                onClicked: function(mouse) {
-                    if (mouse.button === Qt.RightButton) {
-                        mirage.selectWallpaper(modelData.id);
-                        root.host.openWallpaperContextMenu(modelData);
-                        return;
-                    }
-                    mirage.selectWallpaper(modelData.id);
-                }
-                onDoubleClicked: function(mouse) {
-                    if (mouse.button === Qt.LeftButton) {
-                        root.host.runWithWallpaperTrust(modelData, function() {
-                            mirage.applyWallpaper(modelData.id, false);
-                        });
-                    }
-                }
-            }
+            host: root.host
+            itemData: modelData
+            width: wallpaperGrid.cellWidth - 14
+            height: wallpaperGrid.cellHeight - 14
         }
     }
 

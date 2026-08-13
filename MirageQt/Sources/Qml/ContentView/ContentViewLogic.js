@@ -32,6 +32,87 @@ function normalizeTag(tag) {
 }
 
 /**
+ * 分辨率 tag 归一化：小写并仅保留字母与数字。
+ * 对齐 C++ WorkshopModels.cpp 的 normalizeResolutionTag（isLetterOrNumber，
+ * 去掉空格/连字符/点号等），保证与订阅侧 workshopResolutionMatches 一致。
+ * @param {string} tag - 原始分辨率 tag
+ * @returns {string} 归一化后的 tag
+ */
+function normalizeResolutionTag(tag) {
+    return String(tag == null ? "" : tag).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// 六组分辨率选项数量（决定"全选"掩码的位数），与 C++ resolutionOptionCount
+// 及 OptionData.resolutionGroups 的 options.length 一一对应。
+var __resolutionOptionCounts = [7, 3, 4, 5, 5, 2];
+
+/**
+ * 归一化后的分辨率 tag → (group, bit)。映射表严格对齐 C++ resolutionKindForTag。
+ * @param {string} normalized - normalizeResolutionTag 的输出
+ * @returns {number[]|null} [group, bit]，未命中返回 null
+ */
+function resolutionKindForTag(normalized) {
+    if (normalized === "standarddefinition") return [0, 0];
+    if (normalized === "1280x720") return [0, 1];
+    if (normalized === "1366x768") return [0, 2];
+    if (normalized.startsWith("1920x1080")) return [0, 3];
+    if (normalized === "2560x1440") return [0, 4];
+    if (normalized.startsWith("3840x2160")) return [0, 5];
+    if (normalized.startsWith("7680x4320")) return [0, 6];
+    if (normalized === "ultrawidestandard" || normalized === "ultrawidestandarddefinition") return [1, 0];
+    if (normalized === "ultrawide2560x1080" || normalized === "2560x1080") return [1, 1];
+    if (normalized === "ultrawide3440x1440" || normalized === "3440x1440") return [1, 2];
+    if (normalized === "dualstandard" || normalized === "dualstandarddefinition") return [2, 0];
+    if (normalized === "dual3840x1080" || normalized === "3840x1080") return [2, 1];
+    if (normalized === "dual5120x1440" || normalized === "5120x1440") return [2, 2];
+    if (normalized === "dual7680x2160" || normalized === "7680x2160") return [2, 3];
+    if (normalized === "triplestandard" || normalized === "triplestandarddefinition") return [3, 0];
+    if (normalized === "triple4096x768" || normalized === "4096x768") return [3, 1];
+    if (normalized === "triple5760x1080" || normalized === "5760x1080") return [3, 2];
+    if (normalized === "triple7680x1440" || normalized === "7680x1440") return [3, 3];
+    if (normalized === "triple11520x2160" || normalized === "11520x2160") return [3, 4];
+    if (normalized === "portraitstandard" || normalized === "portraitstandarddefinition" || normalized === "potraitstandard") return [4, 0];
+    if (normalized === "portrait720x1280" || normalized === "720x1280") return [4, 1];
+    if (normalized === "portrait1080x1920" || normalized === "1080x1920") return [4, 2];
+    if (normalized === "portrait1440x2560" || normalized === "1440x2560") return [4, 3];
+    if (normalized === "portrait2160x3840" || normalized === "2160x3840") return [4, 4];
+    if (normalized === "otherresolution") return [5, 0];
+    if (normalized === "dynamicresolution") return [5, 1];
+    return null;
+}
+
+/**
+ * 判定 tags 是否命中给定的分辨率过滤（六组掩码，bit 0 为各组第一个选项）。
+ * 语义对齐 C++ workshopResolutionMatches / macOS FRResolutionFilter.matches(tags:)：
+ * 六组全选 → true；tags 中无任何分辨率 tag → 等价于仅选中 misc.otherResolution。
+ * @param {string[]} tags - 壁纸原始 tag 列表（内部再做分辨率归一化）
+ * @param {number[]} masks - [宽屏, 超宽屏, 双, 三, 纵向, 其他] 六组掩码
+ * @returns {boolean} true 表示通过分辨率过滤
+ */
+function resolutionMatches(tags, masks) {
+    var allSelected = true;
+    for (var group = 0; group < __resolutionOptionCounts.length; ++group) {
+        var allMask = (1 << __resolutionOptionCounts[group]) - 1;
+        if (masks[group] !== allMask) {
+            allSelected = false;
+            break;
+        }
+    }
+    if (allSelected) return true;
+
+    var anyKind = false;
+    for (var index = 0; index < tags.length; ++index) {
+        var kind = resolutionKindForTag(normalizeResolutionTag(tags[index]));
+        if (!kind) continue;
+        anyKind = true;
+        if ((masks[kind[0]] & (1 << kind[1])) !== 0) return true;
+    }
+    // 无任何分辨率 tag 时，等价于仅选中 misc.otherResolution（bit 0）。
+    if (!anyKind) return (masks[5] & 1) !== 0;
+    return false;
+}
+
+/**
  * 判断 key 是否已存在于 filter 数组。
  * @param {string[]} filters - 已启用的 key 列表
  * @param {string} key - 要查询的 key
@@ -327,6 +408,12 @@ function screenLabels(screenCount) {
  * @param {string[]} state.enabledSources - 启用的来源 key
  * @param {string[]} state.enabledTags - 启用的标签 key
  * @param {Array<Object>} state.tagFilters - 全部标签选项（判断是否处于"筛选标签"状态）
+ * @param {number} state.widescreenMask - 宽屏分辨率掩码（bit 0 = 第一个选项）
+ * @param {number} state.ultraWidescreenMask - 超宽屏分辨率掩码
+ * @param {number} state.dualscreenMask - 双显示器分辨率掩码
+ * @param {number} state.triplescreenMask - 三显示器分辨率掩码
+ * @param {number} state.portraitMask - 纵向分辨率掩码
+ * @param {number} state.miscMask - 其他分辨率掩码
  * @param {string} state.sortMode - 排序模式："name"/"rating"/"size"
  * @param {boolean} state.sortDescending - 是否降序
  * @returns {Array<Object>} 筛选排序后的壁纸列表
@@ -351,6 +438,18 @@ function filterWallpapers(source, state) {
         if (!isEnabled(state.enabledRatings, wallpaper.rating))
             return false;
         if (!isEnabled(state.enabledSources, wallpaper.source))
+            return false;
+        // 分辨率过滤：基于壁纸 project.json 的 tags 匹配六组掩码
+        // （对齐 macOS FRResolutionFilter.matches(tags:)，与订阅侧
+        // C++ workshopResolutionMatches 语义一致）。
+        if (!resolutionMatches(wallpaper.tags || [], [
+            state.widescreenMask,
+            state.ultraWidescreenMask,
+            state.dualscreenMask,
+            state.triplescreenMask,
+            state.portraitMask,
+            state.miscMask
+        ]))
             return false;
 
         if (state.enabledTags.length < state.tagFilters.length) {
@@ -412,4 +511,26 @@ function filterDiscoverItems(items, state) {
         }
         return true;
     });
+}
+
+/**
+ * 自适应网格列宽（对齐 macOS 的 GridItem(.adaptive(minimum:maximum:))）：
+ * 列数按最小列宽（iconSize + 间隔）确定，实际列宽在 [iconSize, 2×iconSize]
+ * 区间内尽量拉满容器；容器窄到均分宽不足 iconSize 时退回 iconSize，
+ * 宽到均分超上限时封顶 2×iconSize（右侧留白）。
+ * 已安装/创意工坊/订阅网格共用，保证 4 分区尺寸规则一致。
+ * @param {number} width - 网格可用宽度（GridView.width）
+ * @param {number} iconSize - 图标尺寸基准（explorerIconSize，140/170/200）
+ * @param {number} spacing - 卡片间隔（项目统一 14）
+ * @returns {number} cellWidth（整数，不超过 width）
+ */
+function adaptiveGridCellWidth(width, iconSize, spacing) {
+    var minimum = Number(iconSize);
+    var gap = Number(spacing);
+    if (minimum <= 0 || width <= 0)
+        return Math.max(1, minimum);
+    var cols = Math.max(1, Math.floor((width + gap) / (minimum + gap)));
+    var avg = (width - gap * (cols - 1)) / cols;
+    var cell = Math.max(minimum, Math.min(2 * minimum, Math.floor(avg)));
+    return Math.max(1, Math.min(width, cell));
 }

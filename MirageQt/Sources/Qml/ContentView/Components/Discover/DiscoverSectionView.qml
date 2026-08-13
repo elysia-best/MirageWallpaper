@@ -20,7 +20,9 @@ ColumnLayout {
         Layout.preferredHeight: 218
         clip: true
         orientation: ListView.Horizontal
-        spacing: 10
+        // 14px 间隔对齐 macOS DiscoverSectionView 的 LazyHStack(spacing: 14)，
+        // 与各网格分区的卡片间隔统一。
+        spacing: 14
         model: root.host.filterDiscoverItems(root.section.items)
         delegate: WorkshopItemCard {
             required property var modelData

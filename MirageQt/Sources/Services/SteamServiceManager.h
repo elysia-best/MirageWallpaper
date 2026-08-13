@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Services/WorkshopModels.h"
+#include "Services/SecretService.h"
 
 #include <QHash>
 #include <QJsonObject>
@@ -138,6 +139,15 @@ private:
                      RequestCallback cb = nullptr);
     // 清除本机保存的 Steam 会话（refreshToken/guardData）。
     void clearSavedSession();
+    // 会话凭据持久化：密钥环（org.freedesktop.secrets）优先，失败回退
+    // QSettings（保持既有行为，不因密钥环缺失回归）。kind 为
+    // "refresh-token"/"guard-data"（对齐 macOS keychain 账户前缀）。
+    QString secretAccountKey(const QString& kind, const QString& username) const;
+    bool secretStoreWrite(const QString& kind, const QString& username, const QString& value);
+    QString secretStoreRead(const QString& kind, const QString& username) const;
+    void secretStoreRemove(const QString& kind, const QString& username);
+    // 枚举已保存会话的用户名（refresh-token 账户），密钥环与 QSettings 并集。
+    QStringList savedSessionUsernames() const;
     QString locateServiceExecutable() const;
     QString persistPath(const QString& key) const;
     void scheduleRestart();

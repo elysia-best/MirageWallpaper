@@ -80,12 +80,28 @@ public:
     std::optional<Wallpaper> installedItem(const QString& workshopId) const;
     std::optional<DownloadState> downloadStateFor(const QString& workshopId) const;
 
-    // 订阅管理（对齐上游 WorkshopViewModel.swift）。
-    const QVector<WorkshopSubscription>& subscriptions() const;
+    // 订阅管理（对齐上游 WorkshopViewModel.swift 的 subscriptionItems / 过滤）。
+    const QVector<WorkshopItem>& subscriptions() const;
     int subscriptionTotal() const;
-    int subscriptionStartIndex() const;
+    int subscriptionCurrentPage() const;
+    int subscriptionPageCount() const;
     bool isSubscriptionsLoading() const;
-    bool hasMoreSubscriptions() const;
+    // 订阅过滤状态（供 QML 渲染 checkbox 与重置按钮）。
+    QString subscriptionSearchText() const;
+    WorkshopTypeFilter subscriptionTypeFilter() const;
+    int subscriptionAgeRatingMask() const;
+    int subscriptionWidescreenMask() const;
+    int subscriptionUltraWidescreenMask() const;
+    int subscriptionDualscreenMask() const;
+    int subscriptionTriplescreenMask() const;
+    int subscriptionPortraitMask() const;
+    int subscriptionMiscMask() const;
+    const QSet<QString>& subscriptionSelectedTags() const;
+    bool hasActiveSubscriptionFilters() const;
+    // "下载全部已订阅壁纸"状态（对齐 macOS subscriptionDownloadPlan /
+    // isPreparingSubscriptionDownloads）。
+    bool isPreparingSubscriptionDownloads() const;
+    const std::optional<SubscriptionDownloadPlan>& subscriptionDownloadPlan() const;
 
 public slots:
     void setSearchText(const QString& text);
@@ -110,9 +126,29 @@ public slots:
 
     // 订阅管理。
     void loadSubscriptions(int startIndex = 0);
-    void loadNextSubscriptionsPage();
+    void goToSubscriptionPage(int page);
     void subscribe(const QString& workshopId);
     void unsubscribe(const QString& workshopId);
+
+    // 订阅过滤（对齐 SubscribedWorkshopFilterSidebar 的 setter）。
+    void setSubscriptionSearchText(const QString& text);
+    void setSubscriptionTypeFilter(Mirage::WorkshopTypeFilter filter);
+    void setSubscriptionAgeRatingEnabled(Mirage::WorkshopAgeRating rating, bool enabled);
+    void setSubscriptionResolutionOption(int group, int bit, bool enabled);
+    void selectAllSubscriptionResolutions();
+    void clearSubscriptionResolutions();
+    void selectAllSubscriptionTags();
+    void clearSubscriptionTags();
+    void toggleSubscriptionTag(const QString& tag);
+    void clearSubscriptionFilters();
+    // "下载全部已订阅壁纸"：生成确认计划 → confirm 后逐项入队下载
+    // （对齐 macOS downloadAllSubscriptions / confirmSubscriptionDownloads）。
+    void downloadAllSubscriptions();
+    void confirmSubscriptionDownloads();
+    void dismissSubscriptionDownloadPlan();
+    // 订阅每页数量（对齐 macOS subscriptionPageSizeDidChange：跟随
+    // wallpapersPerPage 的 10/25/50 选项）。
+    void setSubscriptionPerPage(int perPage);
 
     void selectWorkshopItem(const Mirage::WorkshopItem& item);
     void downloadItem(const Mirage::WorkshopItem& item,
@@ -174,6 +210,15 @@ private:
                               const QString& tag,
                               int count,
                               int trendDays = 7);
+    // 订阅全量加载：分页拉取订阅记录 → 批量加载详情 → 客户端过滤分页。
+    void fetchSubscriptionPage(int serviceStart, int requestedStart);
+    void startSubscriptionDetailsLoad();
+    void requestNextSubscriptionDetailBatch();
+    void finishSubscriptionLoad();
+    void rebuildSubscriptionPage(int startIndex);
+    bool matchesSubscriptionFilters(const WorkshopItem& item) const;
+    // "下载全部"：用已加载的订阅目录生成确认计划（排除已安装/队列活跃/不支持）。
+    void buildSubscriptionDownloadPlan();
 
     SteamWebAPI* m_api = nullptr;
     SteamServiceManager* m_steamService = nullptr;
@@ -200,11 +245,40 @@ private:
     QString m_error;
     SteamSetupState m_steamSetupState = SteamSetupState::NeedsLogin;
 
-    // 订阅状态。
-    QVector<WorkshopSubscription> m_subscriptions;
+    // 订阅状态：全量详情（catalog）+ 当前页（过滤后，对齐 upstream subscriptionCatalogItems/subscriptionItems）。
+    QVector<WorkshopItem> m_subscriptionCatalogItems;
+    QVector<WorkshopItem> m_subscriptionItems;
     int m_subscriptionTotal = 0;
     int m_subscriptionStartIndex = 0;
     bool m_subscriptionsLoading = false;
+
+    // 订阅过滤状态（对齐 upstream subscription* 属性；默认全选）。
+    QString m_subscriptionSearchText;
+    WorkshopTypeFilter m_subscriptionTypeFilter = WorkshopTypeFilter::All;
+    int m_subscriptionAgeRatingMask = 0x7;  // 默认 .all（Everyone|Questionable|Mature）
+    int m_subscriptionWidescreen = 0x7F;
+    int m_subscriptionUltraWidescreen = 0x07;
+    int m_subscriptionDualscreen = 0x0F;
+    int m_subscriptionTriplescreen = 0x1F;
+    int m_subscriptionPortrait = 0x1F;
+    int m_subscriptionMisc = 0x03;
+    QSet<QString> m_subscriptionSelectedTags;
+    // 订阅每页数量（默认 25，对齐 wallpapersPerPage 的默认值）。
+    int m_subscriptionPerPage = 25;
+
+    // "下载全部已订阅壁纸"：准备中标志 + 待确认计划 + 目录为空时
+    // 等待 loadSubscriptions 完成后再生成计划的延续标志。
+    bool m_isPreparingSubscriptionDownloads = false;
+    std::optional<SubscriptionDownloadPlan> m_subscriptionDownloadPlan;
+    bool m_buildPlanAfterSubscriptionLoad = false;
+
+    // 订阅加载中间状态：按订阅顺序累积 id + 分批详情请求（避免与依赖详情请求混淆）。
+    QStringList m_pendingSubscriptionIds;
+    QSet<QString> m_seenSubscriptionIds;
+    int m_requestedSubscriptionStart = 0;
+    QVector<QStringList> m_pendingSubscriptionDetailBatches;
+    QVector<WorkshopItem> m_pendingSubscriptionDetails;
+    QSet<quint64> m_subscriptionDetailRequests;
 
     QTimer m_searchDebounce;
     QFutureWatcher<InstalledWorkshopState> m_installedStateWatcher;

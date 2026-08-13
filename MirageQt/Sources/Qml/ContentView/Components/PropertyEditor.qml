@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../../GlobalComponents"
 
 ColumnLayout {
     id: root
@@ -189,10 +190,12 @@ ColumnLayout {
 
             Component {
                 id: textEditor
-                FluText {
+                // text 类型属性：内容为 WE HTML 标签文本（可能含富标签），
+                // 用 RichHTMLText 渲染（对齐 macOS PropertyEditor 的
+                // RichHTMLText 路径），富标签显示格式化内容、其余为纯文本。
+                RichHTMLText {
                     width: parent.width
-                    text: root.host.propertyLabel(propertyData)
-                    wrapMode: Text.WordWrap
+                    html: String(propertyData.text || propertyData.key || "")
                 }
             }
 

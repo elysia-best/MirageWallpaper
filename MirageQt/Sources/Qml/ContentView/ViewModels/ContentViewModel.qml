@@ -24,6 +24,16 @@ QtObject {
     property bool audioOnly: false
     property bool customizableOnly: false
 
+    // --- 分辨率筛选状态（已安装壁纸，对齐 macOS FR*Resolution OptionSet） ---
+    // 六组掩码默认全选（bit 位与 OptionData.resolutionGroups.options 顺序对应，
+    // 与订阅侧 C++ 默认 m_subscription* 掩码一致：7/3/4/5/5/2 个选项全置位）。
+    property int widescreenMask: 0x7F
+    property int ultraWidescreenMask: 0x07
+    property int dualscreenMask: 0x0F
+    property int triplescreenMask: 0x1F
+    property int portraitMask: 0x1F
+    property int miscMask: 0x03
+
     // --- 筛选选项数据（来自 OptionData.js 常量） ---
     property var typeFilters: OptionData.typeFilters
     property var ratingFilters: OptionData.ratingFilters
@@ -59,6 +69,12 @@ QtObject {
         enabledSources: enabledSources,
         enabledTags: enabledTags,
         tagFilters: tagFilters,
+        widescreenMask: widescreenMask,
+        ultraWidescreenMask: ultraWidescreenMask,
+        dualscreenMask: dualscreenMask,
+        triplescreenMask: triplescreenMask,
+        portraitMask: portraitMask,
+        miscMask: miscMask,
         sortMode: sortMode,
         sortDescending: sortDescending
     })

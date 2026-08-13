@@ -17,6 +17,7 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS
     Qml
     WebEngineCore
     WebEngineWidgets
+    WebEngineQuick
     DBus)
 find_package(X11 REQUIRED)
 
@@ -71,6 +72,8 @@ add_library(MirageQtCore STATIC
     Sources/Services/PlaylistTransitionOverlay.h
     Sources/Services/RendererController.cpp
     Sources/Services/RendererController.h
+    Sources/Services/SecretService.cpp
+    Sources/Services/SecretService.h
     Sources/Services/SteamServiceManager.cpp
     Sources/Services/SteamServiceManager.h
     Sources/Services/SteamSetupViewModel.cpp
@@ -143,7 +146,8 @@ target_link_libraries(MirageQt PRIVATE
     Qt6::Widgets
     Qt6::Quick
     Qt6::QuickControls2
-    Qt6::WebEngineWidgets)
+    Qt6::WebEngineWidgets
+    Qt6::WebEngineQuick)
 
 target_include_directories(MirageQt PRIVATE Vendor/FluentUI/src)
 target_link_libraries(MirageQt PRIVATE fluentuiplugin fluentuipluginplugin)

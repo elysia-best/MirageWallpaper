@@ -132,40 +132,38 @@ ColumnLayout {
         }
     }
 
-    // QR 等待：显示挑战链接（Steam 手机应用扫码），并提供复制/打开。
+    // QR 等待：显示 Steam 挑战二维码（FluQRCode，对齐上游 qrView 的
+    // CIFilter.qrCodeGenerator 展示），并提供刷新/复制/取消。
     ColumnLayout {
         Layout.fillWidth: true
         Layout.leftMargin: 70
         Layout.rightMargin: 70
         visible: root.loginState === "waitingForQR"
         spacing: 10
-        FluIcon {
+        // 编码内容即 SteamServiceManager 提供的挑战 URL；黑码白底与上游一致。
+        FluQRCode {
             Layout.alignment: Qt.AlignHCenter
-            iconSource: FluentIcons.MobileTablet
-            iconSize: 42
-            iconColor: FluTheme.primaryColor
+            text: root.qrChallengeUrl
+            size: 196
+            visible: root.qrChallengeUrl.length > 0
         }
         FluText {
             Layout.alignment: Qt.AlignHCenter
-            text: qsTr("打开 Steam 手机应用并扫描二维码登录")
+            text: qsTr("使用 Steam 手机应用扫描二维码")
             font: FluTextStyle.BodyStrong
         }
         FluText {
-            Layout.fillWidth: true
-            text: root.qrChallengeUrl
-            wrapMode: Text.WrapAnywhere
-            horizontalAlignment: Text.AlignHCenter
+            Layout.alignment: Qt.AlignHCenter
+            text: qsTr("在 Steam 手机应用中打开扫码功能并确认登录")
             color: FluTheme.fontSecondaryColor
             font: FluTextStyle.Caption
-            visible: root.qrChallengeUrl.length > 0
         }
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
             spacing: 8
-            FluFilledButton {
-                text: qsTr("在浏览器中打开")
-                enabled: root.qrChallengeUrl.length > 0
-                onClicked: Qt.openUrlExternally(root.qrChallengeUrl)
+            FluButton {
+                text: qsTr("刷新二维码")
+                onClicked: root.invoke("loginSteamQR")
             }
             FluButton {
                 text: qsTr("复制链接")

@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
+import "../../../GlobalComponents"
 import "../../../MirageBridge.js" as MirageBridge
 
 FluPopup {
@@ -138,12 +139,11 @@ FluPopup {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
-                        FluImage {
+                        WorkshopImage {
                             Layout.preferredWidth: 58
                             Layout.preferredHeight: 58
-                            source: popup.taskValue(modelData, "preview", "")
-                            fillMode: Image.PreserveAspectCrop
-                            asynchronous: true
+                            imageUrl: popup.taskValue(modelData, "preview", "")
+                            contentMode: Image.PreserveAspectCrop
                         }
                         ColumnLayout {
                             Layout.fillWidth: true

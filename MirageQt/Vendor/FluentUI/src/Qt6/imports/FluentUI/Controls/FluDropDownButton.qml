@@ -41,6 +41,10 @@ FluButton {
     FluMenu{
         id:menu
         modal:true
-        width: control.width
+        // popup 宽度自适应内容（对齐 macOS 菜单随内容展开）：至少与按钮
+        // 同宽；菜单项更宽时按菜单 implicitWidth 展开（FluMenu 背景最小宽
+        // 150，可容纳"每页 50 个""导入壁纸文件夹…"等最长项），避免文本
+        // 被固定按钮宽度裁剪。
+        width: Math.max(control.width, menu.implicitWidth)
     }
 }

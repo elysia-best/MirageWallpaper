@@ -86,8 +86,12 @@ class MirageController : public QObject {
     Q_PROPERTY(bool steamServiceRunning READ steamServiceRunning NOTIFY steamChanged)
     Q_PROPERTY(QVariantList subscriptions READ subscriptions NOTIFY subscriptionsChanged)
     Q_PROPERTY(bool subscriptionsLoading READ subscriptionsLoading NOTIFY subscriptionsChanged)
-    Q_PROPERTY(bool hasMoreSubscriptions READ hasMoreSubscriptions NOTIFY subscriptionsChanged)
     Q_PROPERTY(int subscriptionTotal READ subscriptionTotal NOTIFY subscriptionsChanged)
+    Q_PROPERTY(int subscriptionPage READ subscriptionPage NOTIFY subscriptionsChanged)
+    Q_PROPERTY(int subscriptionPageCount READ subscriptionPageCount NOTIFY subscriptionsChanged)
+    Q_PROPERTY(QVariantMap subscriptionFilters READ subscriptionFilters NOTIFY subscriptionsChanged)
+    Q_PROPERTY(bool subscriptionDownloadPreparing READ subscriptionDownloadPreparing NOTIFY subscriptionsChanged)
+    Q_PROPERTY(QVariantMap subscriptionDownloadPlan READ subscriptionDownloadPlan NOTIFY subscriptionsChanged)
     Q_PROPERTY(bool firstLaunch READ firstLaunch NOTIFY firstLaunchChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
@@ -131,8 +135,12 @@ public:
     bool steamServiceRunning() const;
     QVariantList subscriptions() const;
     bool subscriptionsLoading() const;
-    bool hasMoreSubscriptions() const;
     int subscriptionTotal() const;
+    int subscriptionPage() const;
+    int subscriptionPageCount() const;
+    QVariantMap subscriptionFilters() const;
+    bool subscriptionDownloadPreparing() const;
+    QVariantMap subscriptionDownloadPlan() const;
     bool firstLaunch() const;
     QString statusMessage() const;
     QVariantMap settings() const;
@@ -200,9 +208,23 @@ public:
     Q_INVOKABLE void logoutSteam();
     Q_INVOKABLE void copyTextToClipboard(const QString& text);
     Q_INVOKABLE void loadSubscriptions();
-    Q_INVOKABLE void loadNextSubscriptionsPage();
+    Q_INVOKABLE void goToSubscriptionPage(int page);
     Q_INVOKABLE void subscribeWorkshopItem(const QString& id);
     Q_INVOKABLE void unsubscribeWorkshopItem(const QString& id);
+    Q_INVOKABLE void setSubscriptionSearchText(const QString& text);
+    Q_INVOKABLE void setSubscriptionTypeFilter(const QString& key);
+    Q_INVOKABLE void setSubscriptionAgeRatingEnabled(const QString& key, bool enabled);
+    Q_INVOKABLE void setSubscriptionResolutionOption(int group, int bit, bool enabled);
+    Q_INVOKABLE void selectAllSubscriptionResolutions();
+    Q_INVOKABLE void clearSubscriptionResolutions();
+    Q_INVOKABLE void selectAllSubscriptionTags();
+    Q_INVOKABLE void clearSubscriptionTags();
+    Q_INVOKABLE void toggleSubscriptionTag(const QString& tag);
+    Q_INVOKABLE void clearSubscriptionFilters();
+    Q_INVOKABLE void downloadAllSubscriptions();
+    Q_INVOKABLE void confirmSubscriptionDownloads();
+    Q_INVOKABLE void dismissSubscriptionDownloadPlan();
+    Q_INVOKABLE void setSubscriptionPerPage(int perPage);
     Q_INVOKABLE void revealWorkshopDownload(const QString& id);
     Q_INVOKABLE void pauseWallpapers();
     Q_INVOKABLE void resumeWallpapers();

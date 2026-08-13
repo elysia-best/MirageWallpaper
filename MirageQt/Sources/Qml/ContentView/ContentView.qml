@@ -77,6 +77,12 @@ FluWindow {
     property alias enabledRatings: contentViewModel.enabledRatings
     property alias enabledSources: contentViewModel.enabledSources
     property alias enabledTags: contentViewModel.enabledTags
+    property alias widescreenMask: contentViewModel.widescreenMask
+    property alias ultraWidescreenMask: contentViewModel.ultraWidescreenMask
+    property alias dualscreenMask: contentViewModel.dualscreenMask
+    property alias triplescreenMask: contentViewModel.triplescreenMask
+    property alias portraitMask: contentViewModel.portraitMask
+    property alias miscMask: contentViewModel.miscMask
     property alias sortMode: contentViewModel.sortMode
     property alias sortDescending: contentViewModel.sortDescending
     property alias installedSortOptions: contentViewModel.installedSortOptions
@@ -190,6 +196,27 @@ FluWindow {
         });
         enabledTags = tagFilters.map(function (filter) {
             return filter.key;
+        });
+        selectAllResolutions();
+    }
+
+    // 分辨率筛选（已安装壁纸）：掩码以 bit 位表示，maskKey 来自
+    // OptionData.resolutionGroups，属性名为 maskKey + "Mask"。
+    // 与订阅侧 SubscribedWorkshopFilterSidebar 的分辨率逻辑同构。
+    function setResolutionOption(maskKey, index, enabled) {
+        var mask = window[maskKey + "Mask"];
+        window[maskKey + "Mask"] = enabled ? (mask | (1 << index)) : (mask & ~(1 << index));
+    }
+
+    function selectAllResolutions() {
+        OptionData.resolutionGroups.forEach(function (group) {
+            window[group.maskKey + "Mask"] = (1 << group.options.length) - 1;
+        });
+    }
+
+    function clearResolutions() {
+        OptionData.resolutionGroups.forEach(function (group) {
+            window[group.maskKey + "Mask"] = 0;
         });
     }
 
@@ -409,6 +436,10 @@ FluWindow {
             mirage.loadDiscover();
         } else if (currentTab === 2 && !mirage.workshopLoading && mirage.workshopItems.length === 0) {
             mirage.submitWorkshopSearch();
+        } else if (currentTab === 3 && mirage.steamLoggedIn
+                   && !mirage.subscriptionsLoading && mirage.subscriptions.length === 0) {
+            // 已订阅 tab：首次进入且无缓存内容时加载（对齐 macOS loadedSections 惰性加载）。
+            mirage.loadSubscriptions();
         }
         if (currentTab !== 1) {
             explorerTopBar.searchBox.text = currentTab === 0 ? searchText : workshopSearchText;
@@ -558,6 +589,26 @@ FluWindow {
                             }
                         }
                         WorkshopView {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            host: window
+                        }
+                    }
+
+                    // 已订阅独立 tab（对齐 macOS MainSection.subscriptions）。
+                    RowLayout {
+                        spacing: 10
+                        Item {
+                            Layout.fillHeight: true
+                            Layout.preferredWidth: 225
+                            visible: window.filtersVisible
+
+                            SubscribedWorkshopFilterSidebar {
+                                anchors.fill: parent
+                                host: window
+                            }
+                        }
+                        SubscribedWorkshopView {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             host: window
