@@ -17,7 +17,9 @@ ColumnLayout {
     ListView {
         Layout.fillWidth: true
         Layout.preferredWidth: Math.max(0, root.width)
-        Layout.preferredHeight: 218
+        // Discover 使用同一 164px 正方形紧凑卡片，不再为旧的封面下方文字区
+        // 预留额外高度。
+        Layout.preferredHeight: 164
         clip: true
         orientation: ListView.Horizontal
         // 14px 间隔对齐 macOS DiscoverSectionView 的 LazyHStack(spacing: 14)，

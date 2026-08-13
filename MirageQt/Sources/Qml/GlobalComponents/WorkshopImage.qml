@@ -14,17 +14,12 @@ Item {
     // 对齐 macOS isAnimating：false 时暂停 GIF 动画。
     property bool isAnimating: true
 
-    // 占位底色（对齐 Rectangle().fill(Color.secondary.opacity(0.10))）。
-    Rectangle {
-        anchors.fill: parent
-        color: FluTheme.dark ? Qt.rgba(1, 1, 1, 0.05) : Qt.rgba(0, 0, 0, 0.05)
-    }
-
     // 裁剪容器：AnimatedImage 的动画路径不受 fillMode 控制（Qt 已知行为，
     // 动画帧按原始尺寸绘制，anchors.fill 左右双锚点还会触发宽度自动扩展
     // 覆盖裁剪，clip 也无效），因此显式给 AnimatedImage width/height 并
     // 在外层容器 clip，保证 GIF/静态图都按 PreserveAspectCrop 比例裁剪
     // 而非被拉伸（对齐 macOS WorkshopImage 的 .fill 语义）。
+    // 使用矩形 Item 保持图片直角；clip 仅用于裁剪 PreserveAspectCrop 内容。
     Item {
         id: cropBox
         anchors.fill: parent

@@ -25,11 +25,14 @@ GridView {
     clip: true
     model: root.items
     cellWidth: ContentViewLogic.adaptiveGridCellWidth(width, root.host.explorerIconSize, 14)
-    cellHeight: 258
+    // 卡片视觉协议为正方形；cellWidth 中已含 14px 网格间隔，所以高度也
+    // 使用同一值，delegate 保留的 14px 形成各方向一致的留白。
+    cellHeight: cellWidth
     delegate: WorkshopItemCard {
         required property var modelData
         host: root.host
         itemData: modelData
         width: Math.min(root.cellWidth, Math.max(164, root.cellWidth - 14))
+        height: width
     }
 }

@@ -3,26 +3,38 @@ import QtQuick.Layouts
 import FluentUI
 import "../../GlobalComponents"
 
-// 已安装壁纸卡片：继承 WallpaperItemCard 公共基类。悬停放大、选中态、
-// 列表不播 GIF（基类 WorkshopImage 固定 isAnimating: false）、图片填满
-// 剩余空间 + 底部标题均来自基类；本文件只定义已安装语义的回调：
-// 左键 selectWallpaper、右键打开上下文菜单、双击应用壁纸（网页壁纸
-// 走 host.runWithWallpaperTrust 信任流程）。
+// 已安装壁纸卡片：共享组件将标题与元数据叠在封面渐变上。本文件仅提供
+// 本地壁纸字段及其左键、右键和双击语义。
 WallpaperItemCard {
     id: root
 
     // 选中判定：已安装壁纸选中态由 mirage.selectedWallpaperId 驱动。
     property bool selected: String(field("id", "")) === String(mirage.selectedWallpaperId)
 
-    // 内容区：标题位于底部（图片区 fillHeight 吃掉剩余空间，
-    // 文本自然落在 ColumnLayout 底部，与旧内联 delegate 布局一致）。
+    // 本地记录只有 title、typeLabel 和 favorite 三项已定义数据；以类别和
+    // 收藏状态填充封面下沿，既保持信息密度也不凭空构造工坊统计字段。
     FluText {
         Layout.fillWidth: true
-        Layout.preferredHeight: implicitHeight + 12
         text: String(root.field("title", ""))
         elide: Text.ElideRight
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
+        font: FluTextStyle.BodyStrong
+        color: "white"
+    }
+    RowLayout {
+        Layout.fillWidth: true
+        FluText {
+            Layout.fillWidth: true
+            text: String(root.field("typeLabel", ""))
+            elide: Text.ElideRight
+            color: Qt.rgba(1, 1, 1, 0.90)
+            font: FluTextStyle.Caption
+        }
+        FluIcon {
+            visible: Boolean(root.field("favorite", false))
+            iconSource: FluentIcons.HeartFill
+            iconSize: 14
+            iconColor: Qt.rgba(1, 1, 1, 0.92)
+        }
     }
 
     onClicked: function(mouse) {
