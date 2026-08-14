@@ -19,6 +19,10 @@ int main(int argc, char** argv) {
     if (manifest.workshopDirectory().isEmpty()) return 2;
     WebRendererEngine::Config config;
     WebRendererEngine engine(config);
+    // WebRendererEngine defaults to off-screen capture for WebWallpaper.
+    // The standalone viewer presents the same view in a regular Qt window, so
+    // clear that capture-only attribute before show() creates the native surface.
+    engine.view()->setAttribute(Qt::WA_DontShowOnScreen, false);
     engine.view()->resize(1280, 720);
     engine.view()->show();
     QObject::connect(&engine, &WebRendererEngine::failed, [](const QString& message) {

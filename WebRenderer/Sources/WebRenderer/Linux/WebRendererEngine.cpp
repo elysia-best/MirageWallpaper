@@ -14,6 +14,7 @@
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineProfile>
+#include <QWebEngineSettings>
 #include <QWebEngineView>
 
 namespace {
@@ -55,6 +56,13 @@ WebRendererEngine::WebRendererEngine(const Config& config, QObject* parent)
     : QObject(parent), m_config(config), m_view(new QWebEngineView) {
     m_view->setAttribute(Qt::WA_DontShowOnScreen, true);
     m_view->setContextMenuPolicy(Qt::NoContextMenu);
+    // WKWebView disables the user-gesture gate when audio playback is enabled.
+    // QtWebEngine keeps Chromium's gate enabled by default, which prevents
+    // Wallpaper Engine pages from starting their configured background audio
+    // during document load. Keep the setting explicit so --no-audio remains a
+    // real policy choice instead of relying on a backend default.
+    m_view->settings()->setAttribute(QWebEngineSettings::PlaybackRequiresUserGesture,
+                                     !m_config.enableAudioPlayback);
     QWebEngineScript shim;
     shim.setName(QStringLiteral("mirage-web-shim"));
     shim.setSourceCode(WebEngineShim());
@@ -109,7 +117,10 @@ void WebRendererEngine::applyUserProperties(const QJsonObject& properties) {
 
 void WebRendererEngine::setPaused(bool paused) {
     m_paused = paused;
-    evaluate(QStringLiteral("window.__wr_setPaused(%1);document.querySelectorAll('video,audio').forEach(function(x){x.%2();});")
+    // Host-driven resume is not a user gesture. Consume a rejected play()
+    // promise here so a backend policy decision cannot surface as an uncaught
+    // page exception; page-owned play() calls keep their normal semantics.
+    evaluate(QStringLiteral("window.__wr_setPaused(%1);document.querySelectorAll('video,audio').forEach(function(x){var p=x.%2();if(p&&p.catch)p.catch(function(){});});")
                  .arg(paused ? QStringLiteral("true") : QStringLiteral("false"),
                       paused ? QStringLiteral("pause") : QStringLiteral("play")));
 }
