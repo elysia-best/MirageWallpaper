@@ -352,7 +352,12 @@ QString RendererController::sceneWallpaperBinary() const {
 }
 
 QString RendererController::webWallpaperBinary() const {
-    return firstExecutable({siblingBinary("WebWallpaper")});
+    return firstExecutable({
+        siblingBinary("WebWallpaper"),
+        QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/linux/Tools/WebWallpaper/WebWallpaper"),
+        QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/release/Tools/WebWallpaper/WebWallpaper"),
+        QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/debug/Tools/WebWallpaper/WebWallpaper"),
+    });
 }
 
 QString RendererController::videoWallpaperBinary() const {

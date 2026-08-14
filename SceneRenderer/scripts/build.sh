@@ -164,8 +164,15 @@ case "$SYSTEM_NAME" in
         JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || echo 8)}"
         ;;
     Linux)
-        command -v clang >/dev/null || die "clang not found. Install clang."
-        command -v clang++ >/dev/null || die "clang++ not found. Install clang++."
+        if [[ "$CC" != "" && "$CXX" != "" ]]; then
+            command -v "$CC" || die "C compiler not found or not executable: $CC"
+            command -v "$CXX" || die "C++ compiler not found or not executable: $CXX"
+        else
+            command -v clang >/dev/null || die "clang not found. Install clang."
+            command -v clang++ >/dev/null || die "clang++ not found. Install clang++."
+            CC="$(command -v clang)"
+            CXX="$(command -v clang++)"
+        fi
         JOBS="${JOBS:-$(nproc 2>/dev/null || echo 8)}"
         EXTRA_CONFIGURE_ARGS+=(
             -DCMAKE_C_COMPILER="$CC"
