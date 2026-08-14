@@ -18,6 +18,7 @@ ColumnLayout {
     property string cfg_SocketPath
     property bool cfg_MouseForward
     property bool cfg_ShowDiagnostics
+    property int cfg_RendererBackend
 
     Kirigami.FormLayout {
         Layout.fillWidth: true
@@ -46,6 +47,13 @@ ColumnLayout {
             Kirigami.FormData.label: qsTr("Show diagnostics")
             checked: cfg_ShowDiagnostics
             onToggled: cfg_ShowDiagnostics = checked
+        }
+
+        QQC2.ComboBox {
+            Kirigami.FormData.label: qsTr("Render backend:")
+            model: [qsTr("Automatic"), qsTr("OpenGL"), qsTr("Vulkan")]
+            currentIndex: cfg_RendererBackend
+            onActivated: cfg_RendererBackend = currentIndex
         }
     }
 

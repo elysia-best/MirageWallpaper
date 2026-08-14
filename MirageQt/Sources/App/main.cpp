@@ -33,6 +33,10 @@ int main(int argc, char** argv) {
     }
 
     Mirage::MirageController controller;
+    // 桌面窗口事实（焦点/全屏）由 broker 宿主回调上报，应用据此按播放规则
+    // 驱动渲染器（对齐 macOS 的应用侧播放策略）。
+    QObject::connect(&displayBroker, &Mirage::DisplayBrokerService::windowStateChanged,
+                     &controller, &Mirage::MirageController::handleWindowState);
     QQmlApplicationEngine engine;
     FluentUI::registerTypes(&engine);
     engine.rootContext()->setContextProperty(QStringLiteral("mirage"), &controller);

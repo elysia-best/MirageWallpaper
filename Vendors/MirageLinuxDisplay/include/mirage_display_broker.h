@@ -27,6 +27,13 @@ typedef struct md_broker_options {
     const char* server_version;
     uint64_t features;
     uint32_t max_routes;
+    /* Optional host notification for desktop window-state changes received
+     * from a display. Invoked on the broker dispatch thread; stable_id is
+     * borrowed for the duration of the call, so the host must copy it if it
+     * is kept. The host uses the facts to drive its own playback policy. */
+    void (*on_window_state)(void* user_data, const char* stable_id, uint32_t flags);
+    /* Borrowed opaque context passed to every host callback; never freed. */
+    void* user_data;
 } md_broker_options_t;
 
 /* Creates an unbound broker owned by the caller. The options strings are copied. */

@@ -28,7 +28,8 @@ struct md_producer final : mirage::ClientSession {
     explicit md_producer(const md_producer_callbacks_t* callbacks)
         : ClientSession(MD_CLIENT_ROLE_PRODUCER,
                         MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
-                            MD_FEATURE_MULTIPLANE | MD_FEATURE_POINTER_AXIS),
+                            MD_FEATURE_MULTIPLANE | MD_FEATURE_POINTER_AXIS |
+                            MD_FEATURE_WINDOW_STATE),
           producer_id_(0U),
           output_id_(0U),
           pool_offered_(false),
@@ -573,6 +574,18 @@ private:
                 }
                 if (callbacks_.on_pointer_axis != nullptr) {
                     callbacks_.on_pointer_axis(callbacks_.user_data, &event);
+                }
+                return MD_OK;
+            }
+            case MD_OP_PRODUCER_WINDOW_STATE: {
+                std::uint32_t flags = 0U;
+                if (md_proto_decode_window_state(packet->payload, packet->payload_size,
+                                                 &flags) != 0) {
+                    return static_cast<md_result_t>(
+                        fail_producer(MD_ERR_PROTOCOL, "malformed window state"));
+                }
+                if (callbacks_.on_window_state != nullptr) {
+                    callbacks_.on_window_state(callbacks_.user_data, flags);
                 }
                 return MD_OK;
             }

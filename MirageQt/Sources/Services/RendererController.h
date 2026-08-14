@@ -63,6 +63,9 @@ public slots:
     void setSpeed(double speed, int screenIndex = -1);
     void setFillMode(Mirage::FillMode mode, int screenIndex = -1);
     void setProperty(const QString& key, const Mirage::ProjectProperty& property, int screenIndex = -1);
+    // 应用侧播放策略的唯一权威指令（与 macOS 一致）：state 为
+    // "run"/"throttle"/"pause"，渲染器只服从最终状态。
+    void setPowerState(const QString& state, int screenIndex = -1);
 
 signals:
     void rendererExited(int screenIndex, bool abnormal);

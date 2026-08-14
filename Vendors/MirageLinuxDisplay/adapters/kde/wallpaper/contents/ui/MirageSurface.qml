@@ -8,6 +8,7 @@ MirageDisplayItem {
     property string configuredSocketPath: ""
     property bool configuredPointerForwarding: true
     property int configuredWindowStateFlags: 0
+    property int configuredRendererBackend: 0
     readonly property string rendererBackendName: rendererBackend === MirageDisplayItem.BackendVulkan
         ? "vulkan"
         : (rendererBackend === MirageDisplayItem.BackendOpenGLEGL ? "egl" : "none")
@@ -43,4 +44,5 @@ MirageDisplayItem {
     }
     pointerForwarding: configuredPointerForwarding
     windowStateFlags: configuredWindowStateFlags
+    rendererBackendPreference: configuredRendererBackend
 }

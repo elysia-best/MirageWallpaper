@@ -29,6 +29,10 @@ kpackagetool6 -t Plasma/Wallpaper -r org.mirage.wallpaper
   （留空使用默认路径）。
 - **Forward pointer events**：把指针事件回传给渲染器。
 - **Show diagnostics**：显示后端、连接状态、输出与帧计数等信息。
+- **Render backend**：选择 Automatic、OpenGL 或 Vulkan。Automatic 跟随
+  plasmashell 当前场景图；指定后端时若实际 Qt Quick 后端不一致，插件会
+  停止连接并在诊断信息中提示错误。切换后端需要调整 plasmashell 的启动
+  环境并重启 plasmashell，插件不会运行时切换图形设备。
 
 ## 打包
 

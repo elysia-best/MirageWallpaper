@@ -237,6 +237,9 @@ public slots:
     void setSelectedVolume(double volume);
     void setSelectedSpeed(double speed);
     void setSelectedFillMode(const QString& mode);
+    // 桌面窗口事实（由 main.cpp 从 DisplayBrokerService 接入），转发给
+    // PlaybackController 按播放规则驱动渲染器。
+    void handleWindowState(const QString& stableId, quint32 flags);
 
 signals:
     void wallpapersChanged();

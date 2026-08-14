@@ -909,3 +909,17 @@ std::int32_t md_proto_decode_pointer_axis(const std::uint8_t* const data,
     event->source = static_cast<md_axis_source_t>(source);
     return md_reader_finish(&reader);
 }
+
+std::int32_t md_proto_decode_window_state(const std::uint8_t* const data,
+                                          const std::size_t size,
+                                          std::uint32_t* const flags) {
+    if (flags == nullptr) {
+        return -EINVAL;
+    }
+    md_reader_t reader;
+    md_reader_init(&reader, data, size);
+    std::int32_t result = md_read_u32(&reader, flags);
+    // The WINDOW_STATE payload is exactly one u32; md_reader_finish rejects
+    // trailing bytes so a malformed longer payload cannot be silently accepted.
+    return result == 0 ? md_reader_finish(&reader) : result;
+}

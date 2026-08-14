@@ -52,6 +52,11 @@ typedef struct md_producer_callbacks {
     void (*on_pointer_motion)(void* user_data, const md_pointer_motion_t* event);
     void (*on_pointer_button)(void* user_data, const md_pointer_button_t* event);
     void (*on_pointer_axis)(void* user_data, const md_pointer_axis_t* event);
+    /* Reports the desktop window facts computed by the display adapter. The
+     * flags are the WINDOW_STATE bit field (0x1 covered, 0x2 focus lost,
+     * 0x4 maximized, 0x8 fullscreen); the callback runs on the session's
+     * dispatch thread and the flags value is borrowed for the call. */
+    void (*on_window_state)(void* user_data, uint32_t flags);
     void (*on_disconnected)(void* user_data, md_result_t reason, const char* message);
     /* Borrowed opaque callback context. The library never frees it. */
     void* user_data;

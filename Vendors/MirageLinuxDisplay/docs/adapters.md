@@ -45,6 +45,11 @@ Qt Quick 显示项同时支持 **OpenGL/EGL** 与 **Vulkan** 两条导入路径�
 - Vulkan 路径使用 external memory FD / DRM 修饰符导入，并以同设备
   relay/blit 回退到宿主可采样图像。
 
+壁纸配置提供 Automatic、OpenGL、Vulkan 三档后端偏好。指定后端时，显示项
+会在场景图初始化阶段严格校验 plasmashell 的实际 Qt Quick graphics API；
+不匹配则停止连接并报告错误。图形设备由 plasmashell 启动时创建，切换后端
+需要调整其启动环境并重启 plasmashell，插件不会运行时切换设备。
+
 指针观察必须让 Qt 事件过滤器返回 `false`，使 Plasma 继续接收桌面点击、
 右键菜单、拖放与滚轮事件；渲染器由移动事件加按键状态重建拖拽。
 

@@ -126,11 +126,27 @@ static void test_invalid_utf8(void) {
     assert(md_write_string(&writer, invalid) != 0);
 }
 
+static void test_window_state_decode(void) {
+    uint8_t bytes[16];
+    md_writer_t writer;
+    md_writer_init(&writer, bytes, sizeof(bytes));
+    assert(md_proto_encode_u32(&writer, 0xBU) == 0);
+
+    uint32_t flags = 0U;
+    assert(md_proto_decode_window_state(bytes, writer.size, &flags) == 0);
+    assert(flags == 0xBU);
+
+    /* Trailing bytes make the payload malformed and must be rejected. */
+    bytes[writer.size++] = 0x00;
+    assert(md_proto_decode_window_state(bytes, writer.size, &flags) != 0);
+}
+
 int main(void) {
     test_hello_golden_vector();
     test_welcome_decode();
     test_bind_decode();
     test_multiplane_bind_round_trip();
     test_invalid_utf8();
+    test_window_state_decode();
     return 0;
 }

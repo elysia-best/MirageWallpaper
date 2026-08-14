@@ -43,6 +43,8 @@ typedef struct observer {
     unsigned motion{};
     unsigned button{};
     unsigned axis{};
+    unsigned window_states{};
+    uint32_t last_window_flags{};
     uint64_t producer_id{};
     uint64_t output_id{};
 } observer_t;
@@ -71,7 +73,8 @@ static void send_welcome(int fd) {
     assert(md_write_u16(&writer, 0) == 0);
     assert(md_write_u16(&writer, 0) == 0);
     assert(md_write_u64(&writer, MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
-                                  MD_FEATURE_MULTIPLANE | MD_FEATURE_POINTER_AXIS) == 0);
+                                  MD_FEATURE_MULTIPLANE | MD_FEATURE_POINTER_AXIS |
+                                  MD_FEATURE_WINDOW_STATE) == 0);
     assert(md_write_string(&writer, "mock-broker") == 0);
     assert(md_write_string(&writer, "0.1") == 0);
     send_packet(fd, MD_OP_WELCOME, 1, payload, writer.size);
@@ -110,6 +113,9 @@ static void send_inputs(int fd) {
     assert(md_proto_encode_pointer_axis(&writer, 11.0f, 21.0f, 0.0f, 1.0f,
                                         MD_AXIS_WHEEL, 5, 0) == 0);
     send_packet(fd, MD_OP_PRODUCER_POINTER_AXIS, 9, payload, writer.size);
+    md_writer_init(&writer, payload, sizeof(payload));
+    assert(md_proto_encode_u32(&writer, 0xAU) == 0);
+    send_packet(fd, MD_OP_PRODUCER_WINDOW_STATE, 10, payload, writer.size);
 }
 
 static void* broker_main(void* opaque) {
@@ -197,6 +203,11 @@ static void on_axis(void* opaque, const md_pointer_axis_t* event) {
     observer_t* const observer = static_cast<observer_t*>(opaque);
     ++observer->axis; assert(event->delta_y == 1.0f);
 }
+static void on_window_state(void* opaque, uint32_t flags) {
+    observer_t* const observer = static_cast<observer_t*>(opaque);
+    ++observer->window_states;
+    observer->last_window_flags = flags;
+}
 
 int main(void) {
     mock_broker_t broker{};
@@ -216,6 +227,7 @@ int main(void) {
     callbacks.on_pointer_motion = on_motion;
     callbacks.on_pointer_button = on_button;
     callbacks.on_pointer_axis = on_axis;
+    callbacks.on_window_state = on_window_state;
     callbacks.user_data = &observer;
     md_producer_t* producer = md_producer_new(&callbacks);
     assert(producer != NULL);
@@ -288,6 +300,7 @@ int main(void) {
     assert(observer.configs == 1);
     assert(observer.enter == 1 && observer.leave == 1 && observer.motion == 1);
     assert(observer.button == 1 && observer.axis == 1);
+    assert(observer.window_states == 1 && observer.last_window_flags == 0xAU);
     assert(md_producer_retire_done(producer, 7) == MD_OK);
 
     assert(pthread_join(broker.thread, NULL) == 0);

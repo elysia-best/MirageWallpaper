@@ -41,6 +41,8 @@ typedef struct producer_observer {
     unsigned connected{};
     unsigned configs{};
     unsigned motion{};
+    unsigned window_states{};
+    uint32_t last_window_flags{};
     uint64_t output_id{};
 } producer_observer_t;
 
@@ -122,6 +124,24 @@ static void on_producer_motion(void* opaque, const md_pointer_motion_t* event) {
     ++observer->motion;
 }
 
+static void on_producer_window_state(void* opaque, uint32_t flags) {
+    producer_observer_t* const observer = static_cast<producer_observer_t*>(opaque);
+    observer->last_window_flags = flags;
+    ++observer->window_states;
+}
+
+/* Host-side window-state notification captured from the broker options hook;
+ * the callback runs on the broker dispatch thread. */
+static uint32_t g_host_window_flags = 0;
+static char g_host_window_stable_id[64] = {0};
+static void on_host_window_state(void* opaque, const char* stable_id, uint32_t flags) {
+    (void)opaque;
+    g_host_window_flags = flags;
+    if (stable_id != nullptr) {
+        strncpy(g_host_window_stable_id, stable_id, sizeof(g_host_window_stable_id) - 1);
+    }
+}
+
 static void on_producer_disconnected(void* opaque, md_result_t reason, const char* message) {
     (void)opaque;
     (void)reason;
@@ -150,9 +170,10 @@ static void pump_display(md_display_t* display, display_observer_t* observer,
 }
 
 static void pump_producer(md_producer_t* producer, producer_observer_t* observer,
-                          unsigned configs, unsigned motion) {
+                          unsigned configs, unsigned motion, unsigned window_states) {
     for (int attempt = 0; attempt < 100; ++attempt) {
-        if (observer->configs >= configs && observer->motion >= motion) return;
+        if (observer->configs >= configs && observer->motion >= motion &&
+            observer->window_states >= window_states) return;
         const short events = static_cast<short>(POLLIN |
             (md_producer_wants_writable(producer) != 0U ? POLLOUT : 0));
         struct pollfd descriptor{
@@ -166,6 +187,7 @@ static void pump_producer(md_producer_t* producer, producer_observer_t* observer
     }
     assert(observer->configs >= configs);
     assert(observer->motion >= motion);
+    assert(observer->window_states >= window_states);
 }
 
 static void pump_display_unbind(md_display_t* display, display_observer_t* observer,
@@ -196,8 +218,10 @@ int main(void) {
         .server_name = "test-broker",
         .server_version = "0.2",
         .features = MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
-                    MD_FEATURE_POINTER_AXIS,
+                    MD_FEATURE_POINTER_AXIS | MD_FEATURE_WINDOW_STATE,
         .max_routes = 2,
+        .on_window_state = on_host_window_state,
+        .user_data = nullptr,
     };
     md_broker_t* broker = md_broker_new(&broker_options);
     assert(broker != NULL);
@@ -229,6 +253,7 @@ int main(void) {
     producer_callbacks.on_connected = on_producer_connected;
     producer_callbacks.on_output_config = on_producer_config;
     producer_callbacks.on_pointer_motion = on_producer_motion;
+    producer_callbacks.on_window_state = on_producer_window_state;
     producer_callbacks.on_disconnected = on_producer_disconnected;
     producer_callbacks.user_data = &producer_observer;
     md_producer_t* producer = md_producer_new(&producer_callbacks);
@@ -254,7 +279,7 @@ int main(void) {
                         MD_INPUT_NON_CONSUMING;
     md_consumer_caps_t caps{};
     caps.features = MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
-                    MD_FEATURE_POINTER_AXIS;
+                    MD_FEATURE_POINTER_AXIS | MD_FEATURE_WINDOW_STATE;
     caps.sync_caps = 1U;
     caps.max_width = 4096U;
     caps.max_height = 4096U;
@@ -273,7 +298,12 @@ int main(void) {
                                3000) == MD_OK);
     assert(producer_observer.connected == 1);
     assert(producer_observer.output_id == display_observer.output_id);
-    pump_producer(producer, &producer_observer, 1, 0);
+    pump_producer(producer, &producer_observer, 1, 0, 1);
+    /* The producer connected after the display, so it must have received the
+     * cached default window state (0 = desktop focused) replayed together with
+     * OUTPUT_CONFIG. */
+    assert(producer_observer.window_states == 1);
+    assert(producer_observer.last_window_flags == 0U);
 
     md_buffer_pool_t pool{};
     pool.generation = 1;
@@ -309,7 +339,15 @@ int main(void) {
     pump_display(display, &display_observer, 1, 1, 1);
 
     assert(md_display_send_pointer_motion(display, 10.0f, 20.0f, 100, 0) == MD_OK);
-    pump_producer(producer, &producer_observer, 1, 1);
+    pump_producer(producer, &producer_observer, 1, 1, 1);
+
+    /* WINDOW_STATE from the display is forwarded to the producer verbatim. */
+    assert(md_display_send_window_state(display, 0xAU) == MD_OK);
+    pump_producer(producer, &producer_observer, 1, 1, 2);
+    assert(producer_observer.last_window_flags == 0xAU);
+    /* The broker also notifies the embedding host with the route's stable id. */
+    assert(g_host_window_flags == 0xAU);
+    assert(strcmp(g_host_window_stable_id, "test-output") == 0);
 
     display_observer_t mirror_observer{};
     mirror_observer.expected_generation = 1U;
@@ -368,7 +406,10 @@ int main(void) {
                                &producer_info, 3000) == MD_OK);
     assert(restarted_producer_observer.connected == 1);
     assert(restarted_producer_observer.output_id == stable_output_id);
-    pump_producer(producer, &restarted_producer_observer, 1, 0);
+    pump_producer(producer, &restarted_producer_observer, 1, 0, 1);
+    /* A restarted producer replays the last cached window state (0xA from the
+     * forwarding test above) so it does not wait for the next desktop change. */
+    assert(restarted_producer_observer.last_window_flags == 0xAU);
 
     md_buffer_pool_t replacement_pool{};
     replacement_pool.generation = 2U;

@@ -46,6 +46,8 @@ bool DisplayBrokerService::start(QString* error) {
                     MD_FEATURE_MULTIPLANE | MD_FEATURE_POINTER_AXIS |
                     MD_FEATURE_WINDOW_STATE,
         .max_routes = 16,
+        .on_window_state = &DisplayBrokerService::onWindowState,
+        .user_data = this,
     };
     m_broker = md_broker_new(&options);
     if (m_broker == nullptr || md_broker_listen(m_broker) != MD_OK) {
@@ -81,6 +83,16 @@ void DisplayBrokerService::stop() {
     if (m_thread.joinable()) m_thread.join();
     md_broker_free(m_broker);
     m_broker = nullptr;
+}
+
+/* Broker dispatch-thread trampoline: the stable id is borrowed for the call,
+ * so it is copied into a QString before emitting the Qt signal. The signal
+ * crosses into the main thread via a queued connection. */
+void DisplayBrokerService::onWindowState(void* userData, const char* stableId,
+                                         uint32_t flags) {
+    auto* self = static_cast<DisplayBrokerService*>(userData);
+    emit self->windowStateChanged(QString::fromUtf8(stableId != nullptr ? stableId : ""),
+                                  static_cast<quint32>(flags));
 }
 
 } // namespace Mirage

@@ -761,6 +761,10 @@ void MirageController::muteWallpapers() {
     m_playback.muteWallpapers();
 }
 
+void MirageController::handleWindowState(const QString& stableId, quint32 flags) {
+    m_playback.handleWindowState(stableId, flags);
+}
+
 bool MirageController::applySettings(const QVariantMap& values) {
     return m_playback.applySettings(values);
 }

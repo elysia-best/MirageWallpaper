@@ -100,6 +100,11 @@ struct md_broker_route {
     md_format_cap_t selected_format{};
     bool format_selected{false};
     bool output_config_sent{false};
+    /* Last WINDOW_STATE flags received from a display. Cached because window
+     * state is a persistent fact (unlike pointer events): a display may report
+     * it before the producer connects, and the value is replayed when the
+     * producer (re)establishes the route. */
+    uint32_t window_state{0U};
     bool pool_active{false};
     bool retire_pending{false};
     bool unbind_pending{false};
@@ -144,6 +149,10 @@ struct md_broker {
     std::array<std::unique_ptr<md_broker_route_t>, kBrokerMaxRoutes> routes{};
     uint32_t route_count{0U};
     std::unique_ptr<md_broker_fanout_t> fanouts{};
+    /* Host notification hooks (see md_broker_options_t); the broker never
+     * owns or frees user_data. */
+    void (*on_window_state)(void* user_data, const char* stable_id, uint32_t flags){nullptr};
+    void* user_data{nullptr};
 };
 
 static void poll_fanouts(md_broker_t* broker) {
@@ -617,6 +626,20 @@ static int send_output_config(md_broker_route_t* route) {
     }
     int rc = send_encoded(producer, MD_OP_OUTPUT_CONFIG, payload, payload_size);
     if (rc == MD_OK) route->output_config_sent = true;
+    /* Replay the cached window-state flags whenever the route configuration is
+     * (re)established, so a producer that connects after the display always
+     * learns the current desktop facts instead of waiting for the next change.
+     * The default 0 (desktop focused, nothing covering) is correct for a
+     * producer that connected before any display reported state. */
+    if (rc == MD_OK) {
+        uint8_t state_payload[8];
+        md_writer_t state_writer;
+        md_writer_init(&state_writer, state_payload, sizeof(state_payload));
+        if (md_proto_encode_u32(&state_writer, route->window_state) == 0) {
+            rc = queue_peer(producer, MD_OP_PRODUCER_WINDOW_STATE, 0, state_payload,
+                            state_writer.size, nullptr, 0U);
+        }
+    }
     return rc;
 }
 
@@ -867,8 +890,29 @@ static int handle_display_packet(md_broker_t* broker, md_broker_peer_t* peer,
         return queue_peer(route->producer, opcode, packet->flags, packet->payload,
                           packet->payload_size, nullptr, 0U);
     }
-    case MD_OP_WINDOW_STATE:
+    case MD_OP_WINDOW_STATE: {
+        if (route == nullptr || packet->fd_count != 0) return MD_ERR_STATE;
+        uint32_t flags = 0U;
+        if (md_proto_decode_window_state(packet->payload, packet->payload_size, &flags) != 0) {
+            return MD_ERR_PROTOCOL;
+        }
+        /* Cache the latest flags and forward to the bound producer. Unlike a
+         * pointer event, window state is a persistent fact: when no producer
+         * is ready yet the value is kept and replayed by send_output_config
+         * once the producer (re)connects. */
+        route->window_state = flags;
+        /* Notify the embedding host (MirageQt) so it can apply its own
+         * playback policy; the callback runs on this dispatch thread and the
+         * stable id is only borrowed for the call. */
+        if (broker->on_window_state != nullptr) {
+            broker->on_window_state(broker->user_data, route->stable_id.c_str(), flags);
+        }
+        if (route->producer != nullptr && route->producer->ready) {
+            return queue_peer(route->producer, MD_OP_PRODUCER_WINDOW_STATE, packet->flags,
+                              packet->payload, packet->payload_size, nullptr, 0U);
+        }
         return MD_OK;
+    }
     case MD_OP_UNBIND_DONE: {
         if (route == nullptr || !route_has_display(route, peer) || packet->fd_count != 0 ||
             !peer->display_unbind_pending) return MD_ERR_PROTOCOL;
@@ -1282,6 +1326,8 @@ md_broker_t* md_broker_new(const md_broker_options_t* options) {
         if (broker->max_routes > kBrokerMaxRoutes) {
             return nullptr;
         }
+        broker->on_window_state = options->on_window_state;
+        broker->user_data = options->user_data;
         return broker.release();
     } catch (const std::bad_alloc&) {
         /* The C ABI cannot propagate allocation exceptions, so construction

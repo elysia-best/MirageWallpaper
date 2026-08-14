@@ -45,6 +45,9 @@ WallpaperItem {
             item.configuredWindowStateFlags = Qt.binding(function() {
                 return windowModel.flags;
             });
+            item.configuredRendererBackend = Qt.binding(function() {
+                return root.configuration.RendererBackend;
+            });
         }
     }
 
@@ -56,15 +59,19 @@ WallpaperItem {
             && surfaceLoader.status === Loader.Ready
         color: Qt.rgba(0, 0, 0, 0.62)
         radius: 4
-        width: diagnostics.implicitWidth + 16
+        // Cap the overlay at the wallpaper width and wrap the text so the long
+        // per-task rows dump stays readable instead of being clipped.
+        width: Math.min(diagnostics.implicitWidth + 16, root.width - 16)
         height: diagnostics.implicitHeight + 12
 
         Text {
             id: diagnostics
-            anchors.centerIn: parent
+            anchors.fill: parent
+            anchors.margins: 6
             color: "white"
             font.family: "monospace"
             font.pixelSize: 12
+            wrapMode: Text.Wrap
             text: {
                 const item = surfaceLoader.item
                 if (!item) return ""
@@ -72,6 +79,11 @@ WallpaperItem {
                     + (item.connected ? "connected" : "disconnected")
                 value += "\noutput=" + item.outputId + " generation=" + item.importedGeneration
                 value += " frames=" + item.framesReceived
+                value += " windowFlags=0x" + windowModel.flags.toString(16)
+                value += " tasks=" + windowModel.taskCount
+                value += " recalc=" + windowModel.debugRecomputeCount
+                value += "\nscreen=" + windowModel.debugScreen
+                value += "\nrows=" + windowModel.debugInfo
                 if (item.lastError.length > 0) value += "\n" + item.lastError
                 return value
             }

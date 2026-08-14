@@ -1310,12 +1310,17 @@ int main(int argc, char** argv) {
                         [host]() { host->notifyActivated(); });
 #else
         void* desktop_handle = desktop.get();
+        // 参数顺序（见 ControlChannel.h）：window_flags 在第 4 位、on_deactivate
+        // 与 on_snapshot 在后；非协议路径不提供窗口状态，snapshot 处理器按
+        // 位置放到 on_snapshot（第 6 位）。
         control.emplace(
             wallpaper,
             [desktop_handle]() { sr::host::DesktopStop(desktop_handle); },
             [desktop_handle]() { sr::host::DesktopActivate(desktop_handle); }
 #if defined(__APPLE__)
             ,
+            nullptr,
+            nullptr,
             [](const std::string& path, const std::string& token) {
                 const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(path);
                 EmitSnapshotDone(token, ok);

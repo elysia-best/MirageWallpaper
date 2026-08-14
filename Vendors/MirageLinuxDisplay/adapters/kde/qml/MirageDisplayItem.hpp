@@ -63,6 +63,8 @@ class MirageDisplayItem : public QQuickItem {
     Q_PROPERTY(RendererBackend rendererBackend READ rendererBackend NOTIFY rendererBackendChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(qulonglong importedGeneration READ importedGeneration NOTIFY importedGenerationChanged)
+    Q_PROPERTY(RendererBackendPreference rendererBackendPreference READ rendererBackendPreference
+               WRITE setRendererBackendPreference NOTIFY rendererBackendPreferenceChanged)
 
 public:
     enum OutputTransform {
@@ -83,6 +85,16 @@ public:
         BackendVulkan = 2,
     };
     Q_ENUM(RendererBackend)
+
+    /* User preference for the Qt Quick scene-graph backend.  The scene graph
+     * is owned by plasmashell, so this value is validated at initialization
+     * rather than switching an already-created graphics device. */
+    enum RendererBackendPreference {
+        BackendPreferenceAuto = 0,
+        BackendPreferenceOpenGL = 1,
+        BackendPreferenceVulkan = 2,
+    };
+    Q_ENUM(RendererBackendPreference)
 
     explicit MirageDisplayItem(QQuickItem* parent = nullptr);
     ~MirageDisplayItem() override;
@@ -120,6 +132,8 @@ public:
     qulonglong framesReceived() const { return m_framesReceived; }
     QColor clearColor() const { return m_clearColor; }
     RendererBackend rendererBackend() const { return m_rendererBackend.load(); }
+    RendererBackendPreference rendererBackendPreference() const { return m_rendererBackendPreference; }
+    void setRendererBackendPreference(RendererBackendPreference value);
     QString lastError() const { return m_lastError; }
     qulonglong importedGeneration() const {
         return static_cast<qulonglong>(m_importedGeneration.load());
@@ -137,6 +151,7 @@ signals:
     void framesReceivedChanged();
     void clearColorChanged();
     void rendererBackendChanged();
+    void rendererBackendPreferenceChanged();
     void lastErrorChanged();
     void importedGenerationChanged();
 
@@ -209,6 +224,7 @@ private:
     qulonglong m_framesReceived = 0;
     QColor m_clearColor { Qt::black };
     std::atomic<RendererBackend> m_rendererBackend { BackendNone };
+    RendererBackendPreference m_rendererBackendPreference = BackendPreferenceAuto;
     QString m_lastError;
     std::atomic_uint32_t m_drmRenderMajor { 0 };
     std::atomic_uint32_t m_drmRenderMinor { 0 };

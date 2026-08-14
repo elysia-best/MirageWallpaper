@@ -240,8 +240,34 @@ void MirageDisplayItem::initializeRenderer() {
     if (m_rendererReady.load()) return;
     if (window() == nullptr || window()->rendererInterface() == nullptr) return;
 
+    const QSGRendererInterface::GraphicsApi graphicsApi =
+        window()->rendererInterface()->graphicsApi();
+    switch (m_rendererBackendPreference) {
+    case BackendPreferenceAuto:
+        break;
+    case BackendPreferenceOpenGL:
+        if (graphicsApi != QSGRendererInterface::OpenGL) {
+            setLastError(QStringLiteral(
+                "OpenGL backend was requested, but plasmashell is using a different "
+                "Qt Quick graphics API; restart plasmashell with the OpenGL backend."));
+            return;
+        }
+        break;
+    case BackendPreferenceVulkan:
+        if (graphicsApi != QSGRendererInterface::Vulkan) {
+            setLastError(QStringLiteral(
+                "Vulkan backend was requested, but plasmashell is using a different "
+                "Qt Quick graphics API; restart plasmashell with the Vulkan backend."));
+            return;
+        }
+        break;
+    default:
+        setLastError(QStringLiteral("Unsupported renderer backend preference"));
+        return;
+    }
+
     bool initialized = false;
-    switch (window()->rendererInterface()->graphicsApi()) {
+    switch (graphicsApi) {
     case QSGRendererInterface::OpenGL:
         initialized = initializeOpenGLRenderer();
         break;
@@ -522,6 +548,18 @@ void MirageDisplayItem::setSocketPath(const QString& value) {
     emit socketPathChanged();
     closeConnection();
     scheduleReconnect();
+}
+
+/*
+ * Stores the requested backend for the next scene-graph initialization.  Qt
+ * Quick creates the graphics device before this item can safely replace it,
+ * so changing the preference does not mutate a live renderer; Plasma must
+ * recreate the wallpaper or plasmashell for the new value to take effect.
+ */
+void MirageDisplayItem::setRendererBackendPreference(const RendererBackendPreference value) {
+    if (m_rendererBackendPreference == value) return;
+    m_rendererBackendPreference = value;
+    emit rendererBackendPreferenceChanged();
 }
 
 void MirageDisplayItem::setOutputStableId(const QString& value) {

@@ -160,6 +160,15 @@ int runProtocol(QCoreApplication& app, const VRVideoManifest& manifest,
                 if (VRParseVideoFillMode(value.toString().toStdString(), mode)) {
                     renderer.setFillMode(mode);
                 }
+            } else if (name == QStringLiteral("power")) {
+                // 应用侧播放策略的唯一权威指令（与 macOS 渲染器一致）：
+                // pause 暂停，run/throttle 恢复播放。
+                const QString state = command.value(QStringLiteral("state")).toString();
+                if (state == QStringLiteral("pause")) {
+                    renderer.pause();
+                } else if (state == QStringLiteral("run") || state == QStringLiteral("throttle")) {
+                    renderer.play();
+                }
             }
         },
         [&app] { app.quit(); },

@@ -27,6 +27,12 @@ Qt Quick 显示项按场景图后端自动选择导入路径：
 
 两种路径下，表面归属与输入都由 Plasma 负责。
 
+壁纸配置中的 **Render backend** 提供 Automatic、OpenGL、Vulkan 三档选择。
+Automatic 跟随 plasmashell 当前场景图；指定后端时，插件会严格校验实际
+Qt Quick 后端，若不一致则停止连接并在诊断信息中提示错误。Qt Quick 图形
+设备由 plasmashell 在启动时创建，切换后端需按对应方式配置并重启
+plasmashell，壁纸插件不会在运行中切换设备。
+
 **Vulkan 后端有一个前提：桌面程序必须放行 DMA-BUF。** 壁纸插件跑在
 plasmashell 里，而 plasmashell 在启动时就把显卡功能清单定死了，壁纸
 插件没法自己往里面加。所以走 Vulkan 后端时，如果桌面上报

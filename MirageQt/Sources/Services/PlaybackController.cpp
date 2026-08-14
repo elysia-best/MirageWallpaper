@@ -269,7 +269,81 @@ void PlaybackController::resumeWallpapers() {
 }
 
 void PlaybackController::muteWallpapers() {
+    m_muted = true;
     m_renderer->setMuted(true);
+}
+
+// WINDOW_STATE 位定义（mirage-display 协议）：0x1 遮盖、0x2 失焦、
+// 0x4 最大化、0x8 全屏。
+namespace {
+constexpr quint32 kWindowFocusLost = 0x2u;
+constexpr quint32 kWindowFullscreen = 0x8u;
+} // namespace
+
+PlaybackController::PlaybackAction PlaybackController::actionForRule(
+    const QString& rule, PlaybackAction current) const {
+    // 与 macOS 一致：多个来源的规则取优先级最高的动作
+    // （keepRunning < mute < pause < stop）。
+    PlaybackAction action = PlaybackAction::KeepRunning;
+    if (rule == QStringLiteral("mute")) action = PlaybackAction::Mute;
+    else if (rule == QStringLiteral("pause")) action = PlaybackAction::Pause;
+    else if (rule == QStringLiteral("stop")) action = PlaybackAction::Stop;
+    return static_cast<int>(action) > static_cast<int>(current) ? action : current;
+}
+
+// 把窗口动作应用到指定屏幕：stop 由应用终止渲染进程并在策略解除后重新
+// 应用壁纸（对齐 macOS stoppedByPlaybackPolicy）；pause/mute 与会话级
+// 手动状态合并后经 power/muted 命令下发，渲染器只服从最终状态。
+void PlaybackController::applyWindowAction(int screen, PlaybackAction action) {
+    if (action == PlaybackAction::Stop) {
+        if (!m_windowStoppedScreens.contains(screen)) {
+            m_windowStoppedScreens.insert(screen);
+            m_renderer->stop(screen);
+        }
+        return;
+    }
+
+    if (m_windowStoppedScreens.remove(screen)) {
+        const Wallpaper item = m_playlist->currentWallpaper(screen);
+        if (item.isValid()) {
+            QString error;
+            m_renderer->render(item, screen, renderOptionsFor(item), &error);
+        }
+    }
+
+    const bool windowPaused = action == PlaybackAction::Pause;
+    const bool windowMuted = action == PlaybackAction::Mute;
+    // 合并会话级暂停/静音（对齐 macOS isPaused/isMuted）。
+    m_renderer->setPowerState(m_paused || windowPaused ? QStringLiteral("pause")
+                                                       : QStringLiteral("run"),
+                              screen);
+    m_renderer->setMuted(m_muted || windowMuted, screen);
+}
+
+// 桌面窗口事实 → 该屏幕的播放动作。stableId 与 RendererController 的
+// stableOutputId() 同源（"kde:" + 厂商|型号|序列号），据此定位屏幕。
+void PlaybackController::handleWindowState(const QString& stableId, quint32 flags) {
+    if (stableId.isEmpty()) return;
+    int screen = -1;
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    for (int index = 0; index < screens.size(); ++index) {
+        if (RendererController::stableOutputId(screens.at(index)) == stableId) {
+            screen = index;
+            break;
+        }
+    }
+    if (screen < 0) return;
+
+    m_lastWindowFlags.insert(screen, flags);
+    const GlobalSettings& settings = m_settings->settings();
+    PlaybackAction action = PlaybackAction::KeepRunning;
+    if ((flags & kWindowFocusLost) != 0u) {
+        action = actionForRule(settings.otherApplicationFocused, action);
+    }
+    if ((flags & kWindowFullscreen) != 0u) {
+        action = actionForRule(settings.otherApplicationFullscreen, action);
+    }
+    applyWindowAction(screen, action);
 }
 
 void PlaybackController::setSelectedVolume(double volume) {
@@ -362,6 +436,20 @@ bool PlaybackController::applySettings(const QVariantMap& values) {
     if (m_settings->setSettings(updated, &error)) {
         const GlobalSettings& applied = m_settings->settings();
         if (before.fps != applied.fps) m_renderer->setFps(applied.fps);
+        // 播放规则（其他应用获取焦点/全屏）变化时，按最新规则重算每屏的
+        // 当前窗口动作（无需等待下一次窗口状态事件）。
+        if (before.otherApplicationFocused != applied.otherApplicationFocused
+            || before.otherApplicationFullscreen != applied.otherApplicationFullscreen) {
+            for (auto it = m_lastWindowFlags.constBegin(); it != m_lastWindowFlags.constEnd(); ++it) {
+                const quint32 flags = it.value();
+                PlaybackAction action = PlaybackAction::KeepRunning;
+                if ((flags & kWindowFocusLost) != 0u)
+                    action = actionForRule(applied.otherApplicationFocused, action);
+                if ((flags & kWindowFullscreen) != 0u)
+                    action = actionForRule(applied.otherApplicationFullscreen, action);
+                applyWindowAction(it.key(), action);
+            }
+        }
         return true;
     }
     m_owner->setStatusMessage(error.isEmpty() ? QStringLiteral("设置保存失败") : error);

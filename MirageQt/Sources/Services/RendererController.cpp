@@ -265,6 +265,13 @@ QString RendererController::fillModeKey(FillMode mode) {
     return QStringLiteral("cover");
 }
 
+void RendererController::setPowerState(const QString& state, int screenIndex) {
+    forEachTarget(screenIndex, [&](RunningProcess* running) {
+        sendCommand(running, QJsonObject{{QStringLiteral("cmd"), QStringLiteral("power")},
+                                         {QStringLiteral("state"), state}});
+    });
+}
+
 QString RendererController::stableOutputId(const QScreen* screen) {
     if (screen == nullptr) return {};
     const QString manufacturer = screen->manufacturer().trimmed();

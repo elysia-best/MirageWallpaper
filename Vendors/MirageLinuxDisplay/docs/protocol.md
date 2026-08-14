@@ -281,7 +281,24 @@ u32 modifiers
 ## 窗口状态
 
 `WINDOW_STATE { u32 flags }` 携带位标志，由适配器从 DE 的工作区/任务模型
-计算，绝不来自裸 X11 查询。
+计算，绝不来自裸 X11 查询。KDE 适配器从 `org.kde.taskmanager`（Plasma/KWin
+工作区数据）读取活跃窗口的焦点、最大化与全屏事实，并以活跃窗口的 frame
+geometry 与壁纸区域求交判定遮盖。位定义：
+
+| 位 | 值 | 含义 |
+|---|---|---|
+| covered | `0x1` | 活跃窗口的 frame geometry 与壁纸区域相交（桌面至少部分被覆盖） |
+| focusLost | `0x2` | 存在活跃的普通窗口（桌面失去焦点） |
+| maximized | `0x4` | 活跃窗口处于最大化 |
+| fullscreen | `0x8` | 本屏幕存在非最小化的全屏或最大化窗口，或几何上占满屏幕的窗口（壁纸被完全覆盖；不依赖焦点。Linux 下最大化视同全屏） |
+
+broker 按 route 缓存最近一次 `WINDOW_STATE`，转发为 producer 侧
+`PRODUCER_WINDOW_STATE { u32 flags }`；producer 在建立/重建路由时（
+`OUTPUT_CONFIG` 之后）会收到缓存值的补发，因此先于 producer 连接的显示端
+上报的状态不会丢失。broker 同时通过 `md_broker_options_t::on_window_state`
+宿主回调把 `(stable_id, flags)` 通知嵌入方（MirageQt），由应用按"播放
+规则"设置计算最终动作（保持运行/静音/暂停/停止）并以 `power`/`muted`
+命令驱动渲染器；渲染器不自行裁决窗口状态。
 
 ## 错误处理
 

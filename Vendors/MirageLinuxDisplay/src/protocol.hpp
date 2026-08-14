@@ -53,6 +53,7 @@ enum md_opcode : std::uint16_t {
     MD_OP_PRODUCER_POINTER_ENTER = 0x8206,
     MD_OP_PRODUCER_POINTER_LEAVE = 0x8207,
     MD_OP_PRODUCER_POINTER_AXIS = 0x8208,
+    MD_OP_PRODUCER_WINDOW_STATE = 0x8209,
 };
 
 /* Borrowed caller-owned storage for encoding a single protocol payload. */
@@ -170,5 +171,7 @@ std::int32_t md_proto_decode_pointer_button(const std::uint8_t* data, std::size_
                                             md_pointer_button_t* event);
 std::int32_t md_proto_decode_pointer_axis(const std::uint8_t* data, std::size_t size,
                                           md_pointer_axis_t* event);
+std::int32_t md_proto_decode_window_state(const std::uint8_t* data, std::size_t size,
+                                          std::uint32_t* flags);
 
 #endif
