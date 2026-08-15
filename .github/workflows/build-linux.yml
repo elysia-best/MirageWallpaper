@@ -27,6 +27,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: SteamService/packages.lock.json
+
       - name: Install Linux dependencies
         shell: bash
         run: |
@@ -296,7 +303,7 @@ jobs:
           clang --version
           clang++ --version
 
-      - name: Build Linux renderers
+      - name: Build Linux renderers and SteamService
         shell: bash
         run: |
           set -euo pipefail
@@ -318,6 +325,10 @@ jobs:
           pkg-config --atleast-version=1.3.277 vulkan
           pkg-config --modversion libavformat libavcodec libavutil libswscale libswresample
           JOBS="$(nproc)" ./scripts/build_all_linux.sh renderers
+          # The Qt client launches the bundled dotnet host at this fixed layout;
+          # retain app, runtime, and license files together rather than publishing
+          # only the service DLL.
+          ./scripts/build_steam_service_linux.sh
 
       - name: Build and install MirageQt
         shell: bash
@@ -344,6 +355,14 @@ jobs:
           install -Dm755 \
             VideoRenderer/build/release/Tools/VideoWallpaper/VideoWallpaper \
             "$appdir/usr/bin/VideoWallpaper"
+          install -Dm755 \
+            WebRenderer/build/linux-release/Tools/WebWallpaper/WebWallpaper \
+            "$appdir/usr/bin/WebWallpaper"
+          # RendererController resolves WebWallpaper next to MirageQt. SteamServiceManager
+          # resolves the dotnet host below SteamService/linux-x64, so preserve the
+          # complete bundle produced by build_steam_service_linux.sh at that path.
+          install -d "$appdir/usr/bin/SteamService"
+          cp -a SteamService/build/linux-x64 "$appdir/usr/bin/SteamService/linux-x64"
           cp -a "$FFMPEG_PREFIX"/lib/libav*.so* "$appdir/usr/bin/"
           cp -a "$FFMPEG_PREFIX"/lib/libsw*.so* "$appdir/usr/bin/"
           # libmpv（自编译）及其硬依赖 libplacebo、libass（apt 系统库）随
@@ -364,6 +383,13 @@ jobs:
           test -x "$appdir/usr/bin/MirageQt"
           test -x "$appdir/usr/bin/SceneWallpaper"
           test -x "$appdir/usr/bin/VideoWallpaper"
+          test -x "$appdir/usr/bin/WebWallpaper"
+          service="$appdir/usr/bin/SteamService/linux-x64"
+          test -x "$service/runtime/dotnet"
+          test -f "$service/app/MirageSteamService.dll"
+          test -f "$service/app/SteamKit2.dll"
+          test -f "$service/Licenses/LGPL-2.1.txt"
+          test -f "$service/Licenses/SteamKit2-NOTICE.txt"
           test -d "$appdir/usr/bin/assets"
           test -f "$appdir/usr/bin/libmpv.so.2"
           test -f "$appdir/usr/bin/libplacebo.so.338"
@@ -402,6 +428,10 @@ jobs:
           # graphics integration plugins; no compositor library is deployed.
           EXTRA_QT_MODULES: "core5compat;shadertools;waylandcompositor"
           EXTRA_PLATFORM_PLUGINS: "libqwayland-egl.so;libqwayland-generic.so"
+          # MirageQt embeds its QML in a resource, so linuxdeploy cannot discover
+          # QtWebEngine from the executable alone. Scan the authoritative QML
+          # sources to deploy the QtWebEngine and ControlsDelegates plugins.
+          QML_SOURCES_PATHS: "${{ github.workspace }}/MirageQt/Sources/Qml"
         run: |
           set -euo pipefail
           appdir="$RUNNER_TEMP/Mirage.AppDir"
@@ -416,6 +446,7 @@ jobs:
             --executable "$appdir/usr/bin/MirageQt" \
             --executable "$appdir/usr/bin/SceneWallpaper" \
             --executable "$appdir/usr/bin/VideoWallpaper" \
+            --executable "$appdir/usr/bin/WebWallpaper" \
             --desktop-file "$appdir/usr/share/applications/mirageqt.desktop" \
             --icon-file "$appdir/usr/share/icons/hicolor/512x512/apps/mirageqt.png" \
             --plugin qt
@@ -431,6 +462,10 @@ jobs:
           test -f "$appdir/usr/plugins/wayland-shell-integration/libivi-shell.so"
           test -f "$appdir/usr/plugins/wayland-shell-integration/libqt-shell.so"
           test -f "$appdir/usr/qml/Qt5Compat/GraphicalEffects/libqtgraphicaleffectsplugin.so"
+          # RichHTMLText imports QtWebEngine directly, and WebEngineView imports
+          # its controls delegates. Both plugins are required at QML load time.
+          test -f "$appdir/usr/qml/QtWebEngine/libqtwebenginequickplugin.so"
+          test -f "$appdir/usr/qml/QtWebEngine/ControlsDelegates/libqtwebenginequickdelegatesplugin.so"
 
           mkdir -p dist
           package="Mirage-${GITHUB_SHA:0:12}-linux-x86_64.AppImage"
