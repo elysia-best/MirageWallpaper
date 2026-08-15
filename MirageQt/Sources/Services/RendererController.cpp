@@ -107,24 +107,41 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         return false;
     }
 
-    stop(screenIndex);
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    QScreen* targetScreen = screens.isEmpty()
+                                ? nullptr
+                                : screens.at(qBound(0, screenIndex, screens.size() - 1));
+    const QString outputStableId = stableOutputId(targetScreen);
+    if (outputStableId.isEmpty()) {
+        if (error) *error = QStringLiteral("无法确定目标显示器标识，无法应用壁纸");
+        return false;
+    }
+
+    if (RunningProcess* const running = m_running.value(screenIndex)) {
+        // Broker 在旧 producer 断连前拒绝同一输出的新 producer。因此切换时
+        // 覆盖保存最新请求，并只对尚未停止的旧进程发送一次退出指令。
+        m_pendingRenders.insert(screenIndex, PendingRender{wallpaper, options});
+        if (!running->stopping) {
+            running->stopping = true;
+            sendCommand(running, QJsonObject{{"cmd", "quit"}});
+            running->process->closeWriteChannel();
+            QTimer::singleShot(1500, running->process, [process = running->process] {
+                if (process->state() != QProcess::NotRunning) process->terminate();
+            });
+            QTimer::singleShot(3000, running->process, [process = running->process] {
+                if (process->state() != QProcess::NotRunning) process->kill();
+            });
+            emit rendererStateChanged();
+        }
+        return true;
+    }
 
     auto* process = new QProcess(this);
     auto* running = new RunningProcess;
     running->process = process;
     running->wallpaper = wallpaper;
     running->screenIndex = screenIndex;
-    const QList<QScreen*> screens = QGuiApplication::screens();
-    QScreen* targetScreen = screens.isEmpty()
-                                ? nullptr
-                                : screens.at(qBound(0, screenIndex, screens.size() - 1));
-    running->outputStableId = stableOutputId(targetScreen);
-    if (running->outputStableId.isEmpty()) {
-        delete running;
-        process->deleteLater();
-        if (error) *error = QStringLiteral("无法确定目标显示器标识，无法应用壁纸");
-        return false;
-    }
+    running->outputStableId = outputStableId;
 
     QStringList args;
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -199,10 +216,24 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
                                       (exitStatus != QProcess::NormalExit || exitCode != 0);
                 const bool wasCurrent = m_running.value(screen) == running;
                 if (wasCurrent) m_running.remove(screen);
+                const bool launchPending = wasCurrent && running->stopping &&
+                                           m_pendingRenders.contains(screen);
+                PendingRender pending;
+                if (launchPending) pending = m_pendingRenders.take(screen);
                 for (const QString& temp : running->tempFiles) QFile::remove(temp);
                 running->process->deleteLater();
                 delete running;
                 if (wasCurrent) emit rendererStateChanged();
+                if (launchPending) {
+                    // finished 表明旧 producer socket 已关闭；broker 会在读取
+                    // 新 producer 注册前处理挂断。此时重走完整预检和启动流程，
+                    // 失败经既有消息通道反馈给界面。
+                    QString launchError;
+                    if (!render(pending.wallpaper, screen, pending.options, &launchError)
+                        && !launchError.isEmpty()) {
+                        emit rendererMessage(launchError);
+                    }
+                }
                 emit rendererExited(screen, abnormal);
             });
 
@@ -243,8 +274,10 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
 }
 
 void RendererController::stop(int screenIndex) {
-    RunningProcess* running = m_running.take(screenIndex);
-    if (!running) return;
+    // 显式停止优先于异步切换：移除待请求，禁止 finished 回调重新启动壁纸。
+    m_pendingRenders.remove(screenIndex);
+    RunningProcess* running = m_running.value(screenIndex);
+    if (!running || running->stopping) return;
 
     running->stopping = true;
     sendCommand(running, QJsonObject{{"cmd", "quit"}});
@@ -262,24 +295,29 @@ void RendererController::stop(int screenIndex) {
 }
 
 void RendererController::stopAll() {
+    // 应用退出和“停止全部”均不得保留延迟启动意图。
+    m_pendingRenders.clear();
     const QVector<int> screens = activeScreens();
     for (int screen : screens) stop(screen);
 }
 
 QVector<int> RendererController::activeScreens() const {
     QVector<int> screens;
-    for (auto it = m_running.constBegin(); it != m_running.constEnd(); ++it) screens.push_back(it.key());
+    for (auto it = m_running.constBegin(); it != m_running.constEnd(); ++it) {
+        if (!it.value()->stopping) screens.push_back(it.key());
+    }
     std::sort(screens.begin(), screens.end());
     return screens;
 }
 
 bool RendererController::isRunningOnScreen(int screenIndex) const {
-    return m_running.contains(screenIndex);
+    const RunningProcess* const running = m_running.value(screenIndex);
+    return running != nullptr && !running->stopping;
 }
 
 QString RendererController::wallpaperIdOnScreen(int screenIndex) const {
     const RunningProcess* running = m_running.value(screenIndex);
-    return running ? running->wallpaper.id() : QString();
+    return running != nullptr && !running->stopping ? running->wallpaper.id() : QString();
 }
 
 QString RendererController::fillModeKey(FillMode mode) {

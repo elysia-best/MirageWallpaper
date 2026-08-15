@@ -84,6 +84,15 @@ private:
         QByteArray stdoutBuffer;
     };
 
+    // 同一输出只能有一个 broker producer。切换期间保留最后一次经过
+    // 预检的请求，待旧进程 finished 关闭 producer socket 后再启动；broker
+    // 会在读取新 producer 注册前处理该挂断。值类型不借用调用方内存，且
+    // 仅在 GUI 线程访问。
+    struct PendingRender {
+        Wallpaper wallpaper;
+        RenderOptions options;
+    };
+
     QString binaryForKind(WallpaperKind kind) const;
     QString sceneWallpaperBinary() const;
     QString webWallpaperBinary() const;
@@ -97,6 +106,9 @@ private:
     GlobalSettingsService* m_settings = nullptr;
     std::function<bool(const Wallpaper&)> m_wallpaperTrustChecker;
     QHash<int, RunningProcess*> m_running;
+    // 按屏幕合并切换请求。显式 stop/stopAll 会清空对应项，防止退出或停止后
+    // 的 finished 回调重新启动 renderer。
+    QHash<int, PendingRender> m_pendingRenders;
 };
 
 } // namespace Mirage

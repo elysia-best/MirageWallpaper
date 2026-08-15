@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QPointer>
 #include <QProcess>
 #include <QSettings>
 #include <QStandardPaths>
@@ -115,13 +116,21 @@ void SteamServiceManager::launchProcess() {
 void SteamServiceManager::stop() {
     m_stopping = true;
     if (m_process != nullptr) {
+        // waitForFinished() 会在同线程分发 QProcess::finished；该槽会清空
+        // m_process。使用受 QObject 生命周期跟踪的本地指针，确保后续阶段
+        // 不会访问已由槽函数 deleteLater 的进程对象。
+        QPointer<QProcess> process = m_process;
         // 先关 stdin 让服务端 while 循环读 EOF 后自行退出；超时则强杀。
-        m_process->closeWriteChannel();
-        if (! m_process->waitForFinished(2000)) {
-            m_process->terminate();
-            if (! m_process->waitForFinished(2000)) m_process->kill();
+        process->closeWriteChannel();
+        if (process != nullptr && !process->waitForFinished(2000)) {
+            process->terminate();
+            if (process != nullptr && !process->waitForFinished(2000)) {
+                process->kill();
+            }
         }
-        m_process->deleteLater();
+        if (process != nullptr) {
+            process->deleteLater();
+        }
         m_process = nullptr;
     }
     m_pendingRequests.clear();
