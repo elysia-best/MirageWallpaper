@@ -5,12 +5,14 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QJsonArray>
 #include <QMetaObject>
 #include <QJsonObject>
 #include <QTimer>
 #include <QWebEngineView>
 
 #include <cstdio>
+#include <array>
 #include <utility>
 
 int main(int argc, char** argv) {
@@ -20,7 +22,11 @@ int main(int argc, char** argv) {
     parser.addOption({QStringLiteral("display-output-id"), QStringLiteral("mirage-display output id"), QStringLiteral("id")});
     parser.addOption({QStringLiteral("display-socket"), QStringLiteral("mirage-display broker socket"), QStringLiteral("path")});
     parser.addOption({QStringLiteral("fps"), QStringLiteral("target frame rate"), QStringLiteral("fps"), QStringLiteral("60")});
+    parser.addOption({QStringLiteral("volume"), QStringLiteral("master volume"), QStringLiteral("volume"), QStringLiteral("1.0")});
     parser.addOption({QStringLiteral("muted"), QStringLiteral("start muted")});
+    parser.addOption({QStringLiteral("no-spectrum"), QStringLiteral("disable system audio spectrum capture")});
+    parser.addOption({QStringLiteral("external-spectrum"),
+                      QStringLiteral("receive 128-bin spectrum frames from the control channel")});
     parser.addOption({QStringLiteral("control-stdin"), QStringLiteral("accept JSON commands")});
     parser.addPositionalArgument(QStringLiteral("wallpaper-dir"), QStringLiteral("Web wallpaper directory"));
     parser.process(app);
@@ -38,6 +44,12 @@ int main(int argc, char** argv) {
     }
     WebRendererEngine::Config config;
     config.frameRate = parser.value(QStringLiteral("fps")).toInt();
+    config.initialVolume = parser.value(QStringLiteral("volume")).toFloat();
+    // External frames are already analysed by the parent process. Keeping the
+    // engine's request loop active while disabling local capture prevents two
+    // independent monitor streams and preserves the macOS control protocol.
+    const bool externalSpectrum = parser.isSet(QStringLiteral("external-spectrum"));
+    config.enableAudioSpectrum = !parser.isSet(QStringLiteral("no-spectrum")) && !externalSpectrum;
     WebRendererEngine engine(config);
     engine.view()->resize(1920, 1080);
     ProtocolWebRenderer::Config protocolConfig {
@@ -72,6 +84,15 @@ int main(int argc, char** argv) {
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &protocol, &ProtocolWebRenderer::stop);
     engine.openWallpaper(manifest);
     engine.setMuted(parser.isSet(QStringLiteral("muted")));
+    engine.startAudioSpectrum();
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &engine,
+                     [&engine] { engine.stopAudioSpectrum(); });
+    QObject::connect(&engine, &WebRendererEngine::audioSpectrumDemandChanged,
+                     [](bool needed) {
+        std::fprintf(stdout, "{\"event\":\"audio-demand\",\"needed\":%s}\n",
+                     needed ? "true" : "false");
+        std::fflush(stdout);
+    });
     QObject::connect(&engine, &WebRendererEngine::contentReady, [] {
         std::fprintf(stdout, "{\"event\":\"content-ready\"}\n");
         std::fflush(stdout);
@@ -87,6 +108,23 @@ int main(int argc, char** argv) {
         else if (name == QStringLiteral("volume")) engine.setVolume(static_cast<float>(command.value(QStringLiteral("value")).toDouble()));
         else if (name == QStringLiteral("fps")) engine.setFrameRate(command.value(QStringLiteral("value")).toInt());
         else if (name == QStringLiteral("setProperty")) engine.applyUserProperty(command.value(QStringLiteral("key")).toString(), command.value(QStringLiteral("value")));
+        else if (name == QStringLiteral("audioSpectrum")) {
+            const QJsonArray data = command.value(QStringLiteral("data")).toArray();
+            if (data.size() != 128) {
+                std::fprintf(stderr, "WebWallpaper: audioSpectrum requires exactly 128 samples\n");
+                return;
+            }
+            std::array<float, 128> spectrum {};
+            for (qsizetype index = 0; index < data.size(); ++index) {
+                const QJsonValue sample = data.at(index);
+                if (!sample.isDouble()) {
+                    std::fprintf(stderr, "WebWallpaper: audioSpectrum sample is not numeric\n");
+                    return;
+                }
+                spectrum[static_cast<std::size_t>(index)] = static_cast<float>(sample.toDouble());
+            }
+            engine.pushAudioSpectrum(spectrum);
+        }
         else if (name == QStringLiteral("snapshot")) engine.takeSnapshotToPath(command.value(QStringLiteral("path")).toString());
     }, [&app] { app.quit(); }, &app);
     if (parser.isSet(QStringLiteral("control-stdin"))) channel.start();

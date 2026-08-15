@@ -10,6 +10,9 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QCommandLineParser parser;
     parser.addHelpOption();
+    parser.addOption({QStringLiteral("fps"), QStringLiteral("target frame rate"), QStringLiteral("fps"), QStringLiteral("60")});
+    parser.addOption({QStringLiteral("volume"), QStringLiteral("master volume"), QStringLiteral("volume"), QStringLiteral("1.0")});
+    parser.addOption({QStringLiteral("no-spectrum"), QStringLiteral("disable system audio spectrum capture")});
     parser.addPositionalArgument(QStringLiteral("wallpaper-dir"), QStringLiteral("Web wallpaper directory"));
     parser.process(app);
     if (parser.positionalArguments().size() != 1) return 1;
@@ -18,6 +21,9 @@ int main(int argc, char** argv) {
     const WRManifest manifest = WRManifest::loadFromDirectory(parser.positionalArguments().constFirst(), &error);
     if (manifest.workshopDirectory().isEmpty()) return 2;
     WebRendererEngine::Config config;
+    config.frameRate = parser.value(QStringLiteral("fps")).toInt();
+    config.initialVolume = parser.value(QStringLiteral("volume")).toFloat();
+    config.enableAudioSpectrum = !parser.isSet(QStringLiteral("no-spectrum"));
     WebRendererEngine engine(config);
     // WebRendererEngine defaults to off-screen capture for WebWallpaper.
     // The standalone viewer presents the same view in a regular Qt window, so
@@ -29,5 +35,8 @@ int main(int argc, char** argv) {
         qCritical("WebViewer: %s", qPrintable(message));
     });
     engine.openWallpaper(manifest);
+    engine.startAudioSpectrum();
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &engine,
+                     [&engine] { engine.stopAudioSpectrum(); });
     return app.exec();
 }

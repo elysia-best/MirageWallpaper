@@ -8,6 +8,7 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <array>
 #include <memory>
 
 class QWebEngineView;
@@ -41,6 +42,9 @@ public:
     void setMuted(bool muted);
     void setFrameRate(int fps);
     void setHostMediaPlaybackSuspended(bool suspended);
+    void startAudioSpectrum();
+    void stopAudioSpectrum();
+    void pushAudioSpectrum(const std::array<float, 128>& spectrum);
     void takeSnapshotToPath(const QString& path);
     void sendPointerMotion(float x, float y);
     void sendPointerEnter(float x, float y);
@@ -56,13 +60,24 @@ signals:
 
 private:
     void captureFrame();
+    void pollAudioDemand();
+    void reconcileAudioSpectrum();
+    void tickAudioSpectrum();
     void evaluate(const QString& script);
 
     Config m_config;
     QWebEngineView* m_view = nullptr;
     QTimer* m_captureTimer = nullptr;
+    QTimer* m_audioDemandTimer = nullptr;
+    QTimer* m_audioTimer = nullptr;
+    std::unique_ptr<class WRAudioTap> m_audioTap;
     QString m_workshopDirectory;
     QJsonObject m_initialProperties;
     bool m_paused = false;
     bool m_muted = false;
+    bool m_pageLoaded = false;
+    bool m_audioSpectrumRequested = false;
+    bool m_audioSpectrumStarted = false;
+    bool m_audioSpectrumObserved = false;
+    bool m_audioListenerDemand = false;
 };
