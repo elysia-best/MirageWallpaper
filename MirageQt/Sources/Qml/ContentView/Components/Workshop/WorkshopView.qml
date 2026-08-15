@@ -85,11 +85,12 @@ Item {
                     else
                         downloadPopover.openFor(downloadButton);
                 }
-                FluBadge {
-                    position: "topRight"
-                    count: root.activeDownloads
-                    visible: root.activeDownloads > 0
-                }
+                // FIXME: Badge 会太上面了，然后会被裁剪掉，先注释
+                // FluBadge {
+                //     position: "topRight"
+                //     count: root.activeDownloads
+                //     visible: root.activeDownloads > 0
+                // }
             }
             RowLayout {
                 visible: root.steamLoggedIn
