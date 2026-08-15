@@ -5,13 +5,11 @@
 # Builds all Linux components in dependency order:
 #   1. SceneRenderer → SceneWallpaper   (linux-clang-{config} CMake preset)
 #   2. VideoRenderer → VideoWallpaper   (release|debug CMake preset)
-#   3. MirageQt      → MirageQt app     (CMake, Qt 6.8+)
-#
-# WebRenderer is macOS-only and the Linux web renderer is not implemented yet,
-# so it is skipped on Linux.
+#   3. WebRenderer   → WebWallpaper     (CMake, QtWebEngine + Vulkan)
+#   4. MirageQt      → MirageQt app     (CMake, Qt 6.8+)
 #
 # Finally everything is staged under dist/ and packed into a self-contained
-# tar.gz: the MirageQt binary, the SceneWallpaper / VideoWallpaper
+# tar.gz: the MirageQt binary, the SceneWallpaper / VideoWallpaper / WebWallpaper
 # renderer binaries, the mirage-display shared library (with the renderer
 # RUNPATH rewritten to $ORIGIN), the shared assets directory, and a desktop
 # entry — a complete distribution you can extract and run directly.
@@ -21,7 +19,7 @@
 #   scripts/build_all_linux.sh debug           debug build
 #   scripts/build_all_linux.sh renderers       build only the renderers (skip app)
 #   scripts/build_all_linux.sh app             build only MirageQt (assumes renderers are ready)
-#   scripts/build_all_linux.sh scene|video     build a single named renderer
+#   scripts/build_all_linux.sh scene|video|web build a single named renderer
 #   scripts/build_all_linux.sh package         stage + pack existing artifacts into dist/*.tar.gz
 #   scripts/build_all_linux.sh clean           remove all sub-project build dirs and dist
 #   scripts/build_all_linux.sh -h|--help
@@ -62,6 +60,7 @@ Usage:
   scripts/build_all_linux.sh app             build only MirageQt (assumes renderers are ready)
   scripts/build_all_linux.sh scene           build SceneRenderer only
   scripts/build_all_linux.sh video           build VideoRenderer only
+  scripts/build_all_linux.sh web             build WebRenderer only
   scripts/build_all_linux.sh steam           build SteamService (SteamKit2) bundle only
   scripts/build_all_linux.sh package         stage + pack existing artifacts into dist/*.tar.gz
   scripts/build_all_linux.sh clean           remove all sub-project build dirs and dist
@@ -83,7 +82,7 @@ CONFIG="release"      # lowercase preset name passed to renderers (release|debug
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
-        all|renderers|app|scene|video|steam|package|clean) TARGET="$1"; shift ;;
+        all|renderers|app|scene|video|web|steam|package|clean) TARGET="$1"; shift ;;
         release|debug) CONFIG="$1"; shift ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
@@ -113,6 +112,8 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || echo 8)}"
 MIRAGEQT_DIR="$ROOT_DIR/MirageQt"
 APP_BUILD_DIR="${MIRAGEQT_BUILD_DIR:-$MIRAGEQT_DIR/build/$CONFIG}"
 PACKAGE_DIR="${PACKAGE_DIR:-$ROOT_DIR/dist}"
+WEBRENDERER_DIR="$ROOT_DIR/WebRenderer"
+WEB_BUILD_DIR="$WEBRENDERER_DIR/build/linux-$CONFIG"
 
 # --- per-component build helpers ---
 build_scene() {
@@ -123,9 +124,21 @@ build_video() {
     step "Building VideoRenderer ($CONFIG)"
     bash "$VIDEO_SH" "$CONFIG"
 }
+build_web() {
+    step "Building WebRenderer ($CONFIG)"
+    info "cmake -S $WEBRENDERER_DIR -B $WEB_BUILD_DIR (jobs=$JOBS)"
+    cmake -S "$WEBRENDERER_DIR" -B "$WEB_BUILD_DIR" -G Ninja \
+        -DCMAKE_BUILD_TYPE="$CMAKE_CONFIG" \
+        -DWEBRENDERER_BUILD_VIEWER=OFF
+    cmake --build "$WEB_BUILD_DIR" --parallel "$JOBS"
+    [[ -x "$WEB_BUILD_DIR/Tools/WebWallpaper/WebWallpaper" ]] || \
+        die "WebWallpaper binary not produced at $WEB_BUILD_DIR/Tools/WebWallpaper/WebWallpaper"
+    good "WebWallpaper binary: $WEB_BUILD_DIR/Tools/WebWallpaper/WebWallpaper"
+}
 build_renderers() {
     build_scene
     build_video
+    build_web
 }
 build_app() {
     step "Building MirageQt ($CMAKE_CONFIG)"
@@ -134,8 +147,10 @@ build_app() {
         -DCMAKE_BUILD_TYPE="$CMAKE_CONFIG" \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     cmake --build "$APP_BUILD_DIR" --parallel "$JOBS"
-    [[ -x "$APP_BUILD_DIR/MirageQt" ]] || die "MirageQt binary not produced at $APP_BUILD_DIR/MirageQt"
-    good "MirageQt binary: $APP_BUILD_DIR/MirageQt"
+    # MirageQt explicitly emits runtime targets under build/bin; package and
+    # build verification must use that CMake-owned location consistently.
+    [[ -x "$APP_BUILD_DIR/bin/MirageQt" ]] || die "MirageQt binary not produced at $APP_BUILD_DIR/bin/MirageQt"
+    good "MirageQt binary: $APP_BUILD_DIR/bin/MirageQt"
 }
 
 # SteamService (SteamKit2) bundle: built by scripts/build_steam_service_linux.sh
@@ -152,6 +167,10 @@ clean_all() {
     step "Cleaning all build directories"
     bash "$SCENE_SH" clean "$CONFIG" || true
     bash "$VIDEO_SH" clean "$CONFIG" || true
+    if [[ -d "$WEB_BUILD_DIR" ]]; then
+        info "Removing $WEB_BUILD_DIR"
+        rm -rf "$WEB_BUILD_DIR"
+    fi
     if [[ -d "$APP_BUILD_DIR" ]]; then
         info "Removing $APP_BUILD_DIR"
         rm -rf "$APP_BUILD_DIR"
@@ -182,6 +201,8 @@ find_display_lib_dir() {
         "$ROOT_DIR/SceneRenderer/build"
         "$ROOT_DIR/VideoRenderer/build/$CONFIG"
         "$ROOT_DIR/VideoRenderer/build"
+        "$WEB_BUILD_DIR"
+        "$ROOT_DIR/WebRenderer/build"
         "$APP_BUILD_DIR"
         "$ROOT_DIR/MirageQt/build"
     )
@@ -199,7 +220,7 @@ find_display_lib_dir() {
 package() {
     step "Packaging MirageWallpaper ($CONFIG)"
 
-    local scene_bin video_bin app_bin
+    local scene_bin video_bin web_bin app_bin
     scene_bin="$(first_existing \
         "$ROOT_DIR/SceneRenderer/build/linux-clang-$CONFIG/Tools/SceneWallpaper/SceneWallpaper" \
         "$ROOT_DIR/SceneRenderer/build/release/Tools/SceneWallpaper/SceneWallpaper" \
@@ -210,6 +231,11 @@ package() {
         "$ROOT_DIR/VideoRenderer/build/release/Tools/VideoWallpaper/VideoWallpaper" \
         "$ROOT_DIR/VideoRenderer/build/Tools/VideoWallpaper/VideoWallpaper")" \
         || die "VideoWallpaper binary not found (build it first: $VIDEO_SH $CONFIG)"
+    web_bin="$(first_existing \
+        "$WEB_BUILD_DIR/Tools/WebWallpaper/WebWallpaper" \
+        "$ROOT_DIR/WebRenderer/build/linux-release/Tools/WebWallpaper/WebWallpaper" \
+        "$ROOT_DIR/WebRenderer/build/linux-debug/Tools/WebWallpaper/WebWallpaper")" \
+        || die "WebWallpaper binary not found (build it first: $0 web $CONFIG)"
     app_bin="$APP_BUILD_DIR/bin/MirageQt"
     [[ -x "$app_bin" ]] || die "MirageQt binary not found at $app_bin (build it first: $0 app)"
 
@@ -228,7 +254,8 @@ package() {
     cp -f "$app_bin"   "$pkg_dir/MirageQt"
     cp -f "$scene_bin" "$pkg_dir/SceneWallpaper"
     cp -f "$video_bin" "$pkg_dir/VideoWallpaper"
-    chmod +x "$pkg_dir"/MirageQt "$pkg_dir"/SceneWallpaper "$pkg_dir"/VideoWallpaper
+    cp -f "$web_bin"   "$pkg_dir/WebWallpaper"
+    chmod +x "$pkg_dir"/MirageQt "$pkg_dir"/SceneWallpaper "$pkg_dir"/VideoWallpaper "$pkg_dir"/WebWallpaper
 
     # SteamService (SteamKit2): bundle beside the app so Steam login/workshop
     # works in the packaged tree without a system-wide dotnet runtime.
@@ -251,7 +278,7 @@ package() {
         if command -v patchelf >/dev/null 2>&1; then
             info "rewriting renderer RUNPATH to \$ORIGIN"
             patchelf --set-rpath '$ORIGIN' \
-                "$pkg_dir/SceneWallpaper" "$pkg_dir/VideoWallpaper"
+                "$pkg_dir/SceneWallpaper" "$pkg_dir/VideoWallpaper" "$pkg_dir/WebWallpaper"
         else
             warn "patchelf not found; renderers keep their build-dir RUNPATH." \
                 "Install patchelf and re-run, or launch with LD_LIBRARY_PATH=$pkg_dir."
@@ -280,6 +307,7 @@ package() {
 case "$TARGET" in
     scene)     build_scene ;;
     video)     build_video ;;
+    web)       build_web ;;
     renderers) build_renderers ;;
     app)       build_app ;;
     steam)     build_steam_service ;;
@@ -290,7 +318,7 @@ esac
 
 if [[ "$TARGET" == "all" || "$TARGET" == "app" ]]; then
     step "Build complete"
-    good "MirageQt binary: $APP_BUILD_DIR/MirageQt"
+    good "MirageQt binary: $APP_BUILD_DIR/bin/MirageQt"
     if [[ "$TARGET" == "all" && "${NO_PACKAGE:-0}" != "1" ]]; then
         good "tarball: $PACKAGE_DIR/MirageWallpaper-*-linux-*.tar.gz"
     fi

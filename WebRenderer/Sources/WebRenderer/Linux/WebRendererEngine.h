@@ -13,6 +13,7 @@
 
 class QWebEngineView;
 class WRManifest;
+class WallpaperSchemeHandler;
 
 // QtWebEngine implementation of the shared WebRenderer contract. The page is
 // owned by the GUI thread; frameReady is emitted there and the receiver owns
@@ -71,8 +72,10 @@ private:
     QTimer* m_audioDemandTimer = nullptr;
     QTimer* m_audioTimer = nullptr;
     std::unique_ptr<class WRAudioTap> m_audioTap;
+    WallpaperSchemeHandler* m_schemeHandler = nullptr;
     QString m_workshopDirectory;
     QJsonObject m_initialProperties;
+    float m_volume = 1.0f;
     bool m_paused = false;
     bool m_muted = false;
     bool m_pageLoaded = false;

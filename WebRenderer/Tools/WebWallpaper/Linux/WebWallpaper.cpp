@@ -10,12 +10,21 @@
 #include <QJsonObject>
 #include <QTimer>
 #include <QWebEngineView>
+#include <QWebEngineUrlScheme>
 
 #include <cstdio>
 #include <array>
 #include <utility>
 
 int main(int argc, char** argv) {
+    // Register before QApplication creates the Chromium profile; the renderer
+    // uses this controlled origin for overlay and in-memory wallpaper assets.
+    QWebEngineUrlScheme wallpaperScheme(QByteArrayLiteral("mirage-wallpaper"));
+    wallpaperScheme.setSyntax(QWebEngineUrlScheme::Syntax::HostAndPort);
+    wallpaperScheme.setFlags(QWebEngineUrlScheme::SecureScheme
+                             | QWebEngineUrlScheme::LocalScheme
+                             | QWebEngineUrlScheme::LocalAccessAllowed);
+    QWebEngineUrlScheme::registerScheme(wallpaperScheme);
     QApplication app(argc, argv);
     QCommandLineParser parser;
     parser.addHelpOption();
@@ -27,6 +36,11 @@ int main(int argc, char** argv) {
     parser.addOption({QStringLiteral("no-spectrum"), QStringLiteral("disable system audio spectrum capture")});
     parser.addOption({QStringLiteral("external-spectrum"),
                       QStringLiteral("receive 128-bin spectrum frames from the control channel")});
+    parser.addOption({QStringLiteral("asset-overlay"),
+                      QStringLiteral("preset asset directory searched before the wallpaper directory"),
+                      QStringLiteral("path")});
+    parser.addOption({QStringLiteral("load-from-memory"),
+                      QStringLiteral("cache wallpaper resources for this process")});
     parser.addOption({QStringLiteral("control-stdin"), QStringLiteral("accept JSON commands")});
     parser.addPositionalArgument(QStringLiteral("wallpaper-dir"), QStringLiteral("Web wallpaper directory"));
     parser.process(app);
@@ -45,6 +59,10 @@ int main(int argc, char** argv) {
     WebRendererEngine::Config config;
     config.frameRate = parser.value(QStringLiteral("fps")).toInt();
     config.initialVolume = parser.value(QStringLiteral("volume")).toFloat();
+    // These settings are part of the renderer contract even though loading is
+    // performed by WebRendererEngine, not by the display-producer process.
+    config.assetOverlayDirectories = parser.values(QStringLiteral("asset-overlay"));
+    config.loadFromMemory = parser.isSet(QStringLiteral("load-from-memory"));
     // External frames are already analysed by the parent process. Keeping the
     // engine's request loop active while disabling local capture prevents two
     // independent monitor streams and preserves the macOS control protocol.
@@ -104,10 +122,91 @@ int main(int argc, char** argv) {
         const QString name = command.value(QStringLiteral("cmd")).toString();
         if (name == QStringLiteral("pause")) engine.setPaused(true);
         else if (name == QStringLiteral("resume") || name == QStringLiteral("play")) engine.setPaused(false);
-        else if (name == QStringLiteral("muted")) engine.setMuted(command.value(QStringLiteral("value")).toBool());
-        else if (name == QStringLiteral("volume")) engine.setVolume(static_cast<float>(command.value(QStringLiteral("value")).toDouble()));
-        else if (name == QStringLiteral("fps")) engine.setFrameRate(command.value(QStringLiteral("value")).toInt());
-        else if (name == QStringLiteral("setProperty")) engine.applyUserProperty(command.value(QStringLiteral("key")).toString(), command.value(QStringLiteral("value")));
+        else if (name == QStringLiteral("muted")) {
+            const QJsonValue value = command.value(QStringLiteral("value"));
+            if (!value.isBool()) {
+                std::fprintf(stderr, "WebWallpaper: muted requires a boolean value\n");
+                return;
+            }
+            engine.setMuted(value.toBool());
+        } else if (name == QStringLiteral("volume")) {
+            const QJsonValue value = command.value(QStringLiteral("value"));
+            if (!value.isDouble()) {
+                std::fprintf(stderr, "WebWallpaper: volume requires a numeric value\n");
+                return;
+            }
+            engine.setVolume(static_cast<float>(value.toDouble()));
+        } else if (name == QStringLiteral("fps")) {
+            const QJsonValue value = command.value(QStringLiteral("value"));
+            if (!value.isDouble()) {
+                std::fprintf(stderr, "WebWallpaper: fps requires a numeric value\n");
+                return;
+            }
+            engine.setFrameRate(value.toInt());
+        } else if (name == QStringLiteral("setProperty")) {
+            const QJsonValue key = command.value(QStringLiteral("key"));
+            const QJsonValue value = command.value(QStringLiteral("value"));
+            if (!key.isString() || key.toString().isEmpty() || value.isUndefined()) {
+                std::fprintf(stderr, "WebWallpaper: setProperty requires key and value\n");
+                return;
+            }
+            // Wallpaper Engine listeners require every live value to use the
+            // same {key: {value: ...}} shape as the initial property snapshot.
+            engine.applyUserProperty(key.toString(), QJsonObject{{QStringLiteral("value"), value}});
+        } else if (name == QStringLiteral("setProperties")) {
+            const QJsonValue values = command.value(QStringLiteral("values"));
+            if (!values.isObject()) {
+                std::fprintf(stderr, "WebWallpaper: setProperties requires a values object\n");
+                return;
+            }
+            engine.applyUserProperties(values.toObject());
+        } else if (name == QStringLiteral("playbackState")) {
+            const QJsonValue volume = command.value(QStringLiteral("volume"));
+            const QJsonValue muted = command.value(QStringLiteral("muted"));
+            const QJsonValue state = command.value(QStringLiteral("state"));
+            if (!volume.isDouble() || !muted.isBool() || !state.isString()) {
+                std::fprintf(stderr, "WebWallpaper: playbackState requires volume, muted, and state\n");
+                return;
+            }
+            const QString playbackState = state.toString();
+            if (playbackState == QStringLiteral("pause")) {
+                engine.setVolume(static_cast<float>(volume.toDouble()));
+                engine.setMuted(muted.toBool());
+                engine.setPaused(true);
+            } else if (playbackState == QStringLiteral("run") || playbackState == QStringLiteral("throttle")) {
+                const QJsonValue fps = command.value(QStringLiteral("fps"));
+                if (!fps.isUndefined() && !fps.isDouble()) {
+                    std::fprintf(stderr, "WebWallpaper: playbackState fps must be numeric\n");
+                    return;
+                }
+                engine.setVolume(static_cast<float>(volume.toDouble()));
+                engine.setMuted(muted.toBool());
+                if (!fps.isUndefined()) engine.setFrameRate(fps.toInt());
+                engine.setPaused(false);
+            } else {
+                std::fprintf(stderr, "WebWallpaper: unsupported playback state\n");
+            }
+        } else if (name == QStringLiteral("power")) {
+            const QJsonValue state = command.value(QStringLiteral("state"));
+            if (!state.isString()) {
+                std::fprintf(stderr, "WebWallpaper: power requires a state\n");
+                return;
+            }
+            const QString powerState = state.toString();
+            if (powerState == QStringLiteral("pause")) {
+                engine.setPaused(true);
+            } else if (powerState == QStringLiteral("run") || powerState == QStringLiteral("throttle")) {
+                const QJsonValue fps = command.value(QStringLiteral("fps"));
+                if (!fps.isUndefined() && !fps.isDouble()) {
+                    std::fprintf(stderr, "WebWallpaper: power fps must be numeric\n");
+                    return;
+                }
+                if (!fps.isUndefined()) engine.setFrameRate(fps.toInt());
+                engine.setPaused(false);
+            } else {
+                std::fprintf(stderr, "WebWallpaper: unsupported power state\n");
+            }
+        }
         else if (name == QStringLiteral("audioSpectrum")) {
             const QJsonArray data = command.value(QStringLiteral("data")).toArray();
             if (data.size() != 128) {

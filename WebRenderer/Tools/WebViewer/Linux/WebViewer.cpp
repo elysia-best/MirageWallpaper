@@ -4,9 +4,18 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QWebEngineSettings>
+#include <QWebEngineUrlScheme>
 #include <QWebEngineView>
 
 int main(int argc, char** argv) {
+    // Keep the viewer on the same resource origin as WebWallpaper so relative
+    // asset resolution exercises the production path during development.
+    QWebEngineUrlScheme wallpaperScheme(QByteArrayLiteral("mirage-wallpaper"));
+    wallpaperScheme.setSyntax(QWebEngineUrlScheme::Syntax::HostAndPort);
+    wallpaperScheme.setFlags(QWebEngineUrlScheme::SecureScheme
+                             | QWebEngineUrlScheme::LocalScheme
+                             | QWebEngineUrlScheme::LocalAccessAllowed);
+    QWebEngineUrlScheme::registerScheme(wallpaperScheme);
     QApplication app(argc, argv);
     QCommandLineParser parser;
     parser.addHelpOption();

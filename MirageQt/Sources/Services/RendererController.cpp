@@ -15,6 +15,7 @@
 #include <QScreen>
 #include <QTextStream>
 #include <QTimer>
+#include <QUuid>
 
 #include <functional>
 
@@ -100,12 +101,6 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         return false;
     }
 
-    if (wallpaper.kind() == WallpaperKind::Web) {
-        if (error) *error = QStringLiteral("TODO: Linux WebRenderer 尚未实现。");
-        emit rendererMessage(error ? *error : QString());
-        return false;
-    }
-
     const QString binary = binaryForKind(wallpaper.kind());
     if (binary.isEmpty()) {
         if (error) *error = QStringLiteral("找不到渲染器二进制");
@@ -166,6 +161,21 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
                                                              // Call 'setlocale(LC_NUMERIC, "C");' in your code.
         break;
     case WallpaperKind::Web:
+        // WebWallpaper resolves preset files in this declared order, so the
+        // preset directory can replace base-project assets without changing
+        // project property paths. The base render directory remains the
+        // positional wallpaper root required by its manifest loader.
+        args << wallpaper.renderDirectory;
+        for (const QString& overlay : wallpaper.assetOverlayDirectories) {
+            args << "--asset-overlay" << overlay;
+        }
+        args << "--fps" << QString::number(options.fps)
+             << "--volume" << number(options.volume)
+             << "--control-stdin";
+        if (options.muted) args << "--muted";
+        if (options.loadFromMemory) args << "--load-from-memory";
+        if (!options.enableSpectrum) args << "--no-spectrum";
+        break;
     case WallpaperKind::Unsupported:
         delete running;
         process->deleteLater();
@@ -209,6 +219,22 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         process->deleteLater();
         if (error) *error = message;
         return false;
+    }
+
+    if (wallpaper.kind() == WallpaperKind::Web) {
+        // QtWebEngine navigation is asynchronous. WebWallpaper retains this
+        // full snapshot until the page installs its Wallpaper Engine listener,
+        // preventing startup properties from being lost before live edits.
+        QJsonObject values;
+        for (auto it = options.userProperties.constBegin();
+             it != options.userProperties.constEnd(); ++it) {
+            values.insert(it.key(), QJsonObject{{"value", propertyWireValue(it.value())}});
+        }
+        sendCommand(running, QJsonObject{
+            {"cmd", "setProperties"},
+            {"generation", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+            {"values", values},
+        });
     }
 
     m_running.insert(screenIndex, running);
@@ -354,6 +380,8 @@ QString RendererController::sceneWallpaperBinary() const {
 QString RendererController::webWallpaperBinary() const {
     return firstExecutable({
         siblingBinary("WebWallpaper"),
+        QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/linux-release/Tools/WebWallpaper/WebWallpaper"),
+        QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/linux-debug/Tools/WebWallpaper/WebWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/linux/Tools/WebWallpaper/WebWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/release/Tools/WebWallpaper/WebWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/debug/Tools/WebWallpaper/WebWallpaper"),

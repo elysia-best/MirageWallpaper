@@ -12,14 +12,15 @@ The source tree mirrors the macOS app:
 
 Dynamic desktop wallpapers are applied through the mirage-display protocol
 (the vendored `MirageLinuxDisplay` library): MirageQt hosts the display broker,
-and the `SceneWallpaper` / `VideoWallpaper` renderer processes export frames to
+and the `SceneWallpaper` / `VideoWallpaper` / `WebWallpaper` renderer processes export frames to
 the desktop environment's display adapter. The consumer adapter is the KDE
 Plasma wallpaper plugin, so applying a live wallpaper requires a Plasma session
-(either X11 or Wayland). MirageQt resolves `SceneWallpaper` and `VideoWallpaper`
+(either X11 or Wayland). MirageQt resolves `SceneWallpaper`, `VideoWallpaper`, and `WebWallpaper`
 beside the application first, then from their repository build directories
 during development.
 
-The Linux web renderer is not implemented yet.
+Web wallpapers require the QtWebEngine runtime and the same Vulkan-capable
+mirage-display/Plasma environment as scene wallpapers.
 
 Build:
 
@@ -30,6 +31,9 @@ commit); no external `MirageLinuxDisplay` checkout is required.
 ```sh
 cmake -S VideoRenderer -B VideoRenderer/build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build VideoRenderer/build/release
+
+cmake -S WebRenderer -B WebRenderer/build/linux-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DWEBRENDERER_BUILD_VIEWER=OFF
+cmake --build WebRenderer/build/linux-release
 
 cmake -S MirageQt -B MirageQt/build -G Ninja
 cmake --build MirageQt/build
