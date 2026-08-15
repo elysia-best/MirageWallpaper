@@ -19,8 +19,11 @@
 int main(int argc, char** argv) {
     // Register before QApplication creates the Chromium profile; the renderer
     // uses this controlled origin for overlay and in-memory wallpaper assets.
+    // HostAndPort schemes require a fixed default port; without it Qt rejects
+    // registration and every wallpaper navigation resolves to a blank page.
     QWebEngineUrlScheme wallpaperScheme(QByteArrayLiteral("mirage-wallpaper"));
     wallpaperScheme.setSyntax(QWebEngineUrlScheme::Syntax::HostAndPort);
+    wallpaperScheme.setDefaultPort(443);
     wallpaperScheme.setFlags(QWebEngineUrlScheme::SecureScheme
                              | QWebEngineUrlScheme::LocalScheme
                              | QWebEngineUrlScheme::LocalAccessAllowed);
@@ -69,6 +72,7 @@ int main(int argc, char** argv) {
     const bool externalSpectrum = parser.isSet(QStringLiteral("external-spectrum"));
     config.enableAudioSpectrum = !parser.isSet(QStringLiteral("no-spectrum")) && !externalSpectrum;
     WebRendererEngine engine(config);
+    engine.view()->setAttribute(Qt::WA_DontShowOnScreen, true);
     engine.view()->resize(1920, 1080);
     ProtocolWebRenderer::Config protocolConfig {
         .socketPath = parser.value(QStringLiteral("display-socket")),
@@ -99,6 +103,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "WebWallpaper: %s\n", qPrintable(protocolError));
         return 3;
     }
+    // Initialize the DMA-BUF producer before activating WebEngine so Qt and the
+    // producer create their Vulkan devices in a fixed order. show() activates
+    // the off-screen backing store without mapping an extra desktop window.
+    engine.view()->show();
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &protocol, &ProtocolWebRenderer::stop);
     engine.openWallpaper(manifest);
     engine.setMuted(parser.isSet(QStringLiteral("muted")));

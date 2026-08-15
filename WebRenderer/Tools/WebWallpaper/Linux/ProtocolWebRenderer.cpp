@@ -75,15 +75,23 @@ public:
         }
         m_running.store(true);
         m_ioThread = std::thread([this] { ioLoop(); });
-        std::unique_lock lock(m_stateMutex);
-        if (!m_stateCv.wait_for(lock, std::chrono::seconds(15), [this] { return m_configVersion != 0; })) {
-            if (error != nullptr) *error = QStringLiteral("display producer did not receive output configuration");
-            return false;
+        {
+            // rebuildPool() snapshots the negotiated configuration under the
+            // same mutex. End the wait lock first so startup cannot deadlock
+            // itself before the initial buffer pool is offered.
+            std::unique_lock lock(m_stateMutex);
+            if (!m_stateCv.wait_for(lock, std::chrono::seconds(15), [this] { return m_configVersion != 0; })) {
+                if (error != nullptr) *error = QStringLiteral("display producer did not receive output configuration");
+                return false;
+            }
         }
         return rebuildPool(error);
     }
 
     void stop() {
+        // stop() is called both from aboutToQuit and Impl destruction. Clear
+        // every Vulkan handle immediately after destruction so the second
+        // call remains a no-op instead of passing a stale fence to Vulkan.
         if (!m_running.exchange(false)) {
             if (m_ioThread.joinable()) m_ioThread.join();
         } else {
@@ -91,19 +99,33 @@ public:
             if (m_producer != nullptr) md_producer_close(m_producer);
         }
         if (m_ioThread.joinable()) m_ioThread.join();
+        if (m_device != VK_NULL_HANDLE) vkDeviceWaitIdle(m_device);
         if (m_exporter != nullptr) {
             md_vk_exporter_free(m_exporter);
             m_exporter = nullptr;
         }
         destroyUpload();
-        if (m_device != VK_NULL_HANDLE) vkDeviceWaitIdle(m_device);
-        if (m_fence != VK_NULL_HANDLE) vkDestroyFence(m_device, m_fence, nullptr);
-        if (m_commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(m_device, m_commandPool, nullptr);
-        if (m_device != VK_NULL_HANDLE) vkDestroyDevice(m_device, nullptr);
-        if (m_instance != VK_NULL_HANDLE) vkDestroyInstance(m_instance, nullptr);
+        if (m_device != VK_NULL_HANDLE) {
+            if (m_fence != VK_NULL_HANDLE) {
+                vkDestroyFence(m_device, m_fence, nullptr);
+                m_fence = VK_NULL_HANDLE;
+            }
+            if (m_commandPool != VK_NULL_HANDLE) {
+                vkDestroyCommandPool(m_device, m_commandPool, nullptr);
+                m_commandPool = VK_NULL_HANDLE;
+            }
+            vkDestroyDevice(m_device, nullptr);
+            m_device = VK_NULL_HANDLE;
+        }
+        if (m_instance != VK_NULL_HANDLE) {
+            vkDestroyInstance(m_instance, nullptr);
+            m_instance = VK_NULL_HANDLE;
+        }
         if (m_drmFd >= 0) ::close(m_drmFd);
-        m_device = VK_NULL_HANDLE;
-        m_instance = VK_NULL_HANDLE;
+        m_drmFd = -1;
+        m_queue = VK_NULL_HANDLE;
+        m_commandBuffer = VK_NULL_HANDLE;
+        m_physicalDevice = VK_NULL_HANDLE;
         std::lock_guard lock(m_producerMutex);
         if (m_producer != nullptr) {
             md_producer_free(m_producer);

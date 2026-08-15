@@ -9,9 +9,12 @@
 
 int main(int argc, char** argv) {
     // Keep the viewer on the same resource origin as WebWallpaper so relative
-    // asset resolution exercises the production path during development.
+    // asset resolution exercises the production path during development. A
+    // fixed port is mandatory for HostAndPort registration and keeps the
+    // viewer on exactly the same valid origin as the production renderer.
     QWebEngineUrlScheme wallpaperScheme(QByteArrayLiteral("mirage-wallpaper"));
     wallpaperScheme.setSyntax(QWebEngineUrlScheme::Syntax::HostAndPort);
+    wallpaperScheme.setDefaultPort(443);
     wallpaperScheme.setFlags(QWebEngineUrlScheme::SecureScheme
                              | QWebEngineUrlScheme::LocalScheme
                              | QWebEngineUrlScheme::LocalAccessAllowed);

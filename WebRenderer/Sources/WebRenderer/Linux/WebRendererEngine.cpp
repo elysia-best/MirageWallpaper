@@ -47,6 +47,10 @@ public:
         const QString relative = QUrl::fromPercentEncoding(job->requestUrl().path().toUtf8())
                                      .section('/', 1);
         const QString path = resolvePath(relative);
+        if (std::getenv("WR_DEBUG") != nullptr) {
+            qInfo("WebRenderer: resource %s -> %s", qPrintable(job->requestUrl().toString()),
+                  path.isEmpty() ? "not found" : qPrintable(path));
+        }
         if (path.isEmpty()) {
             job->fail(QWebEngineUrlRequestJob::UrlNotFound);
             return;
@@ -64,14 +68,19 @@ public:
                 data = file.readAll();
                 m_cache.insert(path, data);
             }
-            auto* buffer = new QBuffer;
+            // QWebEngine consumes replies asynchronously. Parenting the
+            // device to the request keeps it alive for the complete transfer
+            // and lets Qt release it when the request finishes.
+            auto* buffer = new QBuffer(job);
             buffer->setData(data);
             buffer->open(QIODevice::ReadOnly);
             job->reply(mime.name().toLatin1(), buffer);
             return;
         }
 
-        auto* file = new QFile(path);
+        // The request owns the open file for the same asynchronous reply
+        // contract; no other component closes or deletes this device.
+        auto* file = new QFile(path, job);
         if (!file->open(QIODevice::ReadOnly)) {
             delete file;
             job->fail(QWebEngineUrlRequestJob::RequestAborted);
@@ -340,6 +349,10 @@ WebRendererEngine::~WebRendererEngine() {
 }
 
 void WebRendererEngine::openWallpaper(const WRManifest& manifest) {
+    // Capturing a page while Chromium is still creating its compositor floods
+    // the GUI thread with full-frame copies and only produces blank frames.
+    // loadFinished restarts capture after the document is ready to paint.
+    m_captureTimer->stop();
     m_pageLoaded = false;
     m_audioListenerDemand = false;
     reconcileAudioSpectrum();
@@ -419,8 +432,8 @@ void WebRendererEngine::setFrameRate(int fps) {
     const int bounded = qBound(1, fps, 240);
     m_config.frameRate = bounded;
     m_captureTimer->setInterval(1000 / bounded);
-    if (!m_captureTimer->isActive()) m_captureTimer->start();
     if (m_pageLoaded) {
+        if (!m_captureTimer->isActive()) m_captureTimer->start();
         evaluate(QStringLiteral("window.__wr_setFps(%1);").arg(bounded));
     }
 }
