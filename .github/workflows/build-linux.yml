@@ -467,6 +467,13 @@ jobs:
           test -f "$appdir/usr/qml/QtWebEngine/libqtwebenginequickplugin.so"
           test -f "$appdir/usr/qml/QtWebEngine/ControlsDelegates/libqtwebenginequickdelegatesplugin.so"
 
+          # linuxdeploy already leaves libwayland-client and libEGL to the host,
+          # Resolve all three Wayland client libraries from the host as one set.
+          rm "$appdir/usr/lib/libwayland-egl.so.1" \
+            "$appdir/usr/lib/libwayland-cursor.so.0"
+          test ! -e "$appdir/usr/lib/libwayland-egl.so.1"
+          test ! -e "$appdir/usr/lib/libwayland-cursor.so.0"
+
           mkdir -p dist
           package="Mirage-${GITHUB_SHA:0:12}-linux-x86_64.AppImage"
           appimagetool "$appdir" "dist/$package"

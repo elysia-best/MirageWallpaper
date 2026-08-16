@@ -103,12 +103,14 @@ void StatusBar::showMainWindow() {
         return;
     }
 
-    // 窗口关闭后处于 Hidden（autoDestroy: false），部分平台仅调用 show()
-    // 不足以恢复，需先显式切回 Windowed 再显示并激活。
+    // Wayland 的 surface 创建/销毁是异步的。每种状态只执行一次对应的显示
+    // 操作，避免 setVisibility(Windowed) 后紧接 show() 造成两次 expose，令
+    // Qt Quick 渲染线程继续使用关闭前已经失效的 EGL/Vulkan surface。
     const QWindow::Visibility visibility = window->visibility();
-    if (visibility == QWindow::Hidden || visibility == QWindow::Minimized)
-        window->setVisibility(QWindow::Windowed);
-    window->show();
+    if (visibility == QWindow::Minimized)
+        window->showNormal();
+    else if (visibility == QWindow::Hidden)
+        window->show();
     window->raise();
     window->requestActivate();
 }

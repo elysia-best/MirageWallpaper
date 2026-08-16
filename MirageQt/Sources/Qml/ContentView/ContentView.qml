@@ -29,6 +29,16 @@ FluWindow {
     // The status bar restores this root window after it is closed. FluentUI's
     // default destroys the window on close, leaving the tray with no target.
     autoDestroy: false
+    // Wayland destroys the native surface asynchronously when a window is
+    // hidden. Reject the close first and defer hiding until close-event
+    // delivery has finished, so Qt Quick cannot expose the window again with
+    // the stale EGL/Vulkan surface retained by the closing path.
+    closeListener: function(event) {
+        event.accepted = false;
+        Qt.callLater(function() {
+            window.hide();
+        });
+    }
     fitsAppBarWindows: true
     appBar: FluAppBar {
         id: appBar
