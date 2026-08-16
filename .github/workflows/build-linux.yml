@@ -15,322 +15,127 @@ jobs:
   build:
     name: Build Linux AppImage
     runs-on: ubuntu-24.04
+    container:
+      image: debian:13
     timeout-minutes: 180
     env:
-      CC: clang-21
-      CXX: clang++-21
+      CC: clang-22
+      CXX: clang++-22
       DEBIAN_FRONTEND: noninteractive
 
     steps:
+      - name: Install Debian 13 build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Debian 13 supplies Qt 6.8, FFmpeg 7, mpv, Vulkan, and all renderer
+          # libraries. Only the compiler and CMake are intentionally sourced
+          # outside the base suite: Clang comes from LLVM's Debian repository,
+          # while CMake comes from Debian trixie-backports.
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            git \
+            gnupg \
+            nodejs \
+            xz-utils
+
+          install -d -m 0755 /etc/apt/keyrings
+          curl --fail --location --silent --show-error \
+            https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | gpg --dearmor --output /etc/apt/keyrings/llvm.gpg
+          printf '%s\n' \
+            'deb [signed-by=/etc/apt/keyrings/llvm.gpg] https://apt.llvm.org/trixie/ llvm-toolchain-trixie-22 main' \
+            > /etc/apt/sources.list.d/llvm.list
+          printf '%s\n' \
+            'deb https://deb.debian.org/debian trixie-backports main' \
+            > /etc/apt/sources.list.d/trixie-backports.list
+
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            clang-22 \
+            desktop-file-utils \
+            file \
+            glslang-tools \
+            lld-22 \
+            libasound2-dev \
+            libass-dev \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libdbus-1-dev \
+            libdrm-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libgssapi-krb5-2 \
+            libglfw3-dev \
+            libglvnd-dev \
+            libicu76 \
+            liblz4-dev \
+            libmpv-dev \
+            libpipewire-0.3-dev \
+            libplacebo-dev \
+            libpulse-dev \
+            libssl3t64 \
+            libswresample-dev \
+            libswscale-dev \
+            libvulkan-dev \
+            libx11-dev \
+            libxkbcommon-dev \
+            ninja-build \
+            patchelf \
+            pkg-config \
+            qml6-module-qt-labs-qmlmodels \
+            qml6-module-qt5compat-graphicaleffects \
+            qml6-module-qtquick \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-dialogs \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-shapes \
+            qml6-module-qtquick-templates \
+            qml6-module-qtquick-window \
+            qml6-module-qtwebengine \
+            qml6-module-qtwebengine-controlsdelegates \
+            qt6-5compat-dev \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-image-formats-plugins \
+            qt6-positioning-dev \
+            qt6-serialport-dev \
+            qt6-shadertools-dev \
+            qt6-svg-dev \
+            qt6-wayland \
+            qt6-wayland-dev \
+            qt6-webchannel-dev \
+            qt6-webengine-dev \
+            qt6-webengine-dev-tools
+          apt-get install -y --no-install-recommends \
+            -t trixie-backports \
+            cmake
+
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - name: Set up .NET
+      - name: Set up .NET 10
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
           cache: true
           cache-dependency-path: SteamService/packages.lock.json
 
-      - name: Install Linux dependencies
+      - name: Build renderers and SteamService
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            desktop-file-utils \
-            build-essential \
-            file \
-            glslang-tools \
-            libasound2-dev \
-            libass-dev \
-            libdbus-1-dev \
-            libdrm-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libglfw3-dev \
-            libglvnd-dev \
-            liblz4-dev \
-            libpipewire-0.3-dev \
-            libplacebo-dev \
-            libpulse-dev \
-            libsdl2-dev \
-            libvulkan-dev \
-            libx11-dev \
-            nasm \
-            ninja-build \
-            patchelf \
-            pkg-config
-
-      - name: Install meson
-        shell: bash
-        run: |
-          set -euo pipefail
-          # mpv 0.41 的 meson.build 要求 meson >= 1.3.0；ubuntu-24.04 的 apt
-          # meson 是 1.3.2（22.04 只有 0.61 才需要从 pip 装），ninja 由依赖
-          # 关系自动带上。
-          sudo apt-get install -y --no-install-recommends meson
-          version="$(meson --version)"
-          test "$(printf '%s\n' '1.3' "$version" | sort -V | head -n1)" = "1.3"
-
-      - name: Install Vulkan SDK 1.4.357.1
-        shell: bash
-        run: |
-          set -euo pipefail
-          # mpv 0.41 的 -Dvulkan=enabled 与 SceneRenderer 需要新版 Vulkan 头
-          # 文件（含 VK_KHR_surface_maintenance_1 等，v1.4.321+ 才有），
-          # Ubuntu 24.04 的 apt libvulkan-dev 头文件（1.3.275）不含，而
-          # LunarG 官方 SDK 1.4.357.1 完整提供头文件、vulkan loader、
-          # vulkan.pc 与 registry。用官方 tarball 安装，只使用 x86_64
-          # 编译组件，不装验证层/工具等。
-          version="1.4.357.1"
-          archive="$RUNNER_TEMP/vulkansdk-${version}.tar.xz"
-          # tarball 顶层目录是 ${version}/（无 vulkansdk/ 前缀）。
-          sdk_root="$RUNNER_TEMP/${version}/x86_64"
-          curl --fail --location --retry 3 --silent --show-error \
-            "https://sdk.lunarg.com/sdk/download/${version}/linux/vulkansdk-linux-x86_64-${version}.tar.xz" \
-            -o "$archive"
-          printf '%s  %s\n' \
-            4b41e3b30e8aedaa5dac7c136561ab463eb316a25a54e2c6245f2c299ea1fb85 \
-            "$archive" | sha256sum -c -
-          tar -xJf "$archive" -C "$RUNNER_TEMP"
-
-          test -f "$sdk_root/include/vulkan/vulkan_core.h"
-          test -f "$sdk_root/lib/VulkanLoader/lib/libvulkan.so.1"
-          # mpv 的 -Dvulkan=enabled 需要的 KHR 符号必须存在（1.4.321+ 才有）。
-          grep -q 'VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME' \
-            "$sdk_root/include/vulkan/vulkan_core.h"
-
-          # SDK 的 vulkan.pc 位于 loader 的 pkgconfig 目录（相对路径指向
-          # SDK 根）；加入 PKG_CONFIG_PATH 供 mpv（dependency('vulkan')
-          # >= 1.3.238）与版本断言使用。
-          export PKG_CONFIG_PATH="$sdk_root/lib/VulkanLoader/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          test "$(pkg-config --modversion vulkan)" = "1.4.357"
-          pkg-config --atleast-version=1.3.277 vulkan
-
-          {
-            printf 'VULKAN_SDK=%s\n' "$sdk_root"
-            printf 'PKG_CONFIG_PATH=%s\n' "$PKG_CONFIG_PATH"
-          } >> "$GITHUB_ENV"
-
-      - name: Build FFmpeg 7.1.1
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 在 Vulkan SDK 步骤之后运行：--enable-vulkan 需要 vulkan 头文件，
-          # CPATH 指向官方 SDK 1.4.357.1 的头（apt libvulkan-dev 只有 1.3.275）。
-          export CPATH="$VULKAN_SDK/include${CPATH:+:$CPATH}"
-          version="7.1.1"
-          prefix="$RUNNER_TEMP/ffmpeg"
-          archive="$RUNNER_TEMP/ffmpeg-${version}.tar.xz"
-          source_dir="$RUNNER_TEMP/ffmpeg-${version}"
-
-          curl --fail --location --retry 3 --silent --show-error \
-            "https://ffmpeg.org/releases/ffmpeg-${version}.tar.xz" \
-            -o "$archive"
-          printf '%s  %s\n' \
-            733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1 \
-            "$archive" | sha256sum -c -
-          tar -xJf "$archive" -C "$RUNNER_TEMP"
-
-          cd "$source_dir"
-          CC=gcc CXX=g++ ./configure \
-            --prefix="$prefix" \
-            --disable-programs \
-            --disable-doc \
-            --disable-debug \
-            --disable-static \
-            --enable-shared \
-            --enable-pic \
-            --disable-autodetect \
-            --enable-vulkan \
-            --enable-libdrm
-          make -j"$(nproc)"
-          make install
-
-          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          pkg-config --modversion libavformat libavcodec libavutil libswscale libswresample
-          test -f "$prefix/lib/pkgconfig/libavutil.pc"
-
-          {
-            printf 'FFMPEG_PREFIX=%s\n' "$prefix"
-            printf 'PKG_CONFIG_PATH=%s\n' "$PKG_CONFIG_PATH"
-            printf 'LD_LIBRARY_PATH=%s/lib:%s\n' "$prefix" "${LD_LIBRARY_PATH:-}"
-          } >> "$GITHUB_ENV"
-
-      - name: Build mpv 0.41.0
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 此时 clang-21 未安装，显式用 gcc 编译。
-          export CC=gcc CXX=g++
-          # 优先引用官方 SDK 头文件（apt 的 1.3.275 头文件缺 KHR 符号）。
-          export CPATH="$VULKAN_SDK/include${CPATH:+:$CPATH}"
-          # libplacebo 由 apt libplacebo-dev 6.338.2 提供（满足 mpv 0.41 的
-          # >=6.338.2，且 pl_has_vulkan=1）；FFmpeg 为自编译。24.04 的 apt
-          # libmpv 是 0.37.0（libmpv API 2.1），虽满足 mpv>=2.0 但版本旧，
-          # 因此从源码构建与本地开发环境一致的 mpv 0.41.0。要点：
-          #   -Dlibmpv=true 时 mpv.pc 的 Version 是 libmpv API 版本 2.5.0；
-          #   -Dcplayer=false 跳过 mpv 可执行文件，只产 libmpv 共享库；
-          #   VideoWallpaper 用 MPV_RENDER_API_TYPE_OPENGL（EGL surfaceless），
-          #   需要 gl/egl；hwdec 只可能走 vulkan（自编译 FFmpeg 带
-          #   --enable-vulkan，无 vaapi/nvdec），故 -Dvulkan=enabled；
-          #   其余可裁剪项全部禁用，避免 apt 环境误探测到非预期依赖。
-          version="0.41.0"
-          prefix="$RUNNER_TEMP/mpv"
-          archive="$RUNNER_TEMP/mpv-${version}.tar.gz"
-          source_dir="$RUNNER_TEMP/mpv-${version}"
-
-          curl --fail --location --retry 3 --silent --show-error \
-            "https://github.com/mpv-player/mpv/archive/refs/tags/v${version}.tar.gz" \
-            -o "$archive"
-          printf '%s  %s\n' \
-            ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209 \
-            "$archive" | sha256sum -c -
-          tar -xzf "$archive" -C "$RUNNER_TEMP"
-
-          export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-          export LD_LIBRARY_PATH="$FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-          cd "$source_dir"
-          # Debian/Ubuntu 的 apt meson 默认 libdir 是 lib/<multiarch>
-          # （如 lib/x86_64-linux-gnu），显式 --libdir=lib 保证 mpv.pc 与
-          # libmpv.so 落在 $prefix/lib 下，与后续 PKG_CONFIG_PATH/打包路径一致。
-          meson setup build \
-            --prefix="$prefix" \
-            --libdir=lib \
-            -Dlibmpv=true \
-            -Dcplayer=false \
-            -Dgl=enabled \
-            -Degl=enabled \
-            -Dvulkan=enabled \
-            -Dpulse=enabled \
-            -Dpipewire=enabled \
-            -Dalsa=enabled \
-            -Dlua=disabled \
-            -Djavascript=disabled \
-            -Dlibarchive=disabled \
-            -Dlibbluray=disabled \
-            -Ddvdnav=disabled \
-            -Dcdda=disabled \
-            -Ddvbin=disabled \
-            -Dzimg=disabled \
-            -Dlcms2=disabled \
-            -Drubberband=disabled \
-            -Duchardet=disabled \
-            -Dvapoursynth=disabled \
-            -Dwayland=disabled \
-            -Dx11=disabled \
-            -Ddrm=disabled \
-            -Dvaapi=disabled \
-            -Dvdpau=disabled \
-            -Dcuda-hwaccel=disabled \
-            -Dcuda-interop=disabled \
-            -Djack=disabled \
-            -Dopenal=disabled \
-            -Doss-audio=disabled \
-            -Dsndio=disabled \
-            -Dsdl2-audio=disabled \
-            -Dsdl2-video=disabled \
-            -Dshaderc=disabled \
-            -Dspirv-cross=disabled \
-            -Dcaca=disabled \
-            -Dsixel=disabled \
-            -Dxv=disabled \
-            -Dgbm=disabled \
-            -Degl-wayland=disabled \
-            -Degl-x11=disabled \
-            -Degl-drm=disabled \
-            -Dx11-clipboard=disabled \
-            -Djpeg=disabled \
-            -Dlibavdevice=disabled
-          meson compile -C build -j"$(nproc)"
-          ninja -C build install
-
-          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig:$PKG_CONFIG_PATH"
-          export LD_LIBRARY_PATH="$prefix/lib:$LD_LIBRARY_PATH"
-          test "$(pkg-config --modversion mpv)" = "2.5.0"
-          pkg-config --atleast-version=2.0 mpv
-          test -f "$prefix/lib/libmpv.so.2"
-          test -f "$prefix/include/mpv/render_gl.h"
-
-          {
-            printf 'MPV_PREFIX=%s\n' "$prefix"
-            printf 'PKG_CONFIG_PATH=%s\n' "$PKG_CONFIG_PATH"
-            printf 'LD_LIBRARY_PATH=%s\n' "$LD_LIBRARY_PATH"
-          } >> "$GITHUB_ENV"
-
-      - name: Set up CMake 4.3.4
-        uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
-        with:
-          cmake-version: 4.3.4
-
-      - name: Install Qt 6.8
-        uses: jurplel/install-qt-action@v4
-        with:
-          aqtversion: '==3.3.*'
-          version: '6.8.3'
-          host: 'linux'
-          target: 'desktop'
-          arch: 'linux_gcc_64'
-          # FluentUI imports Qt5Compat.GraphicalEffects; Positioning's NMEA
-          # plugin links Qt6SerialPort. Qt's SDK exposes the Wayland client
-          # runtime under the qtwaylandcompositor package group.
-          modules: 'qt5compat qtpositioning qtserialport qtshadertools qtwaylandcompositor qtwebchannel qtwebengine'
-      
-      - name: Set up Clang 21
-        uses: egor-tensin/setup-clang@23bc15cd4207e45f1566447deb48f4ff3ef932cb # v2
-        with:
-          version: 21
-          platform: x64
-          # v2 has historically created the generic links itself; create the
-          # links below explicitly so the CMake presets always select Clang 21.
-          cc: 0
-
-      - name: Select Clang 21
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get install -y --no-install-recommends clang-21
-          command -v clang-21
-          command -v clang++-21
-          sudo ln -sfn "$(command -v clang-21)" /usr/local/bin/clang
-          sudo ln -sfn "$(command -v clang++-21)" /usr/local/bin/clang++
-          sudo ln -sfn "$(command -v clang-21)" /usr/local/bin/cc
-          sudo ln -sfn "$(command -v clang++-21)" /usr/local/bin/c++
-          clang --version
-          clang++ --version
-
-      - name: Build Linux renderers and SteamService
-        shell: bash
-        run: |
-          set -euo pipefail
-          # install-qt-action 会覆盖 GITHUB_ENV 里的 PKG_CONFIG_PATH（只留
-          # Python/Qt 路径），这里显式重建：自编译的 mpv/FFmpeg + 官方 SDK
-          # 的 vulkan.pc 都在自定义前缀下，必须手动加回。
-          export PKG_CONFIG_PATH="$MPV_PREFIX/lib/pkgconfig:$FFMPEG_PREFIX/lib/pkgconfig:$VULKAN_SDK/lib/VulkanLoader/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-          export LD_LIBRARY_PATH="$MPV_PREFIX/lib:$FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          ffmpeg_pc_prefix="$(pkg-config --variable=prefix libavformat)"
-          echo "libavformat pkg-config prefix: '${ffmpeg_pc_prefix:-<not-found>}' (expect '${FFMPEG_PREFIX}')"
-          test "$ffmpeg_pc_prefix" = "$FFMPEG_PREFIX"
-          pkg-config --atleast-version=61 libavformat
-          pkg-config --atleast-version=2.0 mpv
-          mpv_pc_version="$(pkg-config --modversion mpv)"
-          echo "mpv pkg-config version: '${mpv_pc_version:-<not-found>}' (expect '2.5.0')"
-          test "$mpv_pc_version" = "2.5.0"
-          vulkan_pc_version="$(pkg-config --modversion vulkan)"
-          echo "vulkan pkg-config version: '${vulkan_pc_version:-<not-found>}' (expect '1.4.357')"
-          pkg-config --atleast-version=1.3.277 vulkan
-          pkg-config --modversion libavformat libavcodec libavutil libswscale libswresample
           JOBS="$(nproc)" ./scripts/build_all_linux.sh renderers
-          # The Qt client launches the bundled dotnet host at this fixed layout;
-          # retain app, runtime, and license files together rather than publishing
-          # only the service DLL.
           ./scripts/build_steam_service_linux.sh
 
-      - name: Build and install MirageQt
+      - name: Build MirageQt
         shell: bash
         run: |
           set -euo pipefail
@@ -338,8 +143,10 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DCMAKE_C_COMPILER="$CC" \
-            -DCMAKE_CXX_COMPILER="$CXX"
+            -DCMAKE_CXX_COMPILER="$CXX" \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           cmake --build MirageQt/build/release --parallel "$(nproc)"
+          test -x MirageQt/build/release/bin/MirageQt
 
       - name: Stage AppDir
         shell: bash
@@ -358,42 +165,31 @@ jobs:
           install -Dm755 \
             WebRenderer/build/linux-release/Tools/WebWallpaper/WebWallpaper \
             "$appdir/usr/bin/WebWallpaper"
-          # RendererController resolves WebWallpaper next to MirageQt. SteamServiceManager
-          # resolves the dotnet host below SteamService/linux-x64, so preserve the
-          # complete bundle produced by build_steam_service_linux.sh at that path.
-          install -d "$appdir/usr/bin/SteamService"
-          cp -a SteamService/build/linux-x64 "$appdir/usr/bin/SteamService/linux-x64"
-          cp -a "$FFMPEG_PREFIX"/lib/libav*.so* "$appdir/usr/bin/"
-          cp -a "$FFMPEG_PREFIX"/lib/libsw*.so* "$appdir/usr/bin/"
-          # libmpv（自编译）及其硬依赖 libplacebo、libass（apt 系统库）随
-          # 渲染器一起打包进 AppDir/usr/bin：VideoWallpaper 的 RUNPATH 会被
-          # patchelf 改为 $ORIGIN，ld 从同一目录解析 libmpv 及其 DT_NEEDED。
-          cp -a "$MPV_PREFIX"/lib/libmpv.so* "$appdir/usr/bin/"
-          cp -a /usr/lib/x86_64-linux-gnu/libplacebo.so* "$appdir/usr/bin/"
-          cp -a /usr/lib/x86_64-linux-gnu/libass.so* "$appdir/usr/bin/"
-          cp -a assets "$appdir/usr/bin/assets"
 
+          # These are the application-owned files. linuxdeploy scans their
+          # DT_NEEDED entries and deploys Debian's shared runtime libraries;
+          # no separately built FFmpeg/mpv/Vulkan prefix is copied here.
+          cp -a assets "$appdir/usr/bin/assets"
           cp -a SceneRenderer/build/linux-clang-release/MirageLinuxDisplay/src/libmirage_display.so* \
             "$appdir/usr/bin/"
           patchelf --set-rpath '$ORIGIN' \
             "$appdir/usr/bin/SceneWallpaper" \
-            "$appdir/usr/bin/VideoWallpaper"
+            "$appdir/usr/bin/VideoWallpaper" \
+            "$appdir/usr/bin/WebWallpaper"
+
+          install -d "$appdir/usr/bin/SteamService"
+          cp -a SteamService/build/linux-x64 \
+            "$appdir/usr/bin/SteamService/linux-x64"
 
           desktop-file-validate "$appdir/usr/share/applications/mirageqt.desktop"
           test -x "$appdir/usr/bin/MirageQt"
           test -x "$appdir/usr/bin/SceneWallpaper"
           test -x "$appdir/usr/bin/VideoWallpaper"
           test -x "$appdir/usr/bin/WebWallpaper"
-          service="$appdir/usr/bin/SteamService/linux-x64"
-          test -x "$service/runtime/dotnet"
-          test -f "$service/app/MirageSteamService.dll"
-          test -f "$service/app/SteamKit2.dll"
-          test -f "$service/Licenses/LGPL-2.1.txt"
-          test -f "$service/Licenses/SteamKit2-NOTICE.txt"
+          test -x "$appdir/usr/bin/SteamService/linux-x64/runtime/dotnet"
+          test -f "$appdir/usr/bin/SteamService/linux-x64/app/MirageSteamService.dll"
           test -d "$appdir/usr/bin/assets"
-          test -f "$appdir/usr/bin/libmpv.so.2"
-          test -f "$appdir/usr/bin/libplacebo.so.338"
-          test -f "$appdir/usr/bin/libass.so.9"
+
       - name: Download AppImage tooling
         shell: bash
         run: |
@@ -424,25 +220,17 @@ jobs:
         shell: bash
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-          # linuxdeploy uses this deployer name for the client-side shell and
-          # graphics integration plugins; no compositor library is deployed.
           EXTRA_QT_MODULES: "core5compat;shadertools;waylandcompositor"
           EXTRA_PLATFORM_PLUGINS: "libqwayland-egl.so;libqwayland-generic.so"
-          # MirageQt embeds its QML in a resource, so linuxdeploy cannot discover
-          # QtWebEngine from the executable alone. Scan the authoritative QML
-          # sources to deploy the QtWebEngine and ControlsDelegates plugins.
           QML_SOURCES_PATHS: "${{ github.workspace }}/MirageQt/Sources/Qml"
         run: |
           set -euo pipefail
           appdir="$RUNNER_TEMP/Mirage.AppDir"
           export PATH="$RUNNER_TEMP:$PATH"
-          qmake_bin="$(command -v qmake6 || command -v qmake)"
-          export QMAKE="$qmake_bin"
+          export QMAKE="$(command -v qmake6)"
 
           linuxdeploy \
             --appdir "$appdir" \
-            --library "$QT_ROOT_DIR/lib/libQt6Core5Compat.so.6" \
-            --library "$QT_ROOT_DIR/lib/libQt6ShaderTools.so.6" \
             --executable "$appdir/usr/bin/MirageQt" \
             --executable "$appdir/usr/bin/SceneWallpaper" \
             --executable "$appdir/usr/bin/VideoWallpaper" \
@@ -451,28 +239,16 @@ jobs:
             --icon-file "$appdir/usr/share/icons/hicolor/512x512/apps/mirageqt.png" \
             --plugin qt
 
-          test -f "$appdir/usr/lib/libQt6WaylandClient.so.6"
-          test -f "$appdir/usr/lib/libQt6WaylandEglClientHwIntegration.so.6"
-          test -f "$appdir/usr/lib/libQt6Core5Compat.so.6"
-          test -f "$appdir/usr/lib/libQt6ShaderTools.so.6"
-          test -f "$appdir/usr/plugins/platforms/libqwayland-generic.so"
-          test -f "$appdir/usr/plugins/platforms/libqwayland-egl.so"
-          test -f "$appdir/usr/plugins/wayland-shell-integration/libxdg-shell.so"
-          test -f "$appdir/usr/plugins/wayland-shell-integration/libwl-shell-plugin.so"
-          test -f "$appdir/usr/plugins/wayland-shell-integration/libivi-shell.so"
-          test -f "$appdir/usr/plugins/wayland-shell-integration/libqt-shell.so"
-          test -f "$appdir/usr/qml/Qt5Compat/GraphicalEffects/libqtgraphicaleffectsplugin.so"
-          # RichHTMLText imports QtWebEngine directly, and WebEngineView imports
-          # its controls delegates. Both plugins are required at QML load time.
-          test -f "$appdir/usr/qml/QtWebEngine/libqtwebenginequickplugin.so"
-          test -f "$appdir/usr/qml/QtWebEngine/ControlsDelegates/libqtwebenginequickdelegatesplugin.so"
-
-          # linuxdeploy already leaves libwayland-client and libEGL to the host,
-          # Resolve all three Wayland client libraries from the host as one set.
-          rm "$appdir/usr/lib/libwayland-egl.so.1" \
-            "$appdir/usr/lib/libwayland-cursor.so.0"
-          test ! -e "$appdir/usr/lib/libwayland-egl.so.1"
-          test ! -e "$appdir/usr/lib/libwayland-cursor.so.0"
+          # Wayland/EGL/Vulkan loaders are host-owned graphics ABI. Do not mix
+          # Debian build-machine loaders with the target machine's NVIDIA/Mesa
+          # ICDs; the renderer contract already requires a host Vulkan driver.
+          rm -f "$appdir/usr/lib"/libwayland-egl.so.1* \
+            "$appdir/usr/lib"/libwayland-cursor.so.0* \
+            "$appdir/usr/lib"/libvulkan.so.1*
+          test -z "$(find "$appdir/usr/lib" -maxdepth 1 \
+            \( -name 'libwayland-egl.so.1*' -o \
+               -name 'libwayland-cursor.so.0*' -o \
+               -name 'libvulkan.so.1*' \) -print -quit)"
 
           mkdir -p dist
           package="Mirage-${GITHUB_SHA:0:12}-linux-x86_64.AppImage"
