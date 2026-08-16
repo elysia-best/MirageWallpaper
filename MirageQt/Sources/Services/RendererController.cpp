@@ -408,6 +408,7 @@ QString RendererController::binaryForKind(WallpaperKind kind) const {
 
 QString RendererController::sceneWallpaperBinary() const {
     return firstExecutable({
+        QDir::cleanPath(QStringLiteral(MIRAGEQT_RUNTIME_DIR) + "/SceneWallpaper"),
         siblingBinary("SceneWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/SceneRenderer/build/linux-clang-release/Tools/SceneWallpaper/SceneWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/SceneRenderer/build/release/Tools/SceneWallpaper/SceneWallpaper"),
@@ -417,6 +418,7 @@ QString RendererController::sceneWallpaperBinary() const {
 
 QString RendererController::webWallpaperBinary() const {
     return firstExecutable({
+        QDir::cleanPath(QStringLiteral(MIRAGEQT_RUNTIME_DIR) + "/WebWallpaper"),
         siblingBinary("WebWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/linux-release/Tools/WebWallpaper/WebWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/WebRenderer/build/linux-debug/Tools/WebWallpaper/WebWallpaper"),
@@ -428,6 +430,7 @@ QString RendererController::webWallpaperBinary() const {
 
 QString RendererController::videoWallpaperBinary() const {
     return firstExecutable({
+        QDir::cleanPath(QStringLiteral(MIRAGEQT_RUNTIME_DIR) + "/VideoWallpaper"),
         siblingBinary("VideoWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/VideoRenderer/build/linux-clang-release/Tools/VideoWallpaper/VideoWallpaper"),
         QDir::cleanPath(Paths::repoRoot() + "/VideoRenderer/build/release/Tools/VideoWallpaper/VideoWallpaper"),

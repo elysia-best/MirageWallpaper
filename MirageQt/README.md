@@ -38,3 +38,15 @@ cmake --build WebRenderer/build/linux-release
 cmake -S MirageQt -B MirageQt/build -G Ninja
 cmake --build MirageQt/build
 ```
+
+Native Linux packages are built with the repository packaging metadata:
+
+```sh
+dpkg-buildpackage -us -uc -b       # Debian 13 / Ubuntu 26.04, amd64
+bash RPMBUILD/build.sh             # Fedora 44+, x86_64
+```
+
+Both package formats install `MirageQt` in `/usr/bin`, private renderer and
+SteamService files in `/usr/libexec/miragewallpaper`, and shared wallpaper
+assets in `/usr/share/miragewallpaper`. The desktop session still needs a
+compatible mirage-display adapter to consume renderer frames.

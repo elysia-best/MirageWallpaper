@@ -57,6 +57,11 @@ QString Paths::workshopCacheDir() {
 }
 
 QString Paths::assetsDir() {
+    // Packaged builds install renderer assets under the FHS data directory;
+    // this fixed path is compiled from CMake so Debian and RPM layouts agree.
+    const QString installedAssets = QDir::cleanPath(QStringLiteral(MIRAGEQT_DATA_DIR) + "/assets");
+    if (QFileInfo::exists(installedAssets)) return installedAssets;
+
     const QString appAssets = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/assets");
     if (QFileInfo::exists(appAssets)) return appAssets;
 

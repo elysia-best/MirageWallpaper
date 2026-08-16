@@ -652,15 +652,19 @@ void SteamServiceManager::cancelDownload(const QString& taskId) {
 
 // 定位服务二进制，优先级与上游 serviceLaunchConfiguration 一致：
 //   1. 环境变量 MIRAGE_STEAM_SERVICE_PATH（直接可执行文件）
-//   2. 应用目录 SteamService/linux-x64/runtime/dotnet（打包布局）
-//   3. 仓库内 SteamService/build/linux-x64/runtime/dotnet（开发布局）
+//   2. FHS 私有目录 SteamService/linux-x64/runtime/dotnet（Debian/RPM）
+//   3. 应用目录 SteamService/linux-x64/runtime/dotnet（旧自包含布局）
+//   4. 仓库内 SteamService/build/linux-x64/runtime/dotnet（开发布局）
 QString SteamServiceManager::locateServiceExecutable() const {
     const QByteArray env = qgetenv("MIRAGE_STEAM_SERVICE_PATH");
     if (! env.isEmpty() && QFileInfo::exists(QString::fromLocal8Bit(env))) {
         return QString::fromLocal8Bit(env);
     }
     const QStringList candidateRoots = {
-        // 打包/安装布局：<app>/SteamService/linux-x64/runtime/dotnet
+        // Debian/RPM 安装布局：/usr/libexec/miragewallpaper/SteamService/...
+        QDir(QStringLiteral(MIRAGEQT_RUNTIME_DIR))
+            .filePath(QStringLiteral("SteamService/linux-x64/runtime/dotnet")),
+        // 旧自包含布局：<app>/SteamService/linux-x64/runtime/dotnet
         QDir(QCoreApplication::applicationDirPath())
             .filePath(QStringLiteral("SteamService/linux-x64/runtime/dotnet")),
         // 开发布局：<repo>/SteamService/build/linux-x64/runtime/dotnet

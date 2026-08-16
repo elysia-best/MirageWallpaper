@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(GNUInstallDirs)
+
 find_package(Qt6 6.8 REQUIRED COMPONENTS
     Core
     Gui
@@ -40,6 +42,13 @@ qt_standard_project_setup()
 set(CMAKE_AUTORCC ON)
 
 set(MIRAGEQT_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
+# Package builds place private renderer executables and shared application data
+# outside /usr/bin. These absolute paths are part of the installed package
+# contract; development builds still retain the repository lookup paths below.
+set(MIRAGEQT_RUNTIME_DIR "${CMAKE_INSTALL_FULL_LIBEXECDIR}/miragewallpaper"
+    CACHE PATH "Installed MirageWallpaper private runtime directory")
+set(MIRAGEQT_DATA_DIR "${CMAKE_INSTALL_FULL_DATADIR}/miragewallpaper"
+    CACHE PATH "Installed MirageWallpaper shared data directory")
 set(MIRAGE_STEAM_WEB_API_KEY "$ENV{MIRAGE_STEAM_WEB_API_KEY}" CACHE STRING
     "Optional built-in Steam Web API key (32 hexadecimal characters)")
 if(MIRAGE_STEAM_WEB_API_KEY AND NOT MIRAGE_STEAM_WEB_API_KEY MATCHES "^[A-Fa-f0-9]{32}$")
@@ -101,6 +110,8 @@ target_include_directories(MirageQtCore PUBLIC Sources)
 target_include_directories(MirageQtCore PRIVATE "${MIRAGE_DISPLAY_SOURCE_DIR}/include")
 target_compile_definitions(MirageQtCore PUBLIC
     MIRAGEQT_REPO_ROOT="${MIRAGEQT_REPO_ROOT}"
+    MIRAGEQT_RUNTIME_DIR="${MIRAGEQT_RUNTIME_DIR}"
+    MIRAGEQT_DATA_DIR="${MIRAGEQT_DATA_DIR}"
     MIRAGE_STEAM_WEB_API_KEY="${MIRAGE_STEAM_WEB_API_KEY}")
 target_link_libraries(MirageQtCore PUBLIC
     Qt6::Core
@@ -168,15 +179,15 @@ set_target_properties(MirageQt PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 install(TARGETS MirageQt
-    RUNTIME DESTINATION bin)
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # --- Desktop integration ---
-# Desktop environments and AppImage tooling resolve installed applications
-# through PATH; an absolute /usr path would point outside an AppDir.
+# Desktop environments resolve the installed launcher through PATH, so the
+# desktop entry intentionally names the binary instead of an absolute path.
 set(MIRAGEQT_EXECUTABLE "MirageQt")
 configure_file(Resources/mirageqt.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/mirageqt.desktop @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/mirageqt.desktop
-        DESTINATION share/applications)
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES Resources/mirage.png
-        DESTINATION share/icons/hicolor/512x512/apps
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/512x512/apps
         RENAME mirageqt.png)

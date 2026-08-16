@@ -5,5 +5,5 @@ Exec=@MIRAGEQT_EXECUTABLE@
 Icon=mirageqt
 StartupWMClass=MirageQt
 Terminal=false
-Categories=Utility;DesktopSettings;
+Categories=Settings;DesktopSettings;
 StartupNotify=false
