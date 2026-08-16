@@ -43,6 +43,11 @@ struct RenderInitInfo {
     bool offscreen { false };
 
     std::span<const std::uint8_t> uuid;
+    // Mirage protocol v1.1 supplies the consumer GPU before Vulkan starts.
+    // The offscreen DMA-BUF exporter must select this exact DRM render node.
+    uint32_t target_drm_render_major { 0 };
+    uint32_t target_drm_render_minor { 0 };
+    uint32_t target_gpu_flags { 0 };
     TexTiling                     offscreen_tiling { TexTiling::OPTIMAL };
     VulkanSurfaceInfo             surface_info;
 

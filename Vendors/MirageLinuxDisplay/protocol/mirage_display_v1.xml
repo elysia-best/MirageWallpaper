@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<protocol name="mirage-display" major="1" minor="0"
+<protocol name="mirage-display" major="1" minor="1"
           transport="unix-seqpacket" byte-order="little-endian">
   <roles>
     <role name="display-consumer" value="1"/>
@@ -13,6 +13,7 @@
     <feature name="pointer-axis" bit="3"/>
     <feature name="window-state" bit="4"/>
     <feature name="color-metadata" bit="5" since-minor="1"/>
+    <feature name="target-gpu-binding" bit="6" since-minor="1"/>
   </features>
 
   <enums>
@@ -180,6 +181,10 @@
       <arg name="clear_r" type="f32"/><arg name="clear_g" type="f32"/>
       <arg name="clear_b" type="f32"/><arg name="clear_a" type="f32"/>
     </message>
+    <message name="producer-gpu-bound" opcode="0x0206" direction="producer-to-broker">
+      <arg name="drm_render_major" type="u32"/><arg name="drm_render_minor" type="u32"/>
+      <arg name="device_uuid" type="bytes16"/><arg name="driver_uuid" type="bytes16"/>
+    </message>
 
     <message name="producer-accepted" opcode="0x8201" direction="broker-to-producer">
       <arg name="producer_id" type="u64"/><arg name="output_id" type="u64"/>
@@ -189,6 +194,11 @@
       <arg name="refresh_mhz" type="u32"/><arg name="transform" type="u32" enum="transform"/>
       <arg name="fourcc" type="u32"/><arg name="plane_count" type="u32"/>
       <arg name="modifier" type="u64"/>
+      <arg name="target_drm_render_major" type="u32"/>
+      <arg name="target_drm_render_minor" type="u32"/>
+      <arg name="target_gpu_flags" type="u32"/>
+      <arg name="target_device_uuid" type="bytes16"/>
+      <arg name="target_driver_uuid" type="bytes16"/>
     </message>
     <message name="retire-buffers" opcode="0x8203" direction="broker-to-producer">
       <arg name="generation" type="u64"/>

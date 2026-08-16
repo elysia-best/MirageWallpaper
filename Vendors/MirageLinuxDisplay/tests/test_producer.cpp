@@ -64,24 +64,27 @@ static md_packet_t receive_opcode(int fd, uint16_t opcode) {
 
 static void send_packet(int fd, uint16_t opcode, uint32_t serial,
                         const uint8_t* data, size_t size) {
-    assert(md_codec_send(fd, 0, opcode, 0, serial, data, size, NULL, 0) == 0);
+    /* HELLO/WELCOME are sent before version selection; every following mock
+     * broker packet must carry the negotiated v1.1 minor. */
+    const uint16_t minor = opcode == MD_OP_WELCOME ? 0U : MIRAGE_DISPLAY_PROTOCOL_MINOR;
+    assert(md_codec_send(fd, minor, opcode, 0, serial, data, size, NULL, 0) == 0);
 }
 
 static void send_welcome(int fd) {
     uint8_t payload[256];
     md_writer_t writer; md_writer_init(&writer, payload, sizeof(payload));
-    assert(md_write_u16(&writer, 0) == 0);
+    assert(md_write_u16(&writer, MIRAGE_DISPLAY_PROTOCOL_MINOR) == 0);
     assert(md_write_u16(&writer, 0) == 0);
     assert(md_write_u64(&writer, MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
                                   MD_FEATURE_MULTIPLANE | MD_FEATURE_POINTER_AXIS |
-                                  MD_FEATURE_WINDOW_STATE) == 0);
+                                  MD_FEATURE_WINDOW_STATE | MD_FEATURE_TARGET_GPU_BINDING) == 0);
     assert(md_write_string(&writer, "mock-broker") == 0);
     assert(md_write_string(&writer, "0.1") == 0);
     send_packet(fd, MD_OP_WELCOME, 1, payload, writer.size);
 }
 
 static void send_config(int fd) {
-    uint8_t payload[64];
+    uint8_t payload[128];
     md_writer_t writer; md_writer_init(&writer, payload, sizeof(payload));
     assert(md_write_u32(&writer, 1920) == 0);
     assert(md_write_u32(&writer, 1080) == 0);
@@ -90,6 +93,12 @@ static void send_config(int fd) {
     assert(md_write_u32(&writer, UINT32_C(0x34325258)) == 0);
     assert(md_write_u32(&writer, 1) == 0);
     assert(md_write_u64(&writer, 0) == 0);
+    assert(md_write_u32(&writer, 226) == 0);
+    assert(md_write_u32(&writer, 128) == 0);
+    assert(md_write_u32(&writer, MD_TARGET_GPU_RENDER_NODE_VALID) == 0);
+    uint8_t uuid[16] = {};
+    assert(md_write_bytes(&writer, uuid, sizeof(uuid)) == 0);
+    assert(md_write_bytes(&writer, uuid, sizeof(uuid)) == 0);
     send_packet(fd, MD_OP_OUTPUT_CONFIG, 4, payload, writer.size);
 }
 
@@ -135,6 +144,13 @@ static void* broker_main(void* opaque) {
     assert(md_write_u64(&writer, 10) == 0);
     assert(md_write_u64(&writer, 20) == 0);
     send_packet(fd, MD_OP_PRODUCER_ACCEPTED, 2, accepted, writer.size);
+
+    packet = receive_opcode(fd, MD_OP_PRODUCER_GPU_BOUND);
+    assert(packet.fd_count == 0);
+    md_producer_gpu_info_t gpu{};
+    assert(md_proto_decode_producer_gpu_bound(packet.payload, packet.payload_size, &gpu) == 0);
+    assert(gpu.drm_render_major == 226U && gpu.drm_render_minor == 128U);
+    md_packet_close_fds(&packet);
 
     packet = receive_opcode(fd, MD_OP_OFFER_BUFFERS);
     assert(packet.fd_count == 3);
@@ -258,6 +274,12 @@ int main(void) {
     }
     assert(observer.connected == 1);
     assert(observer.producer_id == 10 && observer.output_id == 20);
+
+    /* Pools are illegal until the renderer confirms the exact consumer GPU. */
+    md_producer_gpu_info_t gpu{};
+    gpu.drm_render_major = 226U;
+    gpu.drm_render_minor = 128U;
+    assert(md_producer_bind_gpu(producer, &gpu) == MD_OK);
 
     md_buffer_pool_t pool{};
     pool.generation = 7;

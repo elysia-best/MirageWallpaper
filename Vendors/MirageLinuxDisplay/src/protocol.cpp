@@ -313,7 +313,11 @@ std::int32_t md_proto_encode_hello(md_writer_t* const writer, const std::uint32_
     }
     std::int32_t result = md_write_u32(writer, role);
     if (result != 0) return result;
+    /* v1.1 target-GPU binding is mandatory for project endpoints. Do not
+     * negotiate v1.0, whose OUTPUT_CONFIG has no consumer GPU identity. */
     result = md_write_u16(writer, 0U);
+    if (result != 0) return result;
+    result = md_write_u16(writer, MIRAGE_DISPLAY_PROTOCOL_MINOR);
     if (result != 0) return result;
     result = md_write_u16(writer, MIRAGE_DISPLAY_PROTOCOL_MINOR);
     if (result != 0) return result;
@@ -511,6 +515,18 @@ std::int32_t md_proto_encode_register_producer(md_writer_t* const writer,
         if (result != 0) return result;
     }
     return 0;
+}
+
+std::int32_t md_proto_encode_producer_gpu_bound(
+    md_writer_t* const writer, const md_producer_gpu_info_t* const gpu) {
+    if (gpu == nullptr || gpu->drm_render_minor < 128U || gpu->drm_render_minor > 255U) {
+        return -EINVAL;
+    }
+    std::int32_t result = md_write_u32(writer, gpu->drm_render_major);
+    if (result == 0) result = md_write_u32(writer, gpu->drm_render_minor);
+    if (result == 0) result = md_write_bytes(writer, gpu->device_uuid, sizeof(gpu->device_uuid));
+    if (result == 0) result = md_write_bytes(writer, gpu->driver_uuid, sizeof(gpu->driver_uuid));
+    return result;
 }
 
 std::int32_t md_proto_encode_offer_buffers(md_writer_t* const writer,
@@ -818,12 +834,38 @@ std::int32_t md_proto_decode_output_config(const std::uint8_t* const data,
     if (result == 0) result = md_read_u32(&reader, &config->fourcc);
     if (result == 0) result = md_read_u32(&reader, &config->plane_count);
     if (result == 0) result = md_read_u64(&reader, &config->modifier);
+    if (result == 0) result = md_read_u32(&reader, &config->target_drm_render_major);
+    if (result == 0) result = md_read_u32(&reader, &config->target_drm_render_minor);
+    if (result == 0) result = md_read_u32(&reader, &config->target_gpu_flags);
+    if (result == 0) result = md_read_bytes(&reader, config->target_device_uuid,
+                                            sizeof(config->target_device_uuid));
+    if (result == 0) result = md_read_bytes(&reader, config->target_driver_uuid,
+                                            sizeof(config->target_driver_uuid));
     if (result != 0 || config->physical_width == 0U || config->physical_height == 0U ||
         transform > MD_TRANSFORM_FLIPPED_270 || config->plane_count == 0U ||
-        config->plane_count > MIRAGE_DISPLAY_MAX_PLANES) {
+        config->plane_count > MIRAGE_DISPLAY_MAX_PLANES ||
+        (config->target_gpu_flags & MD_TARGET_GPU_RENDER_NODE_VALID) == 0U ||
+        config->target_drm_render_minor < 128U || config->target_drm_render_minor > 255U) {
         return result != 0 ? result : -EPROTO;
     }
     config->transform = static_cast<md_transform_t>(transform);
+    return md_reader_finish(&reader);
+}
+
+std::int32_t md_proto_decode_producer_gpu_bound(
+    const std::uint8_t* const data, const std::size_t size,
+    md_producer_gpu_info_t* const gpu) {
+    if (gpu == nullptr) return -EINVAL;
+    std::memset(gpu, 0, sizeof(*gpu));
+    md_reader_t reader;
+    md_reader_init(&reader, data, size);
+    std::int32_t result = md_read_u32(&reader, &gpu->drm_render_major);
+    if (result == 0) result = md_read_u32(&reader, &gpu->drm_render_minor);
+    if (result == 0) result = md_read_bytes(&reader, gpu->device_uuid, sizeof(gpu->device_uuid));
+    if (result == 0) result = md_read_bytes(&reader, gpu->driver_uuid, sizeof(gpu->driver_uuid));
+    if (result != 0 || gpu->drm_render_minor < 128U || gpu->drm_render_minor > 255U) {
+        return result != 0 ? result : -EPROTO;
+    }
     return md_reader_finish(&reader);
 }
 

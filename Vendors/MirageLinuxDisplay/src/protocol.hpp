@@ -36,6 +36,7 @@ enum md_opcode : std::uint16_t {
     MD_OP_PRODUCER_FRAME = 0x0203,
     MD_OP_RETIRE_DONE = 0x0204,
     MD_OP_PRODUCER_SET_CONFIG = 0x0205,
+    MD_OP_PRODUCER_GPU_BOUND = 0x0206,
 
     MD_OP_WELCOME = 0x8001,
     MD_OP_ERROR = 0x80ff,
@@ -132,6 +133,8 @@ std::int32_t md_proto_encode_u32(md_writer_t* writer, std::uint32_t value);
 std::int32_t md_proto_encode_u64(md_writer_t* writer, std::uint64_t value);
 std::int32_t md_proto_encode_register_producer(md_writer_t* writer,
                                                const md_producer_info_t* info);
+std::int32_t md_proto_encode_producer_gpu_bound(md_writer_t* writer,
+                                                const md_producer_gpu_info_t* gpu);
 std::int32_t md_proto_encode_offer_buffers(md_writer_t* writer,
                                            const md_buffer_pool_t* pool);
 std::int32_t md_proto_encode_producer_frame(md_writer_t* writer,
@@ -161,6 +164,8 @@ std::int32_t md_proto_decode_producer_accepted(const std::uint8_t* data, std::si
                                                std::uint64_t* output_id);
 std::int32_t md_proto_decode_output_config(const std::uint8_t* data, std::size_t size,
                                            md_producer_config_t* config);
+std::int32_t md_proto_decode_producer_gpu_bound(const std::uint8_t* data, std::size_t size,
+                                                md_producer_gpu_info_t* gpu);
 std::int32_t md_proto_decode_pointer_enter(const std::uint8_t* data, std::size_t size,
                                            md_pointer_enter_t* event);
 std::int32_t md_proto_decode_pointer_leave(const std::uint8_t* data, std::size_t size,

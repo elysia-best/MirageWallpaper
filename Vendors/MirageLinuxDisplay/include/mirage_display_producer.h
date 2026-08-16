@@ -41,7 +41,21 @@ typedef struct md_producer_config {
     uint32_t fourcc;
     uint32_t plane_count;
     uint64_t modifier;
+    /* Target GPU identity supplied before renderer resources are created. */
+    uint32_t target_drm_render_major;
+    uint32_t target_drm_render_minor;
+    uint32_t target_gpu_flags;
+    uint8_t target_device_uuid[16];
+    uint8_t target_driver_uuid[16];
 } md_producer_config_t;
+
+typedef struct md_producer_gpu_info {
+    /* Actual GPU identity after Vulkan/EGL/VA-API resources are created. */
+    uint32_t drm_render_major;
+    uint32_t drm_render_minor;
+    uint8_t device_uuid[16];
+    uint8_t driver_uuid[16];
+} md_producer_gpu_info_t;
 
 typedef struct md_producer_callbacks {
     void (*on_connected)(void* user_data, uint64_t producer_id, uint64_t output_id);
@@ -88,6 +102,9 @@ int32_t md_producer_dispatch(md_producer_t* producer);
 
 /* Pool FDs are borrowed and duplicated internally for a queued send. */
 md_result_t md_producer_offer_buffers(md_producer_t* producer, const md_buffer_pool_t* pool);
+/* Confirms the GPU that owns renderer resources; must precede buffer offers. */
+md_result_t md_producer_bind_gpu(md_producer_t* producer,
+                                 const md_producer_gpu_info_t* gpu);
 md_result_t md_producer_set_config(md_producer_t* producer,
                                    const md_display_config_t* config);
 /* Both frame FDs are consumed by this call, including on errors. */

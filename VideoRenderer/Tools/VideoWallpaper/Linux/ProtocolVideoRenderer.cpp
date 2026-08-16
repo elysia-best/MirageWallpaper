@@ -65,22 +65,14 @@ const char* FillModeName(VRVideoFillMode mode) {
 }
 
 int OpenRenderNode(std::uint32_t major, std::uint32_t minor) {
+    /* Vulkan already proved this exact render node owns the selected physical
+     * device. Open only its canonical DRM path; probing another node would
+     * reintroduce the mixed-GPU failure this binding is intended to prevent. */
     char path[64];
-    if (minor >= 128u && minor <= 255u) {
-        int written = std::snprintf(path, sizeof(path), "/dev/dri/renderD%u", minor);
-        if (written > 0 && static_cast<std::size_t>(written) < sizeof(path)) {
-            int fd = ::open(path, O_RDWR | O_CLOEXEC);
-            if (fd >= 0) return fd;
-        }
-    }
-    if (major != 0 || minor != 0) {
-        int written = std::snprintf(path, sizeof(path), "/dev/char/%u:%u", major, minor);
-        if (written > 0 && static_cast<std::size_t>(written) < sizeof(path)) {
-            int fd = ::open(path, O_RDWR | O_CLOEXEC);
-            if (fd >= 0) return fd;
-        }
-    }
-    return -1;
+    if (major == 0U || minor < 128U || minor > 255U) return -1;
+    int written = std::snprintf(path, sizeof(path), "/dev/dri/renderD%u", minor);
+    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(path)) return -1;
+    return ::open(path, O_RDWR | O_CLOEXEC);
 }
 
 std::uint32_t ChooseMemoryType(VkPhysicalDevice physical_device, std::uint32_t type_bits,
@@ -110,15 +102,6 @@ public:
 
     ProtocolHost(const ProtocolHost&) = delete;
     ProtocolHost& operator=(const ProtocolHost&) = delete;
-
-    void setGpuInfo(std::uint32_t major, std::uint32_t minor,
-                    const std::uint8_t* device_uuid, const std::uint8_t* driver_uuid) {
-        std::lock_guard lock(m_producer_mutex);
-        m_drm_major = major;
-        m_drm_minor = minor;
-        if (device_uuid != nullptr) std::memcpy(m_device_uuid, device_uuid, 16);
-        if (driver_uuid != nullptr) std::memcpy(m_driver_uuid, driver_uuid, 16);
-    }
 
     bool start() {
         if (m_socket_path.empty() || m_output_id.empty()) return false;
@@ -200,6 +183,12 @@ public:
             .clear_color = {0.0f, 0.0f, 0.0f, 1.0f},
         };
         return md_producer_set_config(m_producer, &display_config);
+    }
+
+    bool bindGpu(const md_producer_gpu_info_t& gpu) {
+        std::lock_guard lock(m_producer_mutex);
+        return m_producer != nullptr &&
+               md_producer_bind_gpu(m_producer, &gpu) == MD_OK;
     }
 
     int submitFrame(std::uint64_t generation, std::uint32_t index, std::uint64_t sequence,
@@ -401,6 +390,20 @@ public:
         }
 
         if (!createVulkan(error)) return false;
+        md_producer_gpu_info_t bound_gpu {
+            .drm_render_major = m_drm_major,
+            .drm_render_minor = m_drm_minor,
+            .device_uuid = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
+                            0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
+            .driver_uuid = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
+                            0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
+        };
+        std::memcpy(bound_gpu.device_uuid, m_device_uuid, sizeof(bound_gpu.device_uuid));
+        std::memcpy(bound_gpu.driver_uuid, m_driver_uuid, sizeof(bound_gpu.driver_uuid));
+        if (!m_host->bindGpu(bound_gpu)) {
+            setError(error, "target GPU binding was rejected by mirage-display");
+            return false;
+        }
         if (!rebuildPool()) {
             setError(error, "cannot create export pool for the negotiated output configuration");
             return false;
@@ -482,6 +485,14 @@ public:
 
 private:
     bool createVulkan(QString* error) {
+        md_producer_config_t target{};
+        std::uint64_t target_version = 0;
+        std::uint64_t target_epoch = 0;
+        if (m_host == nullptr || !m_host->currentConfig(target, target_version, target_epoch) ||
+            (target.target_gpu_flags & MD_TARGET_GPU_RENDER_NODE_VALID) == 0U) {
+            setError(error, "mirage-display did not provide a target GPU render node");
+            return false;
+        }
         VkApplicationInfo app_info {
             .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
             .pNext = nullptr,
@@ -516,8 +527,6 @@ private:
             setError(error, "cannot create Vulkan instance");
             return false;
         }
-        m_have_drm_ext = have_drm_ext;
-
         const char* required_exts[] = {
             VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
             VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
@@ -539,6 +548,23 @@ private:
             return false;
         }
         for (VkPhysicalDevice device : devices) {
+            VkPhysicalDeviceDrmPropertiesEXT drm {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
+            VkPhysicalDeviceIDProperties id_props {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+            id_props.pNext = &drm;
+            VkPhysicalDeviceProperties2 properties {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            properties.pNext = &id_props;
+            vkGetPhysicalDeviceProperties2(device, &properties);
+            if (drm.hasRender != VK_TRUE || drm.renderMajor < 0 || drm.renderMinor < 0 ||
+                static_cast<std::uint32_t>(drm.renderMajor) != target.target_drm_render_major ||
+                static_cast<std::uint32_t>(drm.renderMinor) != target.target_drm_render_minor ||
+                ((target.target_gpu_flags & MD_TARGET_GPU_DEVICE_UUID_VALID) != 0U &&
+                 std::memcmp(id_props.deviceUUID, target.target_device_uuid,
+                             sizeof(target.target_device_uuid)) != 0) ||
+                ((target.target_gpu_flags & MD_TARGET_GPU_DRIVER_UUID_VALID) != 0U &&
+                 std::memcmp(id_props.driverUUID, target.target_driver_uuid,
+                             sizeof(target.target_driver_uuid)) != 0)) {
+                continue;
+            }
             std::uint32_t ext_count = 0;
             vkEnumerateDeviceExtensionProperties(device, nullptr, &ext_count, nullptr);
             std::vector<VkExtensionProperties> exts(ext_count);
@@ -566,10 +592,15 @@ private:
             if (graphics_family == UINT32_MAX) continue;
             m_physical_device = device;
             m_queue_family = graphics_family;
+            m_drm_major = static_cast<std::uint32_t>(drm.renderMajor);
+            m_drm_minor = static_cast<std::uint32_t>(drm.renderMinor);
+            std::memcpy(m_device_uuid, id_props.deviceUUID, sizeof(m_device_uuid));
+            std::memcpy(m_driver_uuid, id_props.driverUUID, sizeof(m_driver_uuid));
             break;
         }
         if (m_physical_device == VK_NULL_HANDLE) {
-            setError(error, "no Vulkan device supports the DMA-BUF export extension set");
+            setError(error, QStringLiteral("no Vulkan DMA-BUF exporter matches consumer GPU renderD%1")
+                                .arg(target.target_drm_render_minor));
             destroyVulkan();
             return false;
         }
@@ -601,36 +632,13 @@ private:
         }
         vkGetDeviceQueue(m_device, m_queue_family, 0, &m_queue);
 
-        PFN_vkGetPhysicalDeviceProperties2 get_properties2 =
-            reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
-                vkGetInstanceProcAddr(m_instance, "vkGetPhysicalDeviceProperties2"));
-        if (get_properties2 != nullptr && m_have_drm_ext) {
-            VkPhysicalDeviceDrmPropertiesEXT drm {};
-            drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
-            VkPhysicalDeviceIDProperties id_props {};
-            id_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
-            id_props.pNext = &drm;
-            VkPhysicalDeviceProperties2 properties {};
-            properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-            properties.pNext = &id_props;
-            get_properties2(m_physical_device, &properties);
-            m_drm_major = drm.hasRender == VK_TRUE ? drm.renderMajor : 0u;
-            m_drm_minor = drm.hasRender == VK_TRUE ? drm.renderMinor : 0u;
-            std::memcpy(m_device_uuid, id_props.deviceUUID, sizeof(m_device_uuid));
-            std::memcpy(m_driver_uuid, id_props.driverUUID, sizeof(m_driver_uuid));
-        }
-
         m_drm_fd = OpenRenderNode(m_drm_major, m_drm_minor);
         if (m_drm_fd < 0) {
-            for (std::uint32_t minor = 128; minor <= 255 && m_drm_fd < 0; ++minor) {
-                m_drm_fd = OpenRenderNode(0, minor);
-                if (m_drm_fd >= 0) m_drm_minor = minor;
-            }
+            setError(error, QStringLiteral("cannot open consumer GPU renderD%1")
+                                .arg(m_drm_minor));
+            destroyVulkan();
+            return false;
         }
-        if (m_host != nullptr) {
-            m_host->setGpuInfo(m_drm_major, m_drm_minor, m_device_uuid, m_driver_uuid);
-        }
-
         md_vk_export_context_t context {
             .instance = m_instance,
             .physical_device = m_physical_device,
@@ -946,6 +954,7 @@ private:
         // 行为可预测：不读用户 mpv.conf、不加载脚本；必须显式 vo=libmpv，
         // 否则 mpv 会打开默认 VO 窗口。hwdec=auto：GL render 后端下允许 GPU
         // 解码帧直接作为 GL 纹理（免 CPU 回拷），mpv 内建三卡决策。
+        const std::string vaapi_device = "/dev/dri/renderD" + std::to_string(m_drm_minor);
         const struct {
             const char* name;
             const char* value;
@@ -954,6 +963,7 @@ private:
             {"load-scripts", "no"},
             {"vo", "libmpv"},
             {"hwdec", "auto"},
+            {"vaapi-device", vaapi_device.c_str()},
             {"ao", "pipewire,pulseaudio,alsa"},
             // 自动循环交由 mpv 内建 loop-file=inf（与 macOS AVPlayerLooper 的无缝
             // 循环对齐）：每圈循环产生 MPV_EVENT_PLAYBACK_RESTART，由 handleMpvEvent
@@ -1155,12 +1165,42 @@ private:
         return reinterpret_cast<void*>(eglGetProcAddress(name));
     }
 
-    // 创建 headless EGL/GLES3 上下文（EGL_PLATFORM_SURFACELESS_MESA，无窗口），
-    // 作为 mpv GL render API 的宿主。壁纸进程无显示，不能用窗口平台；
-    // 仅在渲染线程调用，EGL 资源随渲染线程在 cleanupMpv() 释放。
+    // 创建绑定到 consumer render node 的 headless EGL/GLES3 上下文。使用
+    // EGL_EXT_device_drm_render_node 选择设备，禁止 EGL_DEFAULT_DISPLAY，
+    // 避免 EGL 与 Vulkan/VA-API 落到不同 GPU。
     bool createGlContext() {
-        m_egl_display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
-                                              EGL_DEFAULT_DISPLAY, nullptr);
+        using QueryDevices = EGLBoolean (*)(EGLint, EGLDeviceEXT*, EGLint*);
+        using QueryDeviceString = const char* (*)(EGLDeviceEXT, EGLint);
+        auto query_devices = reinterpret_cast<QueryDevices>(eglGetProcAddress("eglQueryDevicesEXT"));
+        auto query_device_string = reinterpret_cast<QueryDeviceString>(
+            eglGetProcAddress("eglQueryDeviceStringEXT"));
+        auto get_platform_display = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
+            eglGetProcAddress("eglGetPlatformDisplayEXT"));
+        if (query_devices == nullptr || query_device_string == nullptr ||
+            get_platform_display == nullptr) {
+            m_last_error = "EGL device/render-node extensions are unavailable";
+            return false;
+        }
+        const std::string target_node = "/dev/dri/renderD" + std::to_string(m_drm_minor);
+        EGLDeviceEXT devices[16]{};
+        EGLint device_count = 0;
+        if (query_devices(16, devices, &device_count) != EGL_TRUE) {
+            m_last_error = "eglQueryDevicesEXT failed";
+            return false;
+        }
+        EGLDeviceEXT target_device = EGL_NO_DEVICE_EXT;
+        for (EGLint index = 0; index < device_count; ++index) {
+            const char* node = query_device_string(devices[index], EGL_DRM_RENDER_NODE_FILE_EXT);
+            if (node != nullptr && target_node == node) {
+                target_device = devices[index];
+                break;
+            }
+        }
+        if (target_device == EGL_NO_DEVICE_EXT) {
+            m_last_error = "EGL has no device for consumer render node " + target_node;
+            return false;
+        }
+        m_egl_display = get_platform_display(EGL_PLATFORM_DEVICE_EXT, target_device, nullptr);
         if (m_egl_display == EGL_NO_DISPLAY) {
             m_last_error = "eglGetPlatformDisplay(surfaceless) failed";
             return false;
@@ -1473,7 +1513,6 @@ private:
     VkDevice m_device { VK_NULL_HANDLE };
     VkQueue m_queue { VK_NULL_HANDLE };
     std::uint32_t m_queue_family { 0 };
-    bool m_have_drm_ext { false };
     std::uint32_t m_drm_major { 0 };
     std::uint32_t m_drm_minor { 0 };
     std::uint8_t m_device_uuid[16] { 0 };

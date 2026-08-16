@@ -952,7 +952,23 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
     }
     {
         auto surface   = *m_instance.surface();
-        auto check_gpu = [&device_exts, surface](const vvk::PhysicalDevice& gpu) {
+        auto check_gpu = [&device_exts, surface, &info](const vvk::PhysicalDevice& gpu) {
+            if (info.target_drm_render_major != 0U) {
+                VkPhysicalDeviceDrmPropertiesEXT drm {
+                    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
+                    .pNext = nullptr,
+                };
+                VkPhysicalDeviceProperties2 properties {
+                    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                    .pNext = &drm,
+                };
+                gpu.GetProperties2KHR(properties);
+                if (drm.hasRender != VK_TRUE || drm.renderMajor < 0 || drm.renderMinor < 0 ||
+                    static_cast<uint32_t>(drm.renderMajor) != info.target_drm_render_major ||
+                    static_cast<uint32_t>(drm.renderMinor) != info.target_drm_render_minor) {
+                    return false;
+                }
+            }
             return Device::CheckGPU(gpu, device_exts, surface);
         };
         if (! m_instance.ChoosePhysicalDevice(check_gpu, info.uuid)) return false;

@@ -29,11 +29,12 @@ struct md_producer final : mirage::ClientSession {
         : ClientSession(MD_CLIENT_ROLE_PRODUCER,
                         MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
                             MD_FEATURE_MULTIPLANE | MD_FEATURE_POINTER_AXIS |
-                            MD_FEATURE_WINDOW_STATE),
+                            MD_FEATURE_WINDOW_STATE | MD_FEATURE_TARGET_GPU_BINDING),
           producer_id_(0U),
           output_id_(0U),
           pool_offered_(false),
           retire_pending_(false),
+          gpu_bound_(false),
           pool_generation_(0U),
           pool_buffer_count_(0U) {
         std::memset(&callbacks_, 0, sizeof(callbacks_));
@@ -164,6 +165,7 @@ struct md_producer final : mirage::ClientSession {
         output_id_ = 0U;
         pool_offered_ = false;
         retire_pending_ = false;
+        gpu_bound_ = false;
         pool_generation_ = 0U;
         pool_buffer_count_ = 0U;
     }
@@ -222,7 +224,7 @@ struct md_producer final : mirage::ClientSession {
  */
 
     md_result_t offer_buffers(const md_buffer_pool_t* pool) {
-        if (pool == nullptr || pool_offered_) {
+        if (pool == nullptr || !gpu_bound_ || pool_offered_) {
             return MD_ERR_STATE;
         }
         std::array<std::uint8_t, 1024U> payload{};
@@ -262,6 +264,26 @@ struct md_producer final : mirage::ClientSession {
             pool_offered_ = true;
             pool_generation_ = pool->generation;
             pool_buffer_count_ = pool->buffer_count;
+        }
+        return result;
+    }
+
+    md_result_t bind_gpu(const md_producer_gpu_info_t* gpu) {
+        if (gpu == nullptr || gpu_bound_ || connection_state() != MD_CONNECTION_READY) {
+            return MD_ERR_STATE;
+        }
+        std::array<std::uint8_t, 64U> payload{};
+        md_writer_t writer;
+        md_writer_init(&writer, payload.data(), payload.size());
+        if (md_proto_encode_producer_gpu_bound(&writer, gpu) != 0) return MD_ERR_INVALID;
+        const md_result_t result = send_owned(MD_OP_PRODUCER_GPU_BOUND, payload.data(),
+                                              writer.size, nullptr, 0U);
+        if (result == MD_OK) {
+            gpu_bound_ = true;
+            info_.drm_render_major = gpu->drm_render_major;
+            info_.drm_render_minor = gpu->drm_render_minor;
+            std::memcpy(info_.device_uuid, gpu->device_uuid, sizeof(info_.device_uuid));
+            std::memcpy(info_.driver_uuid, gpu->driver_uuid, sizeof(info_.driver_uuid));
         }
         return result;
     }
@@ -391,6 +413,7 @@ protected:
     void on_disconnected(const md_result_t reason, const char* const message) override {
         pool_offered_ = false;
         retire_pending_ = false;
+        gpu_bound_ = false;
         pool_generation_ = 0U;
         pool_buffer_count_ = 0U;
         if (callbacks_.on_disconnected != nullptr) {
@@ -607,6 +630,7 @@ private:
     std::vector<md_format_cap_t> formats_;
     bool pool_offered_;
     bool retire_pending_;
+    bool gpu_bound_;
     std::uint64_t pool_generation_;
     std::uint32_t pool_buffer_count_;
 };
@@ -694,6 +718,11 @@ extern "C" std::int32_t md_producer_dispatch(md_producer_t* const producer) {
 extern "C" md_result_t md_producer_offer_buffers(md_producer_t* const producer,
                                                   const md_buffer_pool_t* const pool) {
     return producer == nullptr ? MD_ERR_STATE : producer->offer_buffers(pool);
+}
+
+extern "C" md_result_t md_producer_bind_gpu(
+    md_producer_t* const producer, const md_producer_gpu_info_t* const gpu) {
+    return producer == nullptr ? MD_ERR_STATE : producer->bind_gpu(gpu);
 }
 
 extern "C" md_result_t md_producer_set_config(md_producer_t* const producer,

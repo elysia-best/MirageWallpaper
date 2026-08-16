@@ -114,6 +114,9 @@ static void on_producer_config(void* opaque, const md_producer_config_t* config)
     assert(config->physical_width == 1280);
     assert(config->physical_height == 720);
     assert(config->fourcc == UINT32_C(0x34325258));
+    assert((config->target_gpu_flags & MD_TARGET_GPU_RENDER_NODE_VALID) != 0U);
+    assert(config->target_drm_render_major == 226U);
+    assert(config->target_drm_render_minor == 128U);
     ++observer->configs;
 }
 
@@ -274,12 +277,17 @@ int main(void) {
     output.scale_120 = 120U;
     output.refresh_mhz = 60000U;
     output.transform = MD_TRANSFORM_NORMAL;
+    /* The broker now forwards this consumer-owned render node before a
+     * producer allocates or offers DMA-BUF pools. */
+    output.drm_render_major = 226U;
+    output.drm_render_minor = 128U;
     output.input_caps = MD_INPUT_POINTER_ENTER_LEAVE | MD_INPUT_POINTER_MOTION |
                         MD_INPUT_POINTER_BUTTON | MD_INPUT_POINTER_AXIS |
                         MD_INPUT_NON_CONSUMING;
     md_consumer_caps_t caps{};
     caps.features = MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
-                    MD_FEATURE_POINTER_AXIS | MD_FEATURE_WINDOW_STATE;
+                    MD_FEATURE_POINTER_AXIS | MD_FEATURE_WINDOW_STATE |
+                    MD_FEATURE_TARGET_GPU_BINDING;
     caps.sync_caps = 1U;
     caps.max_width = 4096U;
     caps.max_height = 4096U;
@@ -304,6 +312,10 @@ int main(void) {
      * OUTPUT_CONFIG. */
     assert(producer_observer.window_states == 1);
     assert(producer_observer.last_window_flags == 0U);
+    md_producer_gpu_info_t gpu{};
+    gpu.drm_render_major = output.drm_render_major;
+    gpu.drm_render_minor = output.drm_render_minor;
+    assert(md_producer_bind_gpu(producer, &gpu) == MD_OK);
 
     md_buffer_pool_t pool{};
     pool.generation = 1;
@@ -410,6 +422,7 @@ int main(void) {
     /* A restarted producer replays the last cached window state (0xA from the
      * forwarding test above) so it does not wait for the next desktop change. */
     assert(restarted_producer_observer.last_window_flags == 0xAU);
+    assert(md_producer_bind_gpu(producer, &gpu) == MD_OK);
 
     md_buffer_pool_t replacement_pool{};
     replacement_pool.generation = 2U;

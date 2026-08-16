@@ -46,12 +46,11 @@ std::uint32_t MemoryType(VkPhysicalDevice device, std::uint32_t bits,
 }
 
 int RenderNode(std::uint32_t major, std::uint32_t minor) {
+    /* The broker selected this exact consumer node. Opening a different DRM
+     * alias or scanning renderD values would permit cross-GPU DMA-BUF use. */
+    if (major == 0U || minor < 128U || minor > 255U) return -1;
     char path[64] {};
     int written = std::snprintf(path, sizeof(path), "/dev/dri/renderD%u", minor);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(path)) return -1;
-    int fd = ::open(path, O_RDWR | O_CLOEXEC);
-    if (fd >= 0) return fd;
-    written = std::snprintf(path, sizeof(path), "/dev/char/%u:%u", major, minor);
     if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(path)) return -1;
     return ::open(path, O_RDWR | O_CLOEXEC);
 }
@@ -68,7 +67,10 @@ public:
             if (error != nullptr) *error = QStringLiteral("display socket and output id are required");
             return false;
         }
-        if (!createVulkan(error) || !connectProducer()) {
+        /* OUTPUT_CONFIG transports the consumer GPU identity. It must arrive
+         * before Vulkan is created, otherwise a hybrid system can select the
+         * wrong physical device and export unreadable DMA-BUFs. */
+        if (!connectProducer()) {
             if (error != nullptr && error->isEmpty()) *error = QStringLiteral("cannot initialize Vulkan display producer");
             stop();
             return false;
@@ -85,7 +87,30 @@ public:
                 return false;
             }
         }
-        return rebuildPool(error);
+        if (!createVulkan(error)) {
+            stop();
+            return false;
+        }
+        md_producer_gpu_info_t gpu {};
+        gpu.drm_render_major = m_drmMajor;
+        gpu.drm_render_minor = m_drmMinor;
+        std::memcpy(gpu.device_uuid, m_deviceUuid, sizeof(gpu.device_uuid));
+        std::memcpy(gpu.driver_uuid, m_driverUuid, sizeof(gpu.driver_uuid));
+        bool gpu_bound = false;
+        {
+            std::lock_guard lock(m_producerMutex);
+            gpu_bound = m_producer != nullptr && md_producer_bind_gpu(m_producer, &gpu) == MD_OK;
+        }
+        if (!gpu_bound) {
+            if (error != nullptr) *error = QStringLiteral("mirage-display rejected target GPU binding");
+            stop();
+            return false;
+        }
+        if (!rebuildPool(error)) {
+            stop();
+            return false;
+        }
+        return true;
     }
 
     void stop() {
@@ -230,6 +255,17 @@ private:
     }
 
     bool createVulkan(QString* error) {
+        md_producer_config_t target {};
+        {
+            std::lock_guard lock(m_stateMutex);
+            target = m_outputConfig;
+        }
+        if ((target.target_gpu_flags & MD_TARGET_GPU_RENDER_NODE_VALID) == 0U ||
+            target.target_drm_render_major == 0U || target.target_drm_render_minor < 128U ||
+            target.target_drm_render_minor > 255U) {
+            if (error != nullptr) *error = QStringLiteral("broker did not provide a valid consumer DRM render node");
+            return false;
+        }
         VkApplicationInfo app {VK_STRUCTURE_TYPE_APPLICATION_INFO};
         app.pApplicationName = "WebWallpaper";
         app.apiVersion = VK_API_VERSION_1_1;
@@ -247,8 +283,12 @@ private:
                 break;
             }
         }
-        instance.enabledExtensionCount = haveDrmExtension ? 1u : 0u;
-        instance.ppEnabledExtensionNames = haveDrmExtension ? instanceExtensions : nullptr;
+        if (!haveDrmExtension) {
+            if (error != nullptr) *error = QStringLiteral("VK_EXT_physical_device_drm is required for GPU binding");
+            return false;
+        }
+        instance.enabledExtensionCount = 1u;
+        instance.ppEnabledExtensionNames = instanceExtensions;
         if (vkCreateInstance(&instance, nullptr, &m_instance) != VK_SUCCESS) {
             if (error != nullptr) *error = QStringLiteral("vkCreateInstance failed");
             return false;
@@ -266,6 +306,21 @@ private:
             VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
         };
         for (VkPhysicalDevice device : devices) {
+            VkPhysicalDeviceDrmPropertiesEXT drm {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
+            VkPhysicalDeviceIDProperties id {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+            id.pNext = &drm;
+            VkPhysicalDeviceProperties2 properties {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            properties.pNext = &id;
+            vkGetPhysicalDeviceProperties2(device, &properties);
+            if (drm.hasRender != VK_TRUE || drm.renderMajor < 0 || drm.renderMinor < 0 ||
+                static_cast<std::uint32_t>(drm.renderMajor) != target.target_drm_render_major ||
+                static_cast<std::uint32_t>(drm.renderMinor) != target.target_drm_render_minor ||
+                ((target.target_gpu_flags & MD_TARGET_GPU_DEVICE_UUID_VALID) != 0U &&
+                 std::memcmp(id.deviceUUID, target.target_device_uuid, sizeof(id.deviceUUID)) != 0) ||
+                ((target.target_gpu_flags & MD_TARGET_GPU_DRIVER_UUID_VALID) != 0U &&
+                 std::memcmp(id.driverUUID, target.target_driver_uuid, sizeof(id.driverUUID)) != 0)) {
+                continue;
+            }
             std::uint32_t deviceExtensionCount = 0;
             vkEnumerateDeviceExtensionProperties(device, nullptr, &deviceExtensionCount, nullptr);
             std::vector<VkExtensionProperties> deviceProperties(deviceExtensionCount);
@@ -287,12 +342,19 @@ private:
                 if ((props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
                     m_physicalDevice = device;
                     m_queueFamily = i;
+                    m_drmMajor = static_cast<std::uint32_t>(drm.renderMajor);
+                    m_drmMinor = static_cast<std::uint32_t>(drm.renderMinor);
+                    std::memcpy(m_deviceUuid, id.deviceUUID, sizeof(m_deviceUuid));
+                    std::memcpy(m_driverUuid, id.driverUUID, sizeof(m_driverUuid));
                     break;
                 }
             }
             if (m_physicalDevice != VK_NULL_HANDLE) break;
         }
-        if (m_physicalDevice == VK_NULL_HANDLE) return false;
+        if (m_physicalDevice == VK_NULL_HANDLE) {
+            if (error != nullptr) *error = QStringLiteral("no Vulkan DMA-BUF exporter matches consumer renderD%1").arg(target.target_drm_render_minor);
+            return false;
+        }
         const float priority = 1.0f;
         VkDeviceQueueCreateInfo queueInfo {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         queueInfo.queueFamilyIndex = m_queueFamily;
@@ -305,37 +367,10 @@ private:
         deviceInfo.ppEnabledExtensionNames = deviceExtensions;
         if (vkCreateDevice(m_physicalDevice, &deviceInfo, nullptr, &m_device) != VK_SUCCESS) return false;
         vkGetDeviceQueue(m_device, m_queueFamily, 0, &m_queue);
-        if (haveDrmExtension) {
-            PFN_vkGetPhysicalDeviceProperties2 properties2 =
-                reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
-                    vkGetInstanceProcAddr(m_instance, "vkGetPhysicalDeviceProperties2"));
-            if (properties2 != nullptr) {
-                VkPhysicalDeviceDrmPropertiesEXT drm {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
-                VkPhysicalDeviceIDProperties id {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
-                id.pNext = &drm;
-                VkPhysicalDeviceProperties2 properties {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-                properties.pNext = &id;
-                properties2(m_physicalDevice, &properties);
-                std::memcpy(m_deviceUuid, id.deviceUUID, sizeof(m_deviceUuid));
-                std::memcpy(m_driverUuid, id.driverUUID, sizeof(m_driverUuid));
-                if (drm.hasRender == VK_TRUE) {
-                    if (drm.renderMajor < 0 || drm.renderMinor < 0 ||
-                        static_cast<std::uint64_t>(drm.renderMajor) > std::numeric_limits<std::uint32_t>::max() ||
-                        static_cast<std::uint64_t>(drm.renderMinor) > std::numeric_limits<std::uint32_t>::max()) {
-                        if (error != nullptr) *error = QStringLiteral("invalid Vulkan DRM render node identifier");
-                        return false;
-                    }
-                    m_drmMajor = static_cast<std::uint32_t>(drm.renderMajor);
-                    m_drmMinor = static_cast<std::uint32_t>(drm.renderMinor);
-                    m_drmFd = RenderNode(m_drmMajor, m_drmMinor);
-                }
-            }
-        }
+        m_drmFd = RenderNode(m_drmMajor, m_drmMinor);
         if (m_drmFd < 0) {
-            for (std::uint32_t minor = 128; minor <= 255 && m_drmFd < 0; ++minor) {
-                m_drmFd = RenderNode(0, minor);
-                if (m_drmFd >= 0) m_drmMinor = minor;
-            }
+            if (error != nullptr) *error = QStringLiteral("cannot open consumer renderD%1").arg(m_drmMinor);
+            return false;
         }
         md_vk_export_context_t context {m_instance, m_physicalDevice, m_device, m_queue,
                                         m_queueFamily, m_drmFd, m_drmMajor, m_drmMinor};

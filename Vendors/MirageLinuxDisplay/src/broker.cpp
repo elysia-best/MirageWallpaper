@@ -97,6 +97,7 @@ struct md_broker_route {
     std::array<md_broker_peer_t*, kBrokerMaxPeers> displays{};
     uint32_t display_count{0U};
     md_broker_peer_t* producer{nullptr};
+    bool producer_gpu_bound{false};
     md_format_cap_t selected_format{};
     bool format_selected{false};
     bool output_config_sent{false};
@@ -344,10 +345,11 @@ static int send_error(md_broker_peer_t* peer, uint32_t code, bool fatal, const c
     return queue_peer(peer, MD_OP_ERROR, 0, payload, writer.size, nullptr, 0U);
 }
 
-static int encode_welcome(md_broker_t* broker, uint8_t* payload, size_t capacity, size_t* size) {
+static int encode_welcome(md_broker_t* broker, uint16_t selected_minor,
+                          uint8_t* payload, size_t capacity, size_t* size) {
     md_writer_t writer;
     md_writer_init(&writer, payload, capacity);
-    if (md_write_u16(&writer, MIRAGE_DISPLAY_PROTOCOL_MINOR) != 0 ||
+    if (md_write_u16(&writer, selected_minor) != 0 ||
         md_write_u16(&writer, 0) != 0 || md_write_u64(&writer, broker->features) != 0 ||
         md_write_string(&writer, broker->server_name.c_str()) != 0 ||
         md_write_string(&writer, broker->server_version.c_str()) != 0) {
@@ -375,7 +377,14 @@ static int encode_output_config(const md_producer_config_t* config, uint8_t* pay
         md_write_u32(&writer, static_cast<uint32_t>(config->transform)) != 0 ||
         md_write_u32(&writer, config->fourcc) != 0 ||
         md_write_u32(&writer, config->plane_count) != 0 ||
-        md_write_u64(&writer, config->modifier) != 0) {
+        md_write_u64(&writer, config->modifier) != 0 ||
+        md_write_u32(&writer, config->target_drm_render_major) != 0 ||
+        md_write_u32(&writer, config->target_drm_render_minor) != 0 ||
+        md_write_u32(&writer, config->target_gpu_flags) != 0 ||
+        md_write_bytes(&writer, config->target_device_uuid,
+                       sizeof(config->target_device_uuid)) != 0 ||
+        md_write_bytes(&writer, config->target_driver_uuid,
+                       sizeof(config->target_driver_uuid)) != 0) {
         return MD_ERR_NOMEM;
     }
     *size = writer.size;
@@ -405,15 +414,18 @@ static int parse_hello(const md_packet_t* packet, md_broker_role_t* role, uint16
     md_reader_init(&reader, packet->payload, packet->payload_size);
     uint32_t role_value;
     uint16_t reserved;
-    uint16_t advertised_minor;
+    uint16_t min_minor;
+    uint16_t max_minor;
     int rc = md_read_u32(&reader, &role_value);
     if (rc == 0) rc = md_read_u16(&reader, &reserved);
-    if (rc == 0) rc = md_read_u16(&reader, &advertised_minor);
+    if (rc == 0) rc = md_read_u16(&reader, &min_minor);
+    if (rc == 0) rc = md_read_u16(&reader, &max_minor);
     if (rc == 0) rc = md_read_u64(&reader, features);
     if (rc == 0) rc = md_read_string(&reader, name);
     if (rc == 0) rc = md_read_string(&reader, version);
     if (rc == 0) rc = md_reader_finish(&reader);
-    if (rc != 0 || reserved != 0 || advertised_minor > MIRAGE_DISPLAY_PROTOCOL_MINOR ||
+    if (rc != 0 || reserved != 0 || min_minor > max_minor ||
+        min_minor > MIRAGE_DISPLAY_PROTOCOL_MINOR ||
         (role_value != 1 && role_value != 2)) {
         md_protocol_free_string(*name);
         md_protocol_free_string(*version);
@@ -422,7 +434,7 @@ static int parse_hello(const md_packet_t* packet, md_broker_role_t* role, uint16
         return MD_ERR_PROTOCOL;
     }
     *role = static_cast<md_broker_role_t>(role_value);
-    *minor = advertised_minor;
+    *minor = max_minor < MIRAGE_DISPLAY_PROTOCOL_MINOR ? max_minor : MIRAGE_DISPLAY_PROTOCOL_MINOR;
     return MD_OK;
 }
 
@@ -573,6 +585,16 @@ static bool format_supported_by_display(const md_broker_peer_t* display,
     return false;
 }
 
+/* UUID capability fields are optional. A UUID is present only when at least
+ * one of all sixteen wire bytes is non-zero; checking a prefix would make a
+ * valid GPU identity indistinguishable from an absent one. */
+static bool uuid_is_present(const uint8_t uuid[16]) {
+    for (uint32_t index = 0U; index < 16U; ++index) {
+        if (uuid[index] != 0U) return true;
+    }
+    return false;
+}
+
 
 /*
  * Negotiates the format/modifier intersection: a producer candidate is
@@ -607,6 +629,17 @@ static bool formats_intersect(const md_broker_route_t* route, md_format_cap_t* s
  */
 static int send_output_config(md_broker_route_t* route) {
     if (route == nullptr || route->display == nullptr || route->producer == nullptr) return MD_ERR_STATE;
+    /* A new target configuration invalidates resources created under the old
+     * consumer identity. The producer must bind again before offering or
+     * submitting another pool; stale GPU ownership is never retained. */
+    route->producer_gpu_bound = false;
+    /* The target node is mandatory in protocol v1.1: producers must select
+     * this exact consumer GPU before they create DMA-BUF resources. */
+    if (route->display->output.drm_render_major == 0U ||
+        route->display->output.drm_render_minor < 128U ||
+        route->display->output.drm_render_minor > 255U) {
+        return MD_ERR_UNSUPPORTED;
+    }
     md_broker_peer_t* producer = route->producer;
     if (!formats_intersect(route, &route->selected_format)) return MD_ERR_UNSUPPORTED;
     route->format_selected = true;
@@ -618,8 +651,27 @@ static int send_output_config(md_broker_route_t* route) {
         .fourcc = route->selected_format.fourcc,
         .plane_count = route->selected_format.plane_count,
         .modifier = route->selected_format.modifier,
+        .target_drm_render_major = route->display->output.drm_render_major,
+        .target_drm_render_minor = route->display->output.drm_render_minor,
+        .target_gpu_flags = MD_TARGET_GPU_RENDER_NODE_VALID,
+        /* UUID bytes remain zero when their valid flag is absent. This is a
+         * defined v1.1 wire representation, never uninitialized padding. */
+        .target_device_uuid = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
+                               0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
+        .target_driver_uuid = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
+                               0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
     };
-    uint8_t payload[64];
+    if (uuid_is_present(route->display->caps.device_uuid)) {
+        config.target_gpu_flags |= MD_TARGET_GPU_DEVICE_UUID_VALID;
+        std::memcpy(config.target_device_uuid, route->display->caps.device_uuid,
+                    sizeof(config.target_device_uuid));
+    }
+    if (uuid_is_present(route->display->caps.driver_uuid)) {
+        config.target_gpu_flags |= MD_TARGET_GPU_DRIVER_UUID_VALID;
+        std::memcpy(config.target_driver_uuid, route->display->caps.driver_uuid,
+                    sizeof(config.target_driver_uuid));
+    }
+    uint8_t payload[128];
     size_t payload_size = 0;
     if (encode_output_config(&config, payload, sizeof(payload), &payload_size) != MD_OK) {
         return MD_ERR_PROTOCOL;
@@ -838,6 +890,7 @@ static int handle_display_packet(md_broker_t* broker, md_broker_peer_t* peer,
                 if (rc != MD_OK) return rc;
             } else if (!route->output_config_sent || format_changed) {
                 route->output_config_sent = false;
+                route->producer_gpu_bound = false;
                 rc = send_output_config(route);
                 if (rc != MD_OK) return rc;
             }
@@ -865,6 +918,7 @@ static int handle_display_packet(md_broker_t* broker, md_broker_peer_t* peer,
         peer->output.transform = static_cast<md_transform_t>(transform);
         if (route->display != peer) return MD_OK;
         route->output_config_sent = false;
+        route->producer_gpu_bound = false;
         if (route->producer != nullptr && route->producer->ready) {
             if (route->pool_active && !route->unbind_pending) {
                 route->unbind_retiring_old_producer = false;
@@ -995,6 +1049,9 @@ static int handle_producer_packet(md_broker_t* broker, md_broker_peer_t* peer,
             route->pool_generation = 0;
         }
         route->retire_pending = false;
+        /* A reconnect must prove its GPU again; the old producer's identity
+         * cannot authorize frames from the newly registered process. */
+        route->producer_gpu_bound = false;
         route->output_config_sent = false;
         route->format_selected = false;
         peer->id = broker->next_peer_id++;
@@ -1012,7 +1069,8 @@ static int handle_producer_packet(md_broker_t* broker, md_broker_peer_t* peer,
         return rc;
     }
     case MD_OP_OFFER_BUFFERS: {
-        if (route == nullptr || route->producer != peer || !peer->ready || route->pool_active) {
+        if (route == nullptr || route->producer != peer || !peer->ready ||
+            !route->producer_gpu_bound || route->pool_active) {
             return MD_ERR_PROTOCOL;
         }
         md_buffer_pool_t pool;
@@ -1044,7 +1102,7 @@ static int handle_producer_packet(md_broker_t* broker, md_broker_peer_t* peer,
     }
     case MD_OP_PRODUCER_FRAME: {
         if (route == nullptr || route->producer != peer || !route->pool_active ||
-            packet->fd_count != 2) {
+            !route->producer_gpu_bound || packet->fd_count != 2) {
             return MD_ERR_PROTOCOL;
         }
         md_frame_t frame;
@@ -1157,6 +1215,40 @@ static int handle_producer_packet(md_broker_t* broker, md_broker_peer_t* peer,
         route->config_active = true;
         return send_config_to_displays(route);
     }
+    case MD_OP_PRODUCER_GPU_BOUND: {
+        if (route == nullptr || route->producer != peer || packet->fd_count != 0 ||
+            !peer->ready || route->producer_gpu_bound) return MD_ERR_PROTOCOL;
+        md_producer_gpu_info_t gpu{};
+        if (md_proto_decode_producer_gpu_bound(packet->payload, packet->payload_size, &gpu) != MD_OK) {
+            return MD_ERR_PROTOCOL;
+        }
+        md_producer_config_t expected{};
+        if (!route->output_config_sent || !route->display->ready ||
+            !route->display->output.drm_render_minor ||
+            !route->format_selected || !formats_intersect(route, &route->selected_format)) {
+            return MD_ERR_STATE;
+        }
+        expected.target_drm_render_major = route->display->output.drm_render_major;
+        expected.target_drm_render_minor = route->display->output.drm_render_minor;
+        if (gpu.drm_render_major != expected.target_drm_render_major ||
+            gpu.drm_render_minor != expected.target_drm_render_minor) {
+            return MD_ERR_UNSUPPORTED;
+        }
+        if (uuid_is_present(route->display->caps.device_uuid) &&
+            std::memcmp(gpu.device_uuid, route->display->caps.device_uuid,
+                        sizeof(gpu.device_uuid)) != 0) return MD_ERR_UNSUPPORTED;
+        if (uuid_is_present(route->display->caps.driver_uuid) &&
+            std::memcmp(gpu.driver_uuid, route->display->caps.driver_uuid,
+                        sizeof(gpu.driver_uuid)) != 0) return MD_ERR_UNSUPPORTED;
+        peer->producer_info.drm_render_major = gpu.drm_render_major;
+        peer->producer_info.drm_render_minor = gpu.drm_render_minor;
+        std::memcpy(peer->producer_info.device_uuid, gpu.device_uuid,
+                    sizeof(peer->producer_info.device_uuid));
+        std::memcpy(peer->producer_info.driver_uuid, gpu.driver_uuid,
+                    sizeof(peer->producer_info.driver_uuid));
+        route->producer_gpu_bound = true;
+        return MD_OK;
+    }
     case MD_OP_RETIRE_DONE: {
         if (route == nullptr || route->producer != peer || packet->fd_count != 0 ||
             !route->retire_pending) return MD_ERR_PROTOCOL;
@@ -1211,7 +1303,7 @@ static int handle_peer_packet(md_broker_t* broker, md_broker_peer_t* peer,
         peer->hello_done = true;
         uint8_t payload[MD_WIRE_MAX_PAYLOAD];
         size_t payload_size = 0;
-        rc = encode_welcome(broker, payload, sizeof(payload), &payload_size);
+        rc = encode_welcome(broker, peer->minor, payload, sizeof(payload), &payload_size);
         if (rc == MD_OK) rc = send_encoded(peer, MD_OP_WELCOME, payload, payload_size);
         return rc;
     }
@@ -1245,6 +1337,9 @@ static int detach_peer_from_route(md_broker_peer_t* peer) {
         md_close_pool(&route->pool);
         route->pool_active = false;
         route->retire_pending = false;
+        /* A disconnected producer no longer owns the GPU advertised by the
+         * route, so a replacement must complete GPU binding from scratch. */
+        route->producer_gpu_bound = false;
         route->output_config_sent = false;
         route->format_selected = false;
         route->pool_generation = 0;

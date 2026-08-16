@@ -71,6 +71,7 @@ broker 对两个角色都是服务器。
 | 3 | pointer axis | 水平与垂直滚动 |
 | 4 | window state | 可上报遮盖窗口事实 |
 | 5 | color metadata | 保留给后续次版本 |
+| 6 | target GPU binding | broker 在 `OUTPUT_CONFIG` 中下发 consumer 的目标 GPU |
 
 版本 1 要求显式同步；其余特性按交集协商。
 
@@ -82,6 +83,7 @@ broker 对两个角色都是服务器。
 
 ```text
 u32 role
+u16 reserved (zero)
 u16 min_minor
 u16 max_minor
 u64 features
@@ -314,8 +316,11 @@ broker 按 route 缓存最近一次 `WINDOW_STATE`，转发为 producer 侧
 种类、DRM 渲染节点、设备与驱动 UUID，以及其支持的 `(fourcc, plane_count,
 modifier)` 元组。
 
-`PRODUCER_ACCEPTED` 之后，broker 发送 `OUTPUT_CONFIG`（选定范围与格式）。
-生产者分配新代际并发送 `OFFER_BUFFERS`，为每个缓冲平面附带一个 DMA-BUF
+`PRODUCER_ACCEPTED` 之后，broker 发送 `OUTPUT_CONFIG`（选定范围、格式以及
+consumer 的 DRM render node；若 consumer 提供则还包括设备/驱动 UUID）。生产者
+必须先按该身份创建 Vulkan/EGL/VA-API 资源，再发送 `PRODUCER_GPU_BOUND` 确认
+实际选中的节点与 UUID。broker 仅在确认相符后接受 `OFFER_BUFFERS` 和帧，故不会
+以格式协商成功为由跨 GPU 路由 DMA-BUF。随后生产者分配新代际并发送 `OFFER_BUFFERS`，为每个缓冲平面附带一个 DMA-BUF
 FD；池 FD 始终归生产者所有，协议库在排队发送时复制它们。
 
 每条 `PRODUCER_FRAME` 携带与显示端 `FRAME_READY` 相同的负载与两个同步

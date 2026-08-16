@@ -1,6 +1,7 @@
 #include "MirageDisplayItem.hpp"
 
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <fcntl.h>
 #include <QByteArray>
 #include <QEvent>
@@ -33,6 +34,8 @@
 #include <functional>
 #include <limits>
 #include <time.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 /*
@@ -304,6 +307,46 @@ bool MirageDisplayItem::initializeOpenGLRenderer() {
         setLastError(QStringLiteral("OpenGL scene graph is not using EGL"));
         return false;
     }
+
+    /* The existing Qt EGL display is already bound to the consumer's scene
+     * graph GPU. Report its DRM render node before connecting, so the broker
+     * can make producers create resources on the same device. */
+    const auto queryDisplayAttrib = std::bit_cast<PFNEGLQUERYDISPLAYATTRIBEXTPROC>(
+        eglGetProcAddress("eglQueryDisplayAttribEXT"));
+    const auto queryDeviceString = std::bit_cast<PFNEGLQUERYDEVICESTRINGEXTPROC>(
+        eglGetProcAddress("eglQueryDeviceStringEXT"));
+    if (queryDisplayAttrib == nullptr || queryDeviceString == nullptr) {
+        setLastError(QStringLiteral("EGL cannot report the consumer DRM render node"));
+        return false;
+    }
+    EGLAttrib deviceValue = 0;
+    if (queryDisplayAttrib(eglContext->display(), EGL_DEVICE_EXT, &deviceValue) != EGL_TRUE ||
+        deviceValue == 0) {
+        setLastError(QStringLiteral("EGL display has no associated consumer device"));
+        return false;
+    }
+    const EGLDeviceEXT device = std::bit_cast<EGLDeviceEXT>(deviceValue);
+    const char* const renderNode = queryDeviceString(device, EGL_DRM_RENDER_NODE_FILE_EXT);
+    if (renderNode == nullptr) {
+        setLastError(QStringLiteral("EGL consumer device has no DRM render node"));
+        return false;
+    }
+    const QByteArray nodePath(renderNode);
+    const int nodeFd = ::open(nodePath.constData(), O_RDONLY | O_CLOEXEC);
+    if (nodeFd < 0) {
+        setLastError(QStringLiteral("cannot open EGL consumer DRM render node"));
+        return false;
+    }
+    struct stat nodeStat {};
+    const int statResult = fstat(nodeFd, &nodeStat);
+    const int closeResult = ::close(nodeFd);
+    if (statResult != 0 || closeResult != 0 || !S_ISCHR(nodeStat.st_mode) ||
+        minor(nodeStat.st_rdev) < 128U || minor(nodeStat.st_rdev) > 255U) {
+        setLastError(QStringLiteral("cannot identify EGL consumer DRM render node"));
+        return false;
+    }
+    m_drmRenderMajor = static_cast<uint32_t>(major(nodeStat.st_rdev));
+    m_drmRenderMinor = static_cast<uint32_t>(minor(nodeStat.st_rdev));
 
     md_egl_context_t importerContext {
         .display = eglContext->display(),
@@ -770,7 +813,7 @@ void MirageDisplayItem::startConnection() {
     const md_format_cap_t* formats = eglFormats;
     uint32_t formatCount = static_cast<uint32_t>(std::size(eglFormats));
     uint64_t featureBits = MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_POINTER_AXIS |
-                           MD_FEATURE_WINDOW_STATE;
+                           MD_FEATURE_WINDOW_STATE | MD_FEATURE_TARGET_GPU_BINDING;
     if (m_rendererBackend.load() == BackendVulkan && !m_vkFormats.isEmpty()) {
         formats = m_vkFormats.constData();
         formatCount = static_cast<uint32_t>(m_vkFormats.size());
@@ -780,7 +823,7 @@ void MirageDisplayItem::startConnection() {
     const md_format_cap_t* formats = eglFormats;
     const uint32_t formatCount = static_cast<uint32_t>(std::size(eglFormats));
     const uint64_t featureBits = MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_POINTER_AXIS |
-                                 MD_FEATURE_WINDOW_STATE;
+                                 MD_FEATURE_WINDOW_STATE | MD_FEATURE_TARGET_GPU_BINDING;
 #endif
     md_consumer_caps_t capabilities {
         .features = featureBits,

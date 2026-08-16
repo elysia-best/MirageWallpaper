@@ -661,6 +661,18 @@ public:
         return md_producer_set_config(m_producer, &display_config);
     }
 
+    // Confirms the Vulkan device selected from OUTPUT_CONFIG before any pool
+    // is offered. The producer library and broker both reject frames until
+    // this succeeds, preventing a mixed-GPU DMA-BUF route.
+    int bindGpu(const md_producer_gpu_info_t& gpu) {
+        std::lock_guard lock(m_producer_mutex);
+        if (m_producer == nullptr ||
+            md_producer_connection_state(m_producer) != MD_CONNECTION_READY) {
+            return MD_ERR_DISCONNECTED;
+        }
+        return md_producer_bind_gpu(m_producer, &gpu);
+    }
+
     int submitFrame(std::uint64_t generation, std::uint32_t index, std::uint64_t sequence,
                     int acquire_fd, int release_fd) {
         std::lock_guard lock(m_producer_mutex);
@@ -897,8 +909,26 @@ public:
         drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
         VkPhysicalDeviceProperties2 properties {};
         properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        properties.pNext = &drm;
+        VkPhysicalDeviceIDProperties id {};
+        id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+        id.pNext = &drm;
+        properties.pNext = &id;
         vkGetPhysicalDeviceProperties2(physical_device, &properties);
+        if (drm.hasRender != VK_TRUE || drm.renderMajor < 0 || drm.renderMinor < 0) {
+            std::fprintf(stderr, "SceneWallpaper: selected Vulkan device has no valid DRM render node\n");
+            return;
+        }
+        md_producer_gpu_info_t gpu {};
+        gpu.drm_render_major = static_cast<std::uint32_t>(drm.renderMajor);
+        gpu.drm_render_minor = static_cast<std::uint32_t>(drm.renderMinor);
+        std::memcpy(gpu.device_uuid, id.deviceUUID, sizeof(gpu.device_uuid));
+        std::memcpy(gpu.driver_uuid, id.driverUUID, sizeof(gpu.driver_uuid));
+        if (m_host.bindGpu(gpu) != MD_OK) {
+            std::fprintf(stderr,
+                         "SceneWallpaper: mirage-display rejected GPU binding for renderD%u\n",
+                         gpu.drm_render_minor);
+            return;
+        }
         md_vk_export_context_t context {
             .instance = instance,
             .physical_device = physical_device,
@@ -1126,6 +1156,15 @@ int main(int argc, char** argv) {
         std::cerr << "mirage-display did not provide an output configuration\n";
         return 1;
     }
+    // Protocol v1.1 makes the consumer render node mandatory. Continuing
+    // without it would let Vulkan choose an arbitrary GPU on hybrid systems.
+    if ((producer_config.target_gpu_flags & MD_TARGET_GPU_RENDER_NODE_VALID) == 0U ||
+        producer_config.target_drm_render_major == 0U ||
+        producer_config.target_drm_render_minor < 128U ||
+        producer_config.target_drm_render_minor > 255U) {
+        std::cerr << "mirage-display did not provide a valid consumer DRM render node\n";
+        return 1;
+    }
     render_width = producer_config.physical_width;
     render_height = producer_config.physical_height;
 #else
@@ -1197,6 +1236,12 @@ int main(int argc, char** argv) {
     // offscreen; only macOS presents through the live Metal frame callback.
     info.offscreen = true;
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
+    info.target_drm_render_major = producer_config.target_drm_render_major;
+    info.target_drm_render_minor = producer_config.target_drm_render_minor;
+    info.target_gpu_flags = producer_config.target_gpu_flags;
+    if ((producer_config.target_gpu_flags & MD_TARGET_GPU_DEVICE_UUID_VALID) != 0U) {
+        info.uuid = std::span<const std::uint8_t>(producer_config.target_device_uuid, 16U);
+    }
     MirageProtocolHost* host = protocol_host.get();
     info.ex_swapchain_factory =
         [host](VkInstance instance, VkPhysicalDevice physical_device, VkDevice device,
