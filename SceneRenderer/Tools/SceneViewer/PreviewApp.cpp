@@ -558,7 +558,9 @@ int main(int argc, char** argv) {
     }
 #endif
     delete psw;
+#if defined(__APPLE__)
     if (use_metal_display_fallback) clear_live_metal_frame(live_metal_frame_state);
+#endif
     glfwDestroyWindow(window);
     if (surface_window && surface_window != window) glfwDestroyWindow(surface_window);
     glfwTerminate();

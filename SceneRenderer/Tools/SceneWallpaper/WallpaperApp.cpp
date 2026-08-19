@@ -1088,6 +1088,10 @@ std::uint32_t ClampRenderExtent(std::uint32_t value, std::uint32_t fallback) {
 } // namespace
 
 int main(int argc, char** argv) {
+    std::cerr << "Called with arguments: " << "\n";
+    for (int i = 1; i < argc; ++i) {
+        std::cerr << argv[i] << " ";
+    }
     static rstd::log::EnvLogger logger;
     rstd::log::set_logger(logger);
     rstd::log::set_max_level(logger.filter());
@@ -1256,9 +1260,11 @@ int main(int argc, char** argv) {
         sr::host::DesktopWake(desktop);
     };
 #endif
+
     info.width           = ClampRenderExtent(render_width, 1920);
     info.height          = ClampRenderExtent(render_height, 1080);
     info.msaa_samples    = options.msaa;
+#if defined(__APPLE__)
     if (!protocol_mode) {
         info.redraw_callback = [desktop = desktop.get()]() {
             sr::host::DesktopWake(desktop);
@@ -1268,7 +1274,6 @@ int main(int argc, char** argv) {
         EmitLifecycleEvent(&state, "renderer-error");
         SceneRendererMacDesktopStop(state.desktop);
     };
-#if defined(__APPLE__)
     if (use_metalfx) {
         info.metal_frame_callback = [&state](void* texture, void* command_queue,
                                              std::uint32_t width,

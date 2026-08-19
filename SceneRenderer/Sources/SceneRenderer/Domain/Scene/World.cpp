@@ -2,6 +2,7 @@ module;
 
 #if defined(__linux__)
 #include <string>
+#include <set>
 #endif
 
 module sr.scene;

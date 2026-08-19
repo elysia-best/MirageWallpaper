@@ -1673,7 +1673,7 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
         return false;
     }
 
-    m_ex_swapchain->submitRendered(-1);
+    m_ex_swapchain->submitRendered(reinterpret_cast<VkSemaphore>(-1));
     return true;
 }
 
