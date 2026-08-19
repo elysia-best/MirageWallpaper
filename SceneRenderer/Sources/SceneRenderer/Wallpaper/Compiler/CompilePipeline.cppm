@@ -80,7 +80,7 @@ struct ParseContext {
         ImageAlignmentSetter setter;
     };
     std::vector<ImageAlignmentBinding> image_alignment_bindings;
-    std::shared_ptr<PuppetLayerRegistry> puppet_layers { rstd::make_shared<PuppetLayerRegistry>() };
+    std::shared_ptr<PuppetLayerRegistry> puppet_layers { std::make_shared<PuppetLayerRegistry>() };
 
     // ID → (parent_id, node) for every parseable object. Filled by each
     // ParseXObj. FinalizeScene re-parents nodes with non-zero parent_id

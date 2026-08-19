@@ -775,7 +775,7 @@ public:
     };
 
     SceneMesh(bool dynamic = false)
-        : m_dynamic(dynamic), m_dirty(false), m_data(rstd::make_shared<Data>()) {}
+        : m_dynamic(dynamic), m_dirty(false), m_data(std::make_shared<Data>()) {}
 
     MeshPrimitive Primitive() const { return m_primitive; }
     uint32_t      PointSize() const { return m_pointSize; }
@@ -842,7 +842,7 @@ public:
         ensureSubmesh0().vertex_arrays.emplace_back(std::move(array));
     }
     void AddMaterial(SceneMaterial&& material) {
-        m_materials.push_back(rstd::make_shared<SceneMaterial>(std::move(material)));
+        m_materials.push_back(std::make_shared<SceneMaterial>(std::move(material)));
     }
 
     SceneMaterial* Material() { return m_materials.empty() ? nullptr : m_materials[0].get(); }

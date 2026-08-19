@@ -126,7 +126,7 @@ std::shared_ptr<std::vector<std::byte>> ReadAll(const std::filesystem::path& pat
     auto size = f.tellg();
     if (size <= 0) return nullptr;
     f.seekg(0, std::ios::beg);
-    auto buf = rstd::make_shared<std::vector<std::byte>>(static_cast<std::size_t>(size));
+    auto buf = std::make_shared<std::vector<std::byte>>(static_cast<std::size_t>(size));
     if (! f.read(reinterpret_cast<char*>(buf->data()), size)) return nullptr;
     return buf;
 }
@@ -682,7 +682,7 @@ std::shared_ptr<sr::Image> BuildAtlasImage(const FontFace& face, const std::stri
     auto pix = face.AtlasPixels();
     if (fm.atlas_w == 0 || fm.atlas_h == 0 || pix.empty()) return nullptr;
 
-    auto img = rstd::make_shared<sr::Image>();
+    auto img = std::make_shared<sr::Image>();
     img->key = key;
 
     img->header.width         = static_cast<sr::i32>(fm.atlas_w);
@@ -813,7 +813,7 @@ std::shared_ptr<sr::SceneShader> CompileInlineShader(std::string_view name,
         return nullptr;
     }
 
-    auto shader  = rstd::make_shared<sr::SceneShader>();
+    auto shader  = std::make_shared<sr::SceneShader>();
     shader->id   = 0;
     shader->name = std::string(name);
     shader->codes.reserve(spvs.size());

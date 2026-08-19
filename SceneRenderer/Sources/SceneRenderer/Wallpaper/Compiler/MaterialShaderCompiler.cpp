@@ -2444,7 +2444,7 @@ WPShaderParser::CompileSceneShaderVariant(const SceneShaderVariantDesc& desc, fs
     result.variant.default_uniforms = result.info.svs;
     WPShaderParser::UpdateSceneShaderVariantDescFromCompiledUnits(result.variant, units, spvs);
 
-    auto shader              = rstd::make_shared<SceneShader>();
+    auto shader              = std::make_shared<SceneShader>();
     shader->name             = desc.shader_name;
     shader->codes            = std::move(spvs);
     shader->default_uniforms = result.info.svs;

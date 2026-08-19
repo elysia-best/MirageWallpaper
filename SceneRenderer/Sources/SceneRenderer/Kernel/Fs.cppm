@@ -322,7 +322,7 @@ inline std::shared_ptr<TBinaryStream> t_CreateCBinaryStream(std::string_view pat
         rstd_error("can't open: {}", path);
         return nullptr;
     }
-    auto cb = rstd::make_shared<Shared>(path, file);
+    auto cb = std::make_shared<Shared>(path, file);
     return cb;
 }
 

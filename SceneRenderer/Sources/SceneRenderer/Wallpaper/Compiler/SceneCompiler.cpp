@@ -255,7 +255,7 @@ bool AppendLayerCompositePassthroughEffect(fs::VFS& vfs, wpscene::ImageObject& i
 std::shared_ptr<WPPuppetLayer> MakePuppetLayer(std::shared_ptr<WPPuppet>                puppet,
                                                std::span<WPPuppetLayer::AnimationLayer> layers) {
     if (! puppet) return nullptr;
-    auto out = rstd::make_shared<WPPuppetLayer>(std::move(puppet));
+    auto out = std::make_shared<WPPuppetLayer>(std::move(puppet));
     out->prepared(layers);
     return out;
 }
@@ -1020,7 +1020,7 @@ void LoadRootCameraPaths(ParseContext& context, const wpscene::SceneMetadata& sc
     auto it = context.scene->cameras.find("global_perspective");
     if (it == context.scene->cameras.end()) return;
 
-    auto path               = rstd::make_shared<SceneCameraPath>();
+    auto path               = std::make_shared<SceneCameraPath>();
     path->camera_name       = "global_perspective";
     path->camera            = it->second;
     path->node              = context.global_perspective_camera_node.is_some()
@@ -2026,7 +2026,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::Material& wpmat, Scene* pScene, S
     SceneMaterialCustomShader materialShader;
 
     auto& shader = materialShader.shader;
-    shader       = rstd::make_shared<SceneShader>();
+    shader       = std::make_shared<SceneShader>();
     shader->name = wpmat.shader;
 
     std::string shaderPath("/assets/shaders/" + wpmat.shader);
@@ -2756,11 +2756,11 @@ void LoadConstvalue(
             if (auto it = wpmat.constantshadervalues_animations.find(name);
                 it != wpmat.constantshadervalues_animations.end()) {
                 auto curve =
-                    rstd::make_shared<SceneAnimationCurve>(ToSceneAnimationCurve(it->second));
+                    std::make_shared<SceneAnimationCurve>(ToSceneAnimationCurve(it->second));
                 curve->playback = playback_for(name);
                 if (final_quad_value) final_quad_value->curve = curve;
                 if (normalize_position) {
-                    curve = rstd::make_shared<SceneAnimationCurve>(*curve);
+                    curve = std::make_shared<SceneAnimationCurve>(*curve);
                     NormalizeEffectPositionCurve(*curve);
                 }
                 material.SetShaderValueAnimation(glname, std::move(curve));
@@ -2779,14 +2779,14 @@ void ParseCamera(ParseContext& context, const wpscene::SceneMetadata& sc) {
     auto& general = sc.general;
     // effect camera
     scene.cameras["effect"] =
-        rstd::make_shared<SceneCamera>(SceneCamera::MakeOrthographic(2, 2, -1.0, 1.0));
+        std::make_shared<SceneCamera>(SceneCamera::MakeOrthographic(2, 2, -1.0, 1.0));
     context.effect_camera_node = rstd::Some(rstd::sync::Arc<SceneNode>::make()); // at 0,0,0
     scene.cameras.at("effect")->AttatchNode((*context.effect_camera_node).as_ptr());
     scene.sceneGraph->AppendChild((*context.effect_camera_node).clone());
 
     // global camera
     const auto projection_extent = scene.OrthographicProjectionExtent();
-    scene.cameras["global"] = rstd::make_shared<SceneCamera>(SceneCamera::MakeOrthographic(
+    scene.cameras["global"] = std::make_shared<SceneCamera>(SceneCamera::MakeOrthographic(
         projection_extent[0], projection_extent[1], -5000.0, 5000.0));
     scene.activeCamera      = scene.cameras.at("global").get();
     Vector3f cori { (float)context.ortho_w / 2.0f, (float)context.ortho_h / 2.0f, 0 },
@@ -2809,7 +2809,7 @@ void ParseCamera(ParseContext& context, const wpscene::SceneMetadata& sc) {
     // an orthographic scene.
     const double perspective_near = general.isOrtho ? 15000.0 : general.nearz;
     const double perspective_far  = general.isOrtho ? 5.0 : general.farz;
-    scene.cameras["global_perspective"] = rstd::make_shared<SceneCamera>(
+    scene.cameras["global_perspective"] = std::make_shared<SceneCamera>(
         SceneCamera::MakePerspective(static_cast<double>(context.ortho_w) / context.ortho_h,
                                      perspective_near,
                                      perspective_far,
@@ -2898,7 +2898,7 @@ void ParseCameraObj(ParseContext& context, wpscene::CameraObject& cam) {
         scene.activeCamera = camera.get();
     }
 
-    auto path                 = rstd::make_shared<SceneCameraPath>();
+    auto path                 = std::make_shared<SceneCameraPath>();
     path->camera_name         = camera_name;
     path->camera              = camera;
     path->node                = node.as_ptr();
@@ -2932,7 +2932,7 @@ void ParseCameraObj(ParseContext& context, wpscene::CameraObject& cam) {
 
 void InitContext(ParseContext& context, fs::VFS& vfs, const wpscene::SceneMetadata& sc,
                  std::array<i32, 2> ortho_extent) {
-    context.scene            = rstd::make_shared<Scene>();
+    context.scene            = std::make_shared<Scene>();
     context.vfs              = &vfs;
     auto& scene              = *context.scene;
     scene.imageParser        = std::make_unique<TextureAssetDecoder>(&vfs);
@@ -3268,7 +3268,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
 
     // mesh
     SceneMesh                  effct_final_mesh {};
-    auto                       spMesh        = rstd::make_shared<SceneMesh>();
+    auto                       spMesh        = std::make_shared<SceneMesh>();
     auto&                      mesh          = *spMesh;
     const std::array<float, 2> mapRate       = Texture0UvScale(material, wpimgobj.nopadding);
     const Vector3f source_alignment_offset   = hasEffect ? Vector3f::Zero() : alignment_offset;
@@ -3576,7 +3576,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
         }
         // set camera to attatch effect
         if (isPassthrough) {
-            scene.cameras[nodeAddr] = rstd::make_shared<SceneCamera>(SceneCamera::MakeOrthographic(
+            scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(SceneCamera::MakeOrthographic(
                 scene.activeCamera->Width(), scene.activeCamera->Height(), -1.0, 1.0));
             auto attached = scene.activeCamera->GetAttachedNode();
             if (attached.is_some()) scene.cameras.at(nodeAddr)->AttatchNode(attached.unwrap());
@@ -3589,19 +3589,16 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
             i32 w                   = effect_extent[0];
             i32 h                   = effect_extent[1];
             scene.cameras[nodeAddr] =
-                rstd::make_shared<SceneCamera>(SceneCamera::MakeOrthographic(w, h, -1.0, 1.0));
-            // Attach the per-layer effect camera to spImgNode itself so the
-            // camera follows the layer through any parent-container world
-            // translation. Otherwise the layer's quad ends up off-center in
-            // the ping-pong RT whenever the layer is nested under a non-zero
-            // container.
-            scene.cameras.at(nodeAddr)->AttatchNode(spImgNode.as_ptr());
+                std::make_shared<SceneCamera>(SceneCamera::MakeOrthographic(w, h, -1.0, 1.0));
+            scene.cameras.at(nodeAddr)->AttatchNode(effect_camera_anchor
+                                                        ? effect_camera_anchor->get()
+                                                        : spImgNode.as_ptr());
         }
         if (wpimgobj.composite_layer) {
             const std::string group_camera = nodeAddr + "_group";
             const auto        group_extent =
                 NonZeroRenderTargetExtent(effect_target_size[0], effect_target_size[1]);
-            scene.cameras[group_camera] = rstd::make_shared<SceneCamera>(
+            scene.cameras[group_camera] = std::make_shared<SceneCamera>(
                 SceneCamera::MakeOrthographic(group_extent[0], group_extent[1], -1.0, 1.0));
             scene.cameras.at(group_camera)->AttatchNode(effect_camera_anchor
                                                             ? effect_camera_anchor->get()
@@ -3617,7 +3614,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
         const auto effect_extent =
             NonZeroRenderTargetExtent(effect_target_size[0], effect_target_size[1]);
         auto imgEffectLayer =
-            rstd::make_shared<SceneImageEffectLayer>(spImgNode.as_ptr(),
+            std::make_shared<SceneImageEffectLayer>(spImgNode.as_ptr(),
                                                     static_cast<float>(effect_extent[0]),
                                                     static_cast<float>(effect_extent[1]),
                                                     effect_ppong_a,
@@ -3671,7 +3668,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
                 i_eff--;
                 continue;
             }
-            std::shared_ptr<SceneImageEffect> imgEffect = rstd::make_shared<SceneImageEffect>();
+            std::shared_ptr<SceneImageEffect> imgEffect = std::make_shared<SceneImageEffect>();
             imgEffect->name                             = wpeffobj.name;
             imgEffect->runtime_visible                  = wpeffobj.visible;
             if (! wpeffobj.visible_user.empty()) {
@@ -3820,7 +3817,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
                 // load glname from alias and load to constvalue
                 LoadConstvalue(
                     context, material, wpmat, wpEffShaderInfo, &final_quad_shader_values);
-                auto spMesh = rstd::make_shared<SceneMesh>();
+                auto spMesh = std::make_shared<SceneMesh>();
                 {
                     svData.propagatedParallaxDepth = { wpimgobj.parallaxDepth[0],
                                                        wpimgobj.parallaxDepth[1] };
@@ -3950,7 +3947,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
                     else
                         passthrough_mat.textures[0] = effect_ppong_a;
 
-                    auto finalEffect = rstd::make_shared<SceneImageEffect>();
+                    auto finalEffect = std::make_shared<SceneImageEffect>();
                     auto spFinalNode = rstd::sync::Arc<SceneNode>::make();
 
                     WPShaderInfo wpFinalShaderInfo;
@@ -3971,7 +3968,7 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
                                      &wpFinalShaderInfo)) {
                         LoadConstvalue(
                             context, finalMaterial, passthrough_mat, wpFinalShaderInfo);
-                        auto spFinalMesh = rstd::make_shared<SceneMesh>();
+                        auto spFinalMesh = std::make_shared<SceneMesh>();
                         spFinalMesh->AddMaterial(std::move(finalMaterial));
                         RegisterShaderUserVarIndex(context,
                                                    spFinalNode.as_ptr(),
@@ -4257,14 +4254,13 @@ void ParseParticleObj(ParseContext& context, wpscene::ParticleObject& wppartobj,
     // this node's local scale. Propagated to child particle nodes.
     Eigen::Vector3f node_world_scale = child_ptr.world_scale.cwiseProduct(spNode->Scale());
 
-    // Child presets inherit the placed object's opacity/tint but keep their
-    // own size, lifetime, rate and count.
-    auto override_state = rstd::make_shared<wpscene::ParticleInstanceoverride>(
-        ParticleOverrideForNode(wppartobj, is_child, child_ptr.inherit_instance_override));
-    auto& override = *override_state;
+    auto override_state = is_child && child_ptr.instance_override
+                              ? child_ptr.instance_override
+                              : std::make_shared<wpscene::ParticleInstanceoverride>(
+                                    wppartobj.instanceoverride);
     auto playback_state = is_child && child_ptr.playback
                               ? child_ptr.playback
-                              : rstd::make_shared<ParticlePlaybackState>();
+                              : std::make_shared<ParticlePlaybackState>();
 
     auto& particle_obj = *p_particle_obj;
     auto& vfs          = *context.vfs;
@@ -4367,7 +4363,7 @@ void ParseParticleObj(ParseContext& context, wpscene::ParticleObject& wppartobj,
         return;
     }
     LoadConstvalue(context, material, particle_obj.material, shaderInfo);
-    auto  spMesh             = rstd::make_shared<SceneMesh>(true);
+    auto  spMesh             = std::make_shared<SceneMesh>(true);
     auto& mesh               = *spMesh;
     auto  sequencemultiplier = particle_obj.sequencemultiplier;
     bool  hasSprite          = material.hasSprite;
@@ -4631,7 +4627,7 @@ void ParseModelObj(ParseContext& context, wpscene::ModelObject& model_obj) {
     if (! model_obj.visible_user.empty())
         node->SetVisibleUserBinding(ToSceneUserVisibilityBinding(model_obj.visible_user));
 
-    auto mesh = rstd::make_shared<SceneMesh>();
+    auto mesh = std::make_shared<SceneMesh>();
 
     SceneUniformNodeData svData;
     svData.parallaxDepth           = { model_obj.parallaxDepth[0], model_obj.parallaxDepth[1] };
@@ -4960,7 +4956,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
     }
 
     const bool supports_runtime_text_write = wants_dynamic_text || context.scene_has_scripts;
-    auto       sp_mesh = rstd::make_shared<SceneMesh>(/*dynamic=*/supports_runtime_text_write);
+    auto       sp_mesh = std::make_shared<SceneMesh>(/*dynamic=*/supports_runtime_text_write);
     {
         SceneVertexArray vertex(MakeAttrSet({ VAttr::Position, VAttr::TexCoord, VAttr::Color }),
                                 peak_quads * 4);
@@ -5007,10 +5003,10 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
         align_or_default(obj.verticalalign, obj.alignment, "top", "bottom");
     style.halign = initial_halign;
 
-    auto layouter = rstd::make_shared<text::TextLayouter>(face, sp_mesh, style, peak_quads);
+    auto layouter = std::make_shared<text::TextLayouter>(face, sp_mesh, style, peak_quads);
     layouter->SetText(s_text);
-    auto current_text       = rstd::make_shared<std::string>(s_text);
-    auto current_point_size = rstd::make_shared<double>(obj.pointsize);
+    auto current_text       = std::make_shared<std::string>(s_text);
+    auto current_point_size = std::make_shared<double>(obj.pointsize);
 
     auto  initial_metrics = layouter->Metrics();
     float text_w          = initial_metrics.text_width;
@@ -5081,7 +5077,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
     const bool  has_authored_height = obj.size[1] > 0.0f;
     const float object_w            = has_authored_width ? obj.size[0] : text_bbox_w;
     const float object_h            = has_authored_height ? obj.size[1] : text_bbox_h;
-    auto anchor_state = rstd::make_shared<TextAnchorState>(TextAnchorState {
+    auto anchor_state = std::make_shared<TextAnchorState>(TextAnchorState {
         .horizontal      = initial_halign,
         .vertical        = initial_valign,
         .origin          = Vector3f(obj.origin.data()),
@@ -5111,7 +5107,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
     const auto [initial_logical_w, initial_logical_h] = TextLayerExtent(initial_geometry);
     const auto [initial_layer_w, initial_layer_h] =
         TextLayerExtent(initial_geometry, initial_render_scale);
-    auto runtime_targets                          = rstd::make_shared<TextRuntimeTargets>();
+    auto runtime_targets                          = std::make_shared<TextRuntimeTargets>();
     if (! direct_text) {
         auto&             scene   = *context.scene;
         const std::string addr    = getAddr(sp_node.as_ptr());
@@ -5135,7 +5131,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
         // Per-layer ortho camera. effect_camera_node sits at origin so the
         // view matrix is identity; ortho extents = bbox so glyph pixel
         // coords (centered around 0) map directly to [-1, +1] NDC.
-        scene.cameras[addr] = rstd::make_shared<SceneCamera>(
+        scene.cameras[addr] = std::make_shared<SceneCamera>(
             SceneCamera::MakeOrthographic(initial_logical_w, initial_logical_h, -1.0, 1.0));
         scene.cameras.at(addr)->AttatchNode(sp_node.as_ptr());
 
@@ -5154,7 +5150,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
         compose_node->ID() = obj.id;
         compose_node->SetSize({ object_w, object_h });
 
-        auto layer = rstd::make_shared<SceneImageEffectLayer>(has_text_effect ? compose_node.as_ptr()
+        auto layer = std::make_shared<SceneImageEffectLayer>(has_text_effect ? compose_node.as_ptr()
                                                                              : sp_node.as_ptr(),
                                                              static_cast<float>(initial_logical_w),
                                                              static_cast<float>(initial_logical_h),
@@ -5165,7 +5161,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
         if (copy_background_seed) {
             auto bg_node = rstd::sync::Arc<SceneNode>::make();
             bg_node->SetCamera("effect");
-            auto bg_mesh = rstd::make_shared<SceneMesh>();
+            auto bg_mesh = std::make_shared<SceneMesh>();
             bg_mesh->ChangeMeshDataFrom(scene.default_effect_mesh);
             SceneMaterial bg_material;
             bg_material.name                = "text_copybackground";
@@ -5254,7 +5250,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
             for (const auto& wpeffobj : obj.effects) {
                 if (! wpeffobj.visible && wpeffobj.visible_user.empty()) continue;
 
-                auto effect             = rstd::make_shared<SceneImageEffect>();
+                auto effect             = std::make_shared<SceneImageEffect>();
                 effect->name            = wpeffobj.name;
                 effect->runtime_visible = wpeffobj.visible;
                 if (! wpeffobj.visible_user.empty()) {
@@ -5356,7 +5352,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
                     LoadConstvalue(
                         context, mat, wpmat, shader_info, &final_quad_shader_values);
 
-                    auto mesh = rstd::make_shared<SceneMesh>();
+                    auto mesh = std::make_shared<SceneMesh>();
                     mesh->AddMaterial(std::move(mat));
                     RegisterShaderUserVarIndex(
                         context, compose_node.as_ptr(), mesh->MaterialSlots().back(), wpmat,
@@ -5387,7 +5383,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
             auto resolve_node = rstd::sync::Arc<SceneNode>::make();
             auto resolved     = load_passthrough_material(resolve_node.as_ptr(), ppong_a);
             if (! resolved.has_value()) return;
-            auto resolve_mesh = rstd::make_shared<SceneMesh>();
+            auto resolve_mesh = std::make_shared<SceneMesh>();
             resolve_mesh->AddMaterial(std::move(resolved->material));
             resolve_node->AddMesh(std::move(resolve_mesh));
             context.shader_updater->SetNodeData(resolve_node.as_ptr(), resolved->sv);
@@ -5395,7 +5391,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
                 .node = resolve_node.as_ptr(),
                 .data = resolved->sv,
             });
-            auto resolve_effect  = rstd::make_shared<SceneImageEffect>();
+            auto resolve_effect  = std::make_shared<SceneImageEffect>();
             resolve_effect->name = "text_resolve";
             resolve_effect->nodes.push_back(SceneImageEffectNode {
                 .output    = ppong_b,
@@ -5404,7 +5400,7 @@ void ParseTextObj(ParseContext& context, wpscene::TextObject& obj) {
             layer->SetFinalResolveEffect(std::move(resolve_effect));
         }
 
-        auto compose_mesh = rstd::make_shared<SceneMesh>(/*dynamic=*/wants_dynamic_text);
+        auto compose_mesh = std::make_shared<SceneMesh>(/*dynamic=*/wants_dynamic_text);
         GenCardMesh(*compose_mesh,
                     { static_cast<float>(runtime_targets->logical_w),
                       static_cast<float>(runtime_targets->logical_h) });
@@ -6606,7 +6602,7 @@ void BuildBloomPostProcess(ParseContext& context, fs::VFS& vfs, const wpscene::S
         { "_rt_bloom_combine", "_rt_bloom_combine" },
     };
 
-    auto pp  = rstd::make_shared<ScenePostProcess>();
+    auto pp  = std::make_shared<ScenePostProcess>();
     pp->name = "__bloom";
 
     auto add_pass = [&](const char* mat_relpath,
@@ -6645,7 +6641,7 @@ void BuildBloomPostProcess(ParseContext& context, fs::VFS& vfs, const wpscene::S
         }
         LoadConstvalue(context, material, wpmat, wpShaderInfo);
 
-        auto pp_mesh = rstd::make_shared<SceneMesh>();
+        auto pp_mesh = std::make_shared<SceneMesh>();
         pp_mesh->ChangeMeshDataFrom(scene.default_effect_mesh);
         pp_mesh->AddMaterial(std::move(material));
         RegisterShaderUserVarIndex(

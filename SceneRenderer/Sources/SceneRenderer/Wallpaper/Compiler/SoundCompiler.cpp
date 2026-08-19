@@ -168,7 +168,7 @@ public:
             const std::string& path = m_soundPaths[(base + tried) % n];
             auto               bin  = vfs.Open("/assets/" + path);
             if (! bin) continue;
-            auto adapter = rstd::make_shared<BStreamAdapter>(std::move(bin));
+            auto adapter = std::make_shared<BStreamAdapter>(std::move(bin));
             auto stream  = wavsen::audio::make_stream(std::move(adapter), m_desc);
             if (stream) {
                 m_curActive = std::move(stream);
@@ -254,10 +254,10 @@ std::shared_ptr<SceneSoundControl> WPSoundParser::Parse(const wpscene::SoundObje
                                    .mode    = ToPlaybackMode(obj.playbackmode) };
 
     auto* audio_average = scene ? &scene->audioAverage : nullptr;
-    auto  state         = rstd::make_shared<WPSoundState>();
+    auto  state         = std::make_shared<WPSoundState>();
     state->playing.store(obj.visible && ! obj.startsilent, std::memory_order_release);
     state->volume.store(config.volume, std::memory_order_release);
-    auto control = rstd::make_shared<WPSoundControl>(state);
+    auto control = std::make_shared<WPSoundControl>(state);
     auto ss      = std::make_unique<WPSoundStream>(obj.sound, vfs, config, state, audio_average);
     sm.mount(std::move(ss));
     return control;
