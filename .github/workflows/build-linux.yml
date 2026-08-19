@@ -59,6 +59,16 @@ jobs:
           # Container jobs may run checkout and subsequent packaging commands
           # with different numeric owners; RPM source archival still needs Git.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      
+      - name: Copy packaing scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.format }}" = "rpm" ]; then
+            cp -a scripts/linux_packaging/RPMBUILD RPMBUILD
+          else
+            cp -a scripts/linux_packaging/debian debian
+          fi
 
       - name: Install Debian/Ubuntu dependencies
         if: matrix.format == 'deb'
