@@ -1672,8 +1672,11 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
         fail(res);
         return false;
     }
-
-    m_ex_swapchain->submitRendered(reinterpret_cast<VkSemaphore>(-1));
+#ifdef __APPLE__
+    m_ex_swapchain->submitRendered(-1);
+#else
+    m_ex_swapchain->submitRendered(*rr.sem_export);
+#endif
     return true;
 }
 
