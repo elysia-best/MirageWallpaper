@@ -1088,10 +1088,6 @@ std::uint32_t ClampRenderExtent(std::uint32_t value, std::uint32_t fallback) {
 } // namespace
 
 int main(int argc, char** argv) {
-    std::cerr << "Called with arguments: " << "\n";
-    for (int i = 1; i < argc; ++i) {
-        std::cerr << argv[i] << " ";
-    }
     static rstd::log::EnvLogger logger;
     rstd::log::set_logger(logger);
     rstd::log::set_max_level(logger.filter());
