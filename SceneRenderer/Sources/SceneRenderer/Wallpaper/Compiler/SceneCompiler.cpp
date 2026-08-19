@@ -3118,8 +3118,6 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
         colorEffect.materials.push_back(std::move(colorMat));
         wpimgobj.effects.push_back(std::move(colorEffect));
     }
-    const bool is_hidden_link_source =
-        context.hidden_link_source_ids.count(static_cast<std::int32_t>(wpimgobj.id)) != 0;
     const bool is_linked_composite =
         wpimgobj.composite_layer &&
         context.IsLinkedSource(static_cast<std::int32_t>(wpimgobj.id));
