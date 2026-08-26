@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QDebug>
 #include <QIcon>
+#include <QScreen>
 #include <QUrl>
 #include <QtQml/qqmlextensionplugin.h>
 #include <QQmlApplicationEngine>
@@ -25,6 +26,18 @@ int main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("Mirage"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0.0"));
     app.setWindowIcon(QIcon(QStringLiteral(":/appicon.png")));
+
+    // 检查系统报告的screen数量和输出信息
+    const auto screens = QGuiApplication::screens();
+    qInfo() << "[ScreenDebug] Total screens:" << screens.size();
+    for (int i = 0; i < screens.size(); ++i) {
+        QScreen* s = screens[i];
+        qInfo() << "[ScreenDebug] Screen" << i << ":"
+                << "name=" << s->name()
+                << "manufacturer=" << s->manufacturer()
+                << "model=" << s->model()
+                << "serial=" << s->serialNumber();
+    }
 
     Mirage::DisplayBrokerService displayBroker;
     QString brokerError;

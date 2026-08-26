@@ -457,8 +457,12 @@ bool PlaybackController::applySettings(const QVariantMap& values) {
 }
 
 void PlaybackController::restoreStartupPlayback() {
+    const int screenCount = QGuiApplication::screens().size();
     const QHash<int, QString> lastApplied = m_playlist->lastAppliedIDs();
     for (auto it = lastApplied.constBegin(); it != lastApplied.constEnd(); ++it) {
+        // 跳过不存在的screen：用户可能移除了显示器，或从多屏切换到单屏
+        if (it.key() >= screenCount) continue;
+
         const Wallpaper item = m_playlist->resolveWallpaper(it.value());
         if (!item.isValid()) continue;
         QString error;

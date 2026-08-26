@@ -83,9 +83,13 @@ void RendererController::setWallpaperTrustChecker(const std::function<bool(const
 
 bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, const RenderOptions& options, QString* error) {
     if (!wallpaper.isValid()) {
+        qWarning() << "[Render] Wallpaper is invalid";
         if (error) *error = QStringLiteral("壁纸无效或缺少预设依赖");
         return false;
     }
+
+    qWarning() << "[Render] Called with wallpaper kind:" << static_cast<int>(wallpaper.kind())
+               << "screenIndex:" << screenIndex;
 
     if (wallpaper.kind() == WallpaperKind::Web
         && m_wallpaperTrustChecker
@@ -97,12 +101,14 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
 
     const QString unsupported = LinuxSystemIntegration::wallpaperUnsupportedReason();
     if (!unsupported.isEmpty()) {
+        qWarning() << "[Render] Wallpaper unsupported:" << unsupported;
         if (error) *error = unsupported;
         return false;
     }
 
     const QString binary = binaryForKind(wallpaper.kind());
     if (binary.isEmpty()) {
+        qWarning() << "[Render] Binary not found for kind:" << static_cast<int>(wallpaper.kind());
         if (error) *error = QStringLiteral("找不到渲染器二进制");
         return false;
     }
@@ -113,23 +119,34 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
                                 : screens.at(qBound(0, screenIndex, screens.size() - 1));
     const QString outputStableId = stableOutputId(targetScreen);
     if (outputStableId.isEmpty()) {
+        qWarning() << "[Render] Cannot determine output stable ID for screen" << screenIndex;
         if (error) *error = QStringLiteral("无法确定目标显示器标识，无法应用壁纸");
         return false;
+    }
+    qWarning() << "[Render] Output stable ID:" << outputStableId;
+
+    qWarning() << "[Render] Checking m_running for screenIndex:" << screenIndex
+               << "contains:" << m_running.contains(screenIndex);
+    if (m_running.contains(screenIndex)) {
+        qWarning() << "[Render] Found existing process, will terminate";
     }
 
     if (RunningProcess* const running = m_running.value(screenIndex)) {
         // Broker 在旧 producer 断连前拒绝同一输出的新 producer。因此切换时
-        // 覆盖保存最新请求，并只对尚未停止的旧进程发送一次退出指令。
+        // 覆盖保存最新请求，并立即强制终止旧进程以加速 broker 清理。
+        qWarning() << "[Switch] Detected existing renderer on screen" << screenIndex << "PID" << running->process->processId();
         m_pendingRenders.insert(screenIndex, PendingRender{wallpaper, options});
         if (!running->stopping) {
             running->stopping = true;
-            sendCommand(running, QJsonObject{{"cmd", "quit"}});
-            running->process->closeWriteChannel();
-            QTimer::singleShot(1500, running->process, [process = running->process] {
-                if (process->state() != QProcess::NotRunning) process->terminate();
-            });
-            QTimer::singleShot(3000, running->process, [process = running->process] {
-                if (process->state() != QProcess::NotRunning) process->kill();
+            qWarning() << "[Switch] Sending SIGTERM to PID" << running->process->processId();
+            // 立即发送 SIGTERM，不再尝试优雅退出
+            running->process->terminate();
+            // 如果 200ms 后仍未退出，发送 SIGKILL
+            QTimer::singleShot(200, running->process, [process = running->process] {
+                if (process->state() != QProcess::NotRunning) {
+                    qWarning() << "[Switch] Process still running after 200ms, sending SIGKILL to" << process->processId();
+                    process->kill();
+                }
             });
             emit rendererStateChanged();
         }
@@ -225,14 +242,17 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
                 delete running;
                 if (wasCurrent) emit rendererStateChanged();
                 if (launchPending) {
-                    // finished 表明旧 producer socket 已关闭；broker 会在读取
-                    // 新 producer 注册前处理挂断。此时重走完整预检和启动流程，
-                    // 失败经既有消息通道反馈给界面。
-                    QString launchError;
-                    if (!render(pending.wallpaper, screen, pending.options, &launchError)
-                        && !launchError.isEmpty()) {
-                        emit rendererMessage(launchError);
-                    }
+                    // 给 broker 100ms 时间完成旧 producer 清理，避免新 producer
+                    // 连接时遇到 MD_ERR_STATE 或重复注册错误。
+                    qWarning() << "[Switch] Old process finished, waiting 100ms before launching new renderer";
+                    QTimer::singleShot(100, this, [this, pending, screen]() {
+                        qWarning() << "[Switch] Launching new renderer after cleanup delay";
+                        QString launchError;
+                        if (!render(pending.wallpaper, screen, pending.options, &launchError)
+                            && !launchError.isEmpty()) {
+                            emit rendererMessage(launchError);
+                        }
+                    });
                 }
                 emit rendererExited(screen, abnormal);
             });
@@ -241,16 +261,25 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
     process->setArguments(args);
     process->setProcessEnvironment(env);
     process->setProcessChannelMode(QProcess::SeparateChannels);
+
+    // 在 start() 之前插入 m_running，避免竞态：如果进程快速退出，
+    // finished 信号处理时 wasCurrent 判断才能正确工作。
+    m_running.insert(screenIndex, running);
+    qWarning() << "[Render] Inserted into m_running at screenIndex:" << screenIndex << "before start";
+
     process->start();
 
     if (!process->waitForStarted(5000)) {
         const QString message = process->errorString();
         for (const QString& temp : running->tempFiles) QFile::remove(temp);
+        m_running.remove(screenIndex);
         delete running;
         process->deleteLater();
         if (error) *error = message;
         return false;
     }
+
+    qWarning() << "[Render] Process started successfully, PID:" << process->processId();
 
     if (wallpaper.kind() == WallpaperKind::Web) {
         // QtWebEngine navigation is asynchronous. WebWallpaper retains this
@@ -268,7 +297,6 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         });
     }
 
-    m_running.insert(screenIndex, running);
     emit rendererStateChanged();
     return true;
 }

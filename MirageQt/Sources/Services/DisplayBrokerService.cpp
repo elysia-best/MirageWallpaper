@@ -37,6 +37,9 @@ bool DisplayBrokerService::start(QString* error) {
         return false;
     }
 
+    // Remove stale socket file from previous crash or unclean shutdown
+    QFile::remove(m_socketPath);
+
     const QByteArray socketBytes = m_socketPath.toUtf8();
     md_broker_options_t options {
         .socket_path = socketBytes.constData(),
@@ -59,20 +62,27 @@ bool DisplayBrokerService::start(QString* error) {
     }
 
     m_running.store(true);
+    qWarning("[DisplayBroker] Starting dispatch thread...");
     // Serve the socket on a worker thread so the UI never blocks: dispatch
     // polls with a 100 ms timeout and md_broker_stop() (from stop()) wakes it,
     // so the thread can be joined without waiting for a full timeout.
     m_thread = std::thread([this] {
+        qWarning("[DisplayBroker] Dispatch thread started, entering loop");
         while (m_running.load()) {
             const int result = md_broker_dispatch(m_broker, 100);
-            if (result == MD_ERR_DISCONNECTED) break;
+            if (result == MD_ERR_DISCONNECTED) {
+                qWarning("[DisplayBroker] Dispatch: disconnected");
+                break;
+            }
             if (result < 0) {
-                qWarning("Mirage display broker dispatch failed: %d", result);
+                qWarning("[DisplayBroker] Dispatch failed: %d", result);
                 break;
             }
         }
+        qWarning("[DisplayBroker] Dispatch thread exiting");
         m_running.store(false);
     });
+    qWarning("[DisplayBroker] Broker started successfully on %s", qPrintable(m_socketPath));
     return true;
 }
 
