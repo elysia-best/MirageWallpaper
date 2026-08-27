@@ -54,7 +54,8 @@ QString dedupeKey(const Wallpaper& wallpaper) {
     bool numeric = false;
     leaf.toULongLong(&numeric);
     if (numeric) return QStringLiteral("workshop:") + leaf;
-    return QStringLiteral("path:") + canonicalOrClean(wallpaper.wallpaperDirectory);
+    const QString cleanDir = QDir::cleanPath(wallpaper.wallpaperDirectory);
+    return QStringLiteral("path:") + cleanDir;
 }
 
 } // namespace
@@ -227,11 +228,12 @@ bool WallpaperLibrary::removeImportedWallpaper(const Wallpaper& wallpaper, QStri
         return false;
     }
 
-    const QString importedRoot = QFileInfo(importedDirectory()).canonicalFilePath();
-    const QString wallpaperPath = QFileInfo(wallpaper.wallpaperDirectory).canonicalFilePath();
+    const QString importedRoot = QDir::cleanPath(importedDirectory());
+    const QString wallpaperPath = QDir::cleanPath(wallpaper.wallpaperDirectory);
     if (importedRoot.isEmpty() || wallpaperPath.isEmpty()
         || wallpaperPath == importedRoot
-        || !wallpaperPath.startsWith(importedRoot + QLatin1Char('/'))) {
+        || (!wallpaperPath.startsWith(importedRoot + QLatin1Char('/'))
+            && wallpaperPath != importedRoot)) {
         if (error) *error = QStringLiteral("TODO: 只能删除 Mirage 导入目录中的壁纸");
         return false;
     }
