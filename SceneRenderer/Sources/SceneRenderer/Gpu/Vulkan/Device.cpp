@@ -281,6 +281,11 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
     enabled.geometryShader    = supported2.features.geometryShader;
     enabled.sampleRateShading = supported2.features.sampleRateShading;
     enabled.samplerAnisotropy = supported2.features.samplerAnisotropy;
+    // Persist the exact device feature state for later pipeline validation.
+    // SceneCompiler can request a geometry stage on Linux for particles; when
+    // the selected GPU lacks this feature we report a deterministic error at
+    // pass build time rather than rendering with an implicit fallback path.
+    device.m_geometry_shader_enabled = enabled.geometryShader == VK_TRUE;
     VkPhysicalDeviceTimelineSemaphoreFeaturesKHR enabled_timeline {
         .sType             = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR,
         .pNext             = nullptr,

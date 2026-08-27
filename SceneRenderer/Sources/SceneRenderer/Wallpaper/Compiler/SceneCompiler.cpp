@@ -1330,8 +1330,14 @@ struct ImageParseGeometry {
 };
 
 bool PlatformSupportsGeometryShaders() {
+    // Linux Vulkan backend supports particle geometry-stage expansion (point to
+    // quad/rope segment fan-out) and should use that pure-GPU path.
+#if defined(__linux__)
+    return true;
+#else
     // Metal has no geometry-shader stage; MoltenVK can't lower them.
     return false;
+#endif
 }
 
 // Particle topology is a fixed sequence of independent quads. Build it at

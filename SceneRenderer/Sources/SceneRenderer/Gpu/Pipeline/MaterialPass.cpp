@@ -439,6 +439,19 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
         ref  = &shader_reflection->reflected;
         spvs = CloneShaderSpvs(*shader_reflection);
+        const bool uses_geometry_stage = std::any_of(
+            spvs.begin(), spvs.end(), [](const Uni_ShaderSpv& stage) {
+                return stage && stage->stage == ShaderType::GEOMETRY;
+            });
+        // Linux particle rendering can opt into GS expansion. Reject this
+        // material explicitly when the active Vulkan device did not enable
+        // geometryShader, so unsupported GPUs fail with an actionable error.
+        if (uses_geometry_stage && ! device.geometry_shader_enabled()) {
+            rstd_error("shader '{}' requires Vulkan geometryShader feature, but selected gpu "
+                       "does not support it",
+                       shader.name);
+            return;
+        }
         for (const auto& blk : ref->blocks) CheckBlockOverlap(blk, shader.name);
 
         auto& bindings = descriptor_info.bindings;

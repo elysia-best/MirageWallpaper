@@ -513,6 +513,10 @@ public:
         return m_enabled_device_extensions;
     }
     const auto& limits() const { return m_limits; }
+    // Exposes whether vkCreateDevice enabled geometryShader. Particle materials
+    // that compile a GEOMETRY stage must fail with a clear diagnostic when this
+    // is false instead of silently falling back to CPU-expanded quads.
+    bool        geometry_shader_enabled() const { return m_geometry_shader_enabled; }
     const auto& vma_allocator() const { return *m_allocator; }
     const auto& cmd_pool() const { return m_command_pool; }
     const auto& swapchain() const { return m_swapchain; }
@@ -544,6 +548,7 @@ private:
     Set<std::string>         m_extensions;
     std::vector<std::string> m_enabled_instance_extensions;
     std::vector<std::string> m_enabled_device_extensions;
+    bool                     m_geometry_shader_enabled { false };
 
     Swapchain m_swapchain;
 
