@@ -306,6 +306,7 @@ struct ContentView: View {
                 .allowsHitTesting(false)
         }
         .environment(\.locale, localization.locale)
+        .preferredColorScheme(globalSettingsViewModel.settings.appearance == .light ? .light : (globalSettingsViewModel.settings.appearance == .dark ? .dark : nil))
         .frame(minWidth: 1100, minHeight: 640)
         .onChange(of: navigationModel.selection) { _, section in
             loadedSections.insert(section)
