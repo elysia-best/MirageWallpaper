@@ -12,10 +12,28 @@ import "ContentView"
 ContentView {
     id: window
 
+    function applyAppearance(appearance) {
+        if (appearance === "light") {
+            FluTheme.darkMode = FluThemeType.Light;
+        } else if (appearance === "dark") {
+            FluTheme.darkMode = FluThemeType.Dark;
+        } else {
+            FluTheme.darkMode = FluThemeType.System;
+        }
+    }
+
     Component.onCompleted: {
         FluTheme.animationEnabled = true;
+        applyAppearance(mirage.settings.appearance);
         // 启动编排：首次启动引导等窗口级初始化。
         // 渲染恢复 / 播放列表轮转 / Steam session 刷新由 MirageController 负责。
+    }
+
+    Connections {
+        target: mirage
+        function onSettingsChanged() {
+            applyAppearance(mirage.settings.appearance);
+        }
     }
 
     Connections {
