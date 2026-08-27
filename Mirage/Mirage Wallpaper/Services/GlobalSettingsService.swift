@@ -271,6 +271,8 @@ class GlobalSettingsViewModel: ObservableObject {
         self.loginItemStatus = loginStatus
         self.loginItemError = loginItemMigrationError
         MirageLocalization.shared.apply(self.settings.language)
+        // 应用持久化的外观设置（浅色/深色/跟随系统），避免应用启动时未恢复 AppKit 主题
+        self.validate()
         self.didFinishLaunchingNotificationCancellable =
         NotificationCenter.default.publisher(for: NSApplication.didFinishLaunchingNotification)
             .sink { [weak self] _ in self?.didFinishLaunchingNotification() }
