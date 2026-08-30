@@ -1330,12 +1330,8 @@ struct ImageParseGeometry {
 };
 
 bool PlatformSupportsGeometryShaders() {
-#if defined(__linux__)
-    return true;
-#else
     // Metal has no geometry-shader stage; MoltenVK can't lower them.
     return false;
-#endif
 }
 
 // Particle topology is a fixed sequence of independent quads. Build it at
