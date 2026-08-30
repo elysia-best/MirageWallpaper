@@ -137,6 +137,7 @@ QVariantList PlaybackController::displays() const {
         const QRect geometry = screen->geometry();
         result.append(QVariantMap{
             {QStringLiteral("index"), index},
+            {QStringLiteral("stableId"), RendererController::stableOutputId(screen)},
             {QStringLiteral("name"), screen->name().isEmpty()
                 ? QStringLiteral("显示器 %1").arg(index + 1) : screen->name()},
             {QStringLiteral("width"), geometry.width()},
@@ -457,17 +458,24 @@ bool PlaybackController::applySettings(const QVariantMap& values) {
 }
 
 void PlaybackController::restoreStartupPlayback() {
-    const int screenCount = QGuiApplication::screens().size();
-    const QHash<int, QString> lastApplied = m_playlist->lastAppliedIDs();
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    const QHash<QString, QString> lastApplied = m_playlist->lastAppliedIDs();
     for (auto it = lastApplied.constBegin(); it != lastApplied.constEnd(); ++it) {
-        // 跳过不存在的screen：用户可能移除了显示器，或从多屏切换到单屏
-        if (it.key() >= screenCount) continue;
+        int screen = -1;
+        for (int index = 0; index < screens.size(); ++index) {
+            if (RendererController::stableOutputId(screens.at(index)) == it.key()) {
+                screen = index;
+                break;
+            }
+        }
+        // 屏幕可能已被移除；稳定 ID 不匹配时不把壁纸错误恢复到另一块屏。
+        if (screen < 0) continue;
 
         const Wallpaper item = m_playlist->resolveWallpaper(it.value());
         if (!item.isValid()) continue;
         QString error;
-        if (m_renderer->render(item, it.key(), renderOptionsFor(item), &error)) {
-            m_playlist->setCurrentWallpaper(it.key(), item);
+        if (m_renderer->render(item, screen, renderOptionsFor(item), &error)) {
+            m_playlist->setCurrentWallpaper(screen, item);
         }
     }
 }

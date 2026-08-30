@@ -51,9 +51,9 @@ public:
     Wallpaper resolveWallpaper(const QString& id) const;
     void setCurrentWallpaper(int screen, const Wallpaper& wallpaper);
     Wallpaper currentWallpaper(int screen) const;
-    // Persisted "last applied wallpaper" per screen, used to resume playback
-    // on app launch (mirrors the macOS app's CurrentWallpaper restore).
-    QHash<int, QString> lastAppliedIDs() const;
+    // Persisted "last applied wallpaper" keyed by the stable output ID. The
+    // caller maps the ID back to the current QScreen index during startup.
+    QHash<QString, QString> lastAppliedIDs() const;
 
 signals:
     void currentChanged(int screen);
@@ -64,23 +64,25 @@ private:
     friend class PlaylistRotator;
 
     struct Persisted {
-        QHash<int, Playlist> currents;
+        QHash<QString, Playlist> currents;
         QVector<Playlist> saved;
     };
 
     void load();
     void scheduleSave();
     void saveNow();
+    QString screenKey(int screen) const;
+    int screenIndexForKey(const QString& key) const;
     void mutateCurrent(int screen, const std::function<void(Playlist&)>& transform);
     Playlist defaultPlaylist() const;
     void rebuildRotator(int screen, bool appLaunch);
 
     WallpaperLibrary* m_library = nullptr;
     RendererController* m_renderer = nullptr;
-    QHash<int, Playlist> m_currents;
+    QHash<QString, Playlist> m_currents;
     QVector<Playlist> m_saved;
     QHash<int, Wallpaper> m_currentWallpapers;
-    QHash<int, QString> m_lastAppliedIDs;
+    QHash<QString, QString> m_lastAppliedIDs;
     QHash<int, PlaylistRotator*> m_rotators;
     QTimer m_saveTimer;
     QString m_storagePath;

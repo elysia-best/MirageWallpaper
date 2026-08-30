@@ -106,6 +106,11 @@ MirageController::MirageController(QObject* parent)
     connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this](QScreen*) {
         emit displaysChanged();
     });
+    connect(qGuiApp, &QGuiApplication::primaryScreenChanged, this, [this](QScreen*) {
+        // KDE can change the primary output without adding/removing a screen;
+        // refresh the model so the primary marker stays aligned with Plasma.
+        emit displaysChanged();
+    });
     connect(&m_settings, &GlobalSettingsService::settingsChanged, this, [this](const GlobalSettings&) {
         emit settingsChanged();
     });

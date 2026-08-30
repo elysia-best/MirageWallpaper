@@ -6,10 +6,15 @@
 #include "Services/WallpaperLibrary.h"
 
 #include <QDir>
+#include <QDebug>
 #include <QFile>
+#include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScreen>
+#include <QSaveFile>
 
 #include <algorithm>
 
@@ -33,8 +38,27 @@ PlaylistManager::~PlaylistManager() {
     if (m_saveTimer.isActive()) saveNow();
 }
 
+QString PlaylistManager::screenKey(int screen) const {
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    if (screen >= 0 && screen < screens.size()) {
+        const QString stableId = RendererController::stableOutputId(screens.at(screen));
+        if (!stableId.isEmpty()) return stableId;
+    }
+    // The no-screen case is only an in-memory compatibility state. It is never
+    // emitted by a KDE adapter and cannot be used to identify a real output.
+    return QStringLiteral("index:%1").arg(screen);
+}
+
+int PlaylistManager::screenIndexForKey(const QString& key) const {
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    for (int index = 0; index < screens.size(); ++index) {
+        if (RendererController::stableOutputId(screens.at(index)) == key) return index;
+    }
+    return -1;
+}
+
 Playlist PlaylistManager::current(int screen) const {
-    return m_currents.value(screen, defaultPlaylist());
+    return m_currents.value(screenKey(screen), defaultPlaylist());
 }
 
 QVector<Playlist> PlaylistManager::saved() const {
@@ -42,16 +66,20 @@ QVector<Playlist> PlaylistManager::saved() const {
 }
 
 void PlaylistManager::ensureScreen(int screen) {
-    if (m_currents.contains(screen)) return;
-    m_currents.insert(screen, defaultPlaylist());
+    const QString key = screenKey(screen);
+    if (m_currents.contains(key)) return;
+    m_currents.insert(key, defaultPlaylist());
     scheduleSave();
     rebuildRotator(screen, false);
 }
 
 void PlaylistManager::startRotators() {
     stopAllRotators();
-    const auto screens = m_currents.keys();
-    for (int screen : screens) rebuildRotator(screen, true);
+    const auto keys = m_currents.keys();
+    for (const QString& key : keys) {
+        const int screen = screenIndexForKey(key);
+        if (screen >= 0) rebuildRotator(screen, true);
+    }
 }
 
 void PlaylistManager::kickRotator(int screen) {
@@ -125,8 +153,9 @@ void PlaylistManager::resetSettings(int screen) {
 }
 
 Playlist PlaylistManager::saveAs(const QString& name, int screen) {
-    if (!m_currents.contains(screen)) return {};
-    Playlist current = m_currents.value(screen);
+    const QString key = screenKey(screen);
+    if (!m_currents.contains(key)) return {};
+    Playlist current = m_currents.value(key);
     const QString trimmed = name.trimmed();
     if (trimmed.isEmpty()) return {};
     current.name = trimmed;
@@ -148,7 +177,7 @@ Playlist PlaylistManager::saveAs(const QString& name, int screen) {
         m_saved.push_back(copy);
     }
 
-    m_currents[screen] = current;
+    m_currents[key] = current;
     scheduleSave();
     emit currentChanged(screen);
     emit savedChanged();
@@ -156,9 +185,10 @@ Playlist PlaylistManager::saveAs(const QString& name, int screen) {
 }
 
 void PlaylistManager::loadSaved(const Playlist& playlist, int screen) {
+    const QString key = screenKey(screen);
     Playlist target = playlist;
     target.touch();
-    m_currents[screen] = target;
+    m_currents[key] = target;
     scheduleSave();
     emit currentChanged(screen);
     if (PlaylistRotator* rotator = m_rotators.value(screen)) {
@@ -199,7 +229,7 @@ Wallpaper PlaylistManager::resolveWallpaper(const QString& id) const {
 void PlaylistManager::setCurrentWallpaper(int screen, const Wallpaper& wallpaper) {
     m_currentWallpapers.insert(screen, wallpaper);
     if (wallpaper.isValid()) {
-        m_lastAppliedIDs.insert(screen, wallpaper.id());
+        m_lastAppliedIDs.insert(screenKey(screen), wallpaper.id());
         scheduleSave();
     }
 }
@@ -208,32 +238,35 @@ Wallpaper PlaylistManager::currentWallpaper(int screen) const {
     return m_currentWallpapers.value(screen);
 }
 
-QHash<int, QString> PlaylistManager::lastAppliedIDs() const {
+QHash<QString, QString> PlaylistManager::lastAppliedIDs() const {
     return m_lastAppliedIDs;
 }
 
 void PlaylistManager::load() {
     QFile file(m_storagePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        m_currents = {{0, defaultPlaylist()}};
+        m_currents = {{screenKey(0), defaultPlaylist()}};
         return;
     }
 
     const auto doc = QJsonDocument::fromJson(file.readAll());
     if (!doc.isObject()) {
-        m_currents = {{0, defaultPlaylist()}};
+        m_currents = {{screenKey(0), defaultPlaylist()}};
         return;
     }
 
     const QJsonObject root = doc.object();
     const QJsonObject currents = root.value(QStringLiteral("currents")).toObject();
+    bool migrated = false;
     for (auto it = currents.begin(); it != currents.end(); ++it) {
         bool ok = false;
         const int screen = it.key().toInt(&ok);
-        if (!ok) continue;
-        m_currents.insert(screen, Playlist::fromJson(it.value().toObject()));
+        const QString key = ok ? screenKey(screen) : it.key();
+        if (key.isEmpty()) continue;
+        migrated = migrated || ok;
+        m_currents.insert(key, Playlist::fromJson(it.value().toObject()));
     }
-    if (!m_currents.contains(0)) m_currents.insert(0, defaultPlaylist());
+    if (m_currents.isEmpty()) m_currents.insert(screenKey(0), defaultPlaylist());
 
     const QJsonArray saved = root.value(QStringLiteral("saved")).toArray();
     m_saved.reserve(saved.size());
@@ -245,9 +278,21 @@ void PlaylistManager::load() {
     for (auto it = lastApplied.begin(); it != lastApplied.end(); ++it) {
         bool ok = false;
         const int screen = it.key().toInt(&ok);
-        if (!ok) continue;
+        const QString key = ok ? screenKey(screen) : it.key();
+        if (key.isEmpty()) continue;
         const QString id = it.value().toString();
-        if (!id.isEmpty()) m_lastAppliedIDs.insert(screen, id);
+        if (!id.isEmpty()) {
+            m_lastAppliedIDs.insert(key, id);
+            migrated = migrated || ok;
+        }
+    }
+
+    if (migrated) {
+        const QString backupPath = m_storagePath + QStringLiteral(".pre-stable-id");
+        if (!QFileInfo::exists(backupPath) && !QFile::copy(m_storagePath, backupPath)) {
+            qWarning() << "[Playlist] Cannot preserve legacy playlist file:" << backupPath;
+        }
+        saveNow();
     }
 }
 
@@ -258,17 +303,20 @@ void PlaylistManager::scheduleSave() {
 }
 
 void PlaylistManager::saveNow() {
-    QDir().mkpath(Paths::dataDir());
+    if (!QDir().mkpath(Paths::dataDir())) {
+        qWarning() << "[Playlist] Cannot create playlist directory:" << Paths::dataDir();
+        return;
+    }
     QJsonObject currents;
     for (auto it = m_currents.constBegin(); it != m_currents.constEnd(); ++it) {
-        currents.insert(QString::number(it.key()), it.value().toJson());
+        currents.insert(it.key(), it.value().toJson());
     }
     QJsonArray saved;
     for (const Playlist& playlist : m_saved) saved.push_back(playlist.toJson());
 
     QJsonObject lastApplied;
     for (auto it = m_lastAppliedIDs.constBegin(); it != m_lastAppliedIDs.constEnd(); ++it) {
-        lastApplied.insert(QString::number(it.key()), it.value());
+        lastApplied.insert(it.key(), it.value());
     }
 
     const QJsonObject root{
@@ -277,17 +325,30 @@ void PlaylistManager::saveNow() {
         {QStringLiteral("lastApplied"), lastApplied},
     };
 
-    QFile file(m_storagePath);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    // QSaveFile writes a complete replacement beside the old file and renames
+    // it only after commit. This prevents a crash or full disk during startup
+    // migration from leaving playlists.json truncated and unrecoverable.
+    QSaveFile file(m_storagePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        qWarning() << "[Playlist] Cannot write playlist file:" << m_storagePath;
+        return;
+    }
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size()) {
+        qWarning() << "[Playlist] Cannot complete playlist write:" << m_storagePath;
+        return;
+    }
+    if (!file.commit()) {
+        qWarning() << "[Playlist] Cannot commit playlist file:" << m_storagePath;
     }
 }
 
 void PlaylistManager::mutateCurrent(int screen, const std::function<void(Playlist&)>& transform) {
-    Playlist playlist = m_currents.value(screen, defaultPlaylist());
+    const QString key = screenKey(screen);
+    Playlist playlist = m_currents.value(key, defaultPlaylist());
     transform(playlist);
     playlist.touch();
-    m_currents[screen] = playlist;
+    m_currents[key] = playlist;
     scheduleSave();
     emit currentChanged(screen);
     if (PlaylistRotator* rotator = m_rotators.value(screen)) {

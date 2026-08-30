@@ -79,6 +79,8 @@ WallpaperItem {
                     + (item.connected ? "connected" : "disconnected")
                 value += "\noutput=" + item.outputId + " generation=" + item.importedGeneration
                 value += " frames=" + item.framesReceived
+                value += " reconnects=" + item.reconnectAttempts
+                value += " socketInode=" + item.socketInode
                 value += " windowFlags=0x" + windowModel.flags.toString(16)
                 value += " tasks=" + windowModel.taskCount
                 value += " recalc=" + windowModel.debugRecomputeCount

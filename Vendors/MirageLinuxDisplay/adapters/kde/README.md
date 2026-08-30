@@ -27,6 +27,11 @@ Qt Quick 显示项按场景图后端自动选择导入路径：
 
 两种路径下，表面归属与输入都由 Plasma 负责。
 
+适配器对 broker 启动竞态采用非阻塞连接：握手超过 5 秒会主动丢弃并重试，
+场景图初始化失败也会退避重试；broker 重建 Unix socket 时通过目录监视和
+设备/inode 变化立即建立新会话。因此启动期间显示 `disconnected` 不会把
+Plasma 壁纸项永久留在失效会话上，broker 随后启动即可自动恢复。
+
 壁纸配置中的 **Render backend** 提供 Automatic、OpenGL、Vulkan 三档选择。
 Automatic 跟随 plasmashell 当前场景图；指定后端时，插件会严格校验实际
 Qt Quick 后端，若不一致则停止连接并在诊断信息中提示错误。Qt Quick 图形

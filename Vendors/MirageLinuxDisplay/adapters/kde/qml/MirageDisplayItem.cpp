@@ -4,7 +4,9 @@
 #include <EGL/eglext.h>
 #include <fcntl.h>
 #include <QByteArray>
+#include <QDebug>
 #include <QEvent>
+#include <QFileInfo>
 #include <QMouseEvent>
 #include <QMatrix4x4>
 #include <QOpenGLContext>
@@ -61,6 +63,7 @@ constexpr uint32_t DrmFormatArgb8888 = fourcc('A', 'R', '2', '4');
 constexpr uint32_t DrmFormatXbgr8888 = fourcc('X', 'B', '2', '4');
 constexpr uint32_t DrmFormatAbgr8888 = fourcc('A', 'B', '2', '4');
 
+#ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
 /* Formats a DRM fourcc as a printable four-character code ("XBGR"). */
 QString fourccString(uint32_t fourccValue) {
     QByteArray bytes(4, Qt::Uninitialized);
@@ -70,6 +73,7 @@ QString fourccString(uint32_t fourccValue) {
     }
     return QString::fromLatin1(bytes);
 }
+#endif
 
 #ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
 /*
@@ -134,6 +138,13 @@ uint32_t positiveU32(int value, uint32_t fallback) {
     return static_cast<uint32_t>(value);
 }
 
+/* Renderer initialization retry pacing. The first attempts are quick because
+ * the common case is a short startup race, then the interval grows so a setup
+ * that will never work stops costing render-thread wakeups. */
+constexpr int kRendererRetryBaseIntervalMs = 250;
+constexpr int kRendererRetryMaxIntervalMs = 4000;
+constexpr int kRendererRetryMaxAttempts = 20;
+
 } // namespace
 
 
@@ -156,19 +167,53 @@ MirageDisplayItem::MirageDisplayItem(QQuickItem* parent): QQuickItem(parent) {
         m_socketPath = m_defaultSocketPath;
     }
 
+    connect(&m_brokerWatcher, &QFileSystemWatcher::directoryChanged,
+            this, &MirageDisplayItem::brokerDirectoryChanged);
+    if (!runtimeDirectory.isEmpty()) {
+        if (!m_brokerWatcher.addPath(runtimeDirectory)) {
+            qWarning() << "[KDE wallpaper] Cannot watch broker directory:" << runtimeDirectory;
+        }
+    }
     m_reconnectTimer.setSingleShot(true);
     m_reconnectTimer.setInterval(2000);
     connect(&m_reconnectTimer, &QTimer::timeout, this, &MirageDisplayItem::startConnection);
 
+    /* A broker that accepts the socket but never completes the handshake (it
+     * can still be starting up) would otherwise leave m_display non-null
+     * forever, and that pointer is what blocks every reconnect attempt. */
+    m_handshakeTimeoutTimer.setSingleShot(true);
+    m_handshakeTimeoutTimer.setInterval(5000);
+    connect(&m_handshakeTimeoutTimer, &QTimer::timeout,
+            this, &MirageDisplayItem::abortStalledHandshake);
+
     m_outputUpdateTimer.setSingleShot(true);
     m_outputUpdateTimer.setInterval(25);
     connect(&m_outputUpdateTimer, &QTimer::timeout, this, &MirageDisplayItem::pushOutputUpdate);
+
+    /* The scene graph emits sceneGraphInitialized only once, so a renderer
+     * initialization that fails because the GPU context is not usable yet (a
+     * real race for the first wallpaper created during Plasma startup) would
+     * otherwise never be retried, leaving the item permanently disconnected.
+     * The interval backs off and stops after kRendererRetryMaxAttempts so a
+     * genuinely unsupported GPU setup does not wake the render thread forever. */
+    m_rendererRetryTimer.setSingleShot(true);
+    m_rendererRetryTimer.setInterval(kRendererRetryBaseIntervalMs);
+    connect(&m_rendererRetryTimer, &QTimer::timeout, this, [this]() {
+        QQuickWindow* quickWindow = window();
+        if (quickWindow == nullptr || m_rendererReady.load()) return;
+        QPointer<MirageDisplayItem> guard(this);
+        quickWindow->scheduleRenderJob(new FunctionJob([guard]() {
+            if (guard) guard->initializeRenderer();
+        }), QQuickWindow::BeforeSynchronizingStage);
+        quickWindow->update();
+    });
     connect(this, &QQuickItem::windowChanged, this, &MirageDisplayItem::handleWindowChanged);
 }
 
 MirageDisplayItem::~MirageDisplayItem() {
     m_reconnectTimer.stop();
     m_outputUpdateTimer.stop();
+    m_rendererRetryTimer.stop();
     if (m_filteredWindow) m_filteredWindow->removeEventFilter(this);
     closeConnection();
 }
@@ -191,9 +236,22 @@ void MirageDisplayItem::handleWindowChanged(QQuickWindow* quickWindow) {
         m_filteredWindow->removeEventFilter(this);
         disconnect(m_filteredWindow, nullptr, this, nullptr);
     }
-    if (quickWindow == nullptr) return;
+    if (quickWindow == nullptr) {
+        if (m_filteredWindow != nullptr) {
+            disconnect(m_filteredWindow, nullptr, this, nullptr);
+        }
+        m_reconnectTimer.stop();
+        m_rendererRetryTimer.stop();
+        const QStringList failedPaths = m_brokerWatcher.removePaths(m_brokerWatcher.directories());
+        if (!failedPaths.isEmpty()) {
+            qWarning() << "[KDE wallpaper] Cannot remove broker directory watches:" << failedPaths;
+        }
+        m_filteredWindow = nullptr;
+        return;
+    }
     quickWindow->installEventFilter(this);
     m_filteredWindow = quickWindow;
+    m_rendererRetryAttempts = 0;
 
 #ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
     if (!quickWindow->isSceneGraphInitialized()) {
@@ -230,7 +288,38 @@ void MirageDisplayItem::handleWindowChanged(QQuickWindow* quickWindow) {
             if (guard) guard->initializeRenderer();
         }), QQuickWindow::BeforeSynchronizingStage);
         quickWindow->update();
+    } else {
+        /* sceneGraphInitialized may already have been emitted before this item
+         * observed the window; the retry timer covers that lost edge. */
+        scheduleRendererRetry();
     }
+}
+
+
+/*
+ * Requests another renderer initialization attempt.  Called from the render
+ * thread when the GPU context is not usable yet; the timer lives on the main
+ * thread, so starting it is marshalled there.
+ */
+void MirageDisplayItem::scheduleRendererRetry() {
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, &MirageDisplayItem::scheduleRendererRetry,
+                                  Qt::QueuedConnection);
+        return;
+    }
+    if (m_rendererReady.load() || window() == nullptr) return;
+    if (m_rendererRetryTimer.isActive()) return;
+    if (m_rendererRetryAttempts >= kRendererRetryMaxAttempts) {
+        setLastError(QStringLiteral(
+            "Renderer initialization kept failing; recreate the wallpaper or "
+            "restart plasmashell once the GPU stack is available."));
+        return;
+    }
+    ++m_rendererRetryAttempts;
+    m_rendererRetryTimer.setInterval(
+        std::min(kRendererRetryBaseIntervalMs * m_rendererRetryAttempts,
+                 kRendererRetryMaxIntervalMs));
+    m_rendererRetryTimer.start();
 }
 
 
@@ -241,7 +330,10 @@ void MirageDisplayItem::handleWindowChanged(QQuickWindow* quickWindow) {
  */
 void MirageDisplayItem::initializeRenderer() {
     if (m_rendererReady.load()) return;
-    if (window() == nullptr || window()->rendererInterface() == nullptr) return;
+    if (window() == nullptr || window()->rendererInterface() == nullptr) {
+        scheduleRendererRetry();
+        return;
+    }
 
     const QSGRendererInterface::GraphicsApi graphicsApi =
         window()->rendererInterface()->graphicsApi();
@@ -283,10 +375,23 @@ void MirageDisplayItem::initializeRenderer() {
         setLastError(QStringLiteral("Unsupported Qt Quick graphics API"));
         return;
     }
-    if (!initialized) return;
+    if (!initialized) {
+        /* The backend importers fail when the GPU context is not fully usable
+         * yet, which is transient during Plasma startup; retry so the item is
+         * not stuck without a renderer (and therefore without a connection). */
+        scheduleRendererRetry();
+        return;
+    }
 
     m_rendererReady.store(true);
-    QMetaObject::invokeMethod(this, &MirageDisplayItem::startConnection, Qt::QueuedConnection);
+    /* m_rendererRetryAttempts belongs to the main thread (scheduleRendererRetry
+     * reads and writes it there), and this function runs on the render thread,
+     * so the reset is marshalled instead of assigned directly. */
+    QMetaObject::invokeMethod(this, [this]() {
+        m_rendererRetryAttempts = 0;
+        m_rendererRetryTimer.stop();
+        startConnection();
+    }, Qt::QueuedConnection);
 }
 
 
@@ -582,7 +687,14 @@ void MirageDisplayItem::invalidateRenderer() {
             finishDeferredUnbind(static_cast<qulonglong>(releaseGeneration));
         }, Qt::QueuedConnection);
     }
-    QMetaObject::invokeMethod(this, &MirageDisplayItem::closeConnection, Qt::QueuedConnection);
+    /* Renderer readiness is restored by the next sceneGraphInitialized signal;
+     * the retry timer covers the case where that signal does not come again. */
+    QMetaObject::invokeMethod(this, [this]() {
+        closeConnection();
+        ++m_connectionGeneration;
+        m_rendererRetryAttempts = 0;
+        scheduleRendererRetry();
+    }, Qt::QueuedConnection);
 }
 
 void MirageDisplayItem::setSocketPath(const QString& value) {
@@ -590,7 +702,26 @@ void MirageDisplayItem::setSocketPath(const QString& value) {
     m_socketPath = value;
     emit socketPathChanged();
     closeConnection();
+    ++m_connectionGeneration;
+    m_socketDevice = 0;
+    m_socketInode = 0;
+    emit connectionDiagnosticsChanged();
     scheduleReconnect();
+}
+
+/* Re-attempts immediately when the runtime broker directory changes; the
+ * reconnect timer remains the fallback when inotify cannot observe it. */
+void MirageDisplayItem::brokerDirectoryChanged(const QString& path) {
+    if (m_socketPath.isEmpty()) return;
+    const QString brokerDirectory = QFileInfo(m_socketPath).absolutePath();
+    if (path == brokerDirectory || path == QFileInfo(brokerDirectory).absolutePath()) {
+        if (QFileInfo::exists(brokerDirectory) &&
+            !m_brokerWatcher.directories().contains(brokerDirectory)) {
+            const bool watching = m_brokerWatcher.addPath(brokerDirectory);
+            if (!watching) scheduleReconnect();
+        }
+        startConnection();
+    }
 }
 
 /*
@@ -698,8 +829,13 @@ void MirageDisplayItem::setWindowStateFlags(quint32 value) {
     m_windowStateFlags = value;
     emit windowStateFlagsChanged();
     if (m_display != nullptr && md_display_connection_state(m_display) == MD_CONNECTION_READY) {
-        (void)md_display_send_window_state(m_display, static_cast<uint32_t>(value));
-        armWritable();
+        const md_result_t result = md_display_send_window_state(
+            m_display, static_cast<uint32_t>(value));
+        if (result == MD_OK || result == MD_ERR_WOULD_BLOCK) {
+            armWritable();
+        } else {
+            handleConnectionFailure();
+        }
     }
 }
 
@@ -782,9 +918,49 @@ md_output_info_t MirageDisplayItem::makeOutputInfo(QByteArray& stableId, QByteAr
  * handshake.  Any failure closes the session and schedules a reconnect.
  */
 void MirageDisplayItem::startConnection() {
-    if (!isComponentComplete() || !m_rendererReady.load() || m_display != nullptr ||
-        m_socketPath.isEmpty()) {
+    if (!isComponentComplete() || !m_rendererReady.load()) {
+        scheduleReconnect();
         return;
+    }
+    if (m_socketPath.isEmpty()) {
+        const QString runtimeDirectory = qEnvironmentVariable("XDG_RUNTIME_DIR");
+        if (!runtimeDirectory.isEmpty()) {
+            const QString nextDefaultPath = runtimeDirectory +
+                                            QStringLiteral("/mirage-wallpaper/display-v1.sock");
+            if (m_defaultSocketPath != nextDefaultPath) {
+                m_defaultSocketPath = nextDefaultPath;
+                emit defaultSocketPathChanged();
+            }
+            m_socketPath = m_defaultSocketPath;
+            emit socketPathChanged();
+        }
+    }
+    if (m_socketPath.isEmpty()) {
+        scheduleReconnect();
+        return;
+    }
+
+    /* QFileSystemWatcher and the timer both enter here.  If the broker replaced
+     * the pathname, invalidate the old session before the m_display guard; if
+     * the endpoint is unchanged, keep READY sessions and let the handshake
+     * timeout own in-progress sessions.  Re-arming the single-shot timer here
+     * prevents either guard from silently terminating the reconnect loop. */
+    if (refreshSocketIdentity() && m_display != nullptr) {
+        closeConnection();
+        ++m_connectionGeneration;
+    }
+    if (m_display != nullptr) {
+        if (md_display_connection_state(m_display) != MD_CONNECTION_READY) {
+            scheduleReconnect();
+        }
+        return;
+    }
+
+    const QString brokerDirectory = QFileInfo(m_socketPath).absolutePath();
+    if (QFileInfo::exists(brokerDirectory) &&
+        !m_brokerWatcher.directories().contains(brokerDirectory)) {
+        const bool watching = m_brokerWatcher.addPath(brokerDirectory);
+        if (!watching) scheduleReconnect();
     }
 
     md_display_callbacks_t callbacks {
@@ -802,6 +978,9 @@ void MirageDisplayItem::startConnection() {
         scheduleReconnect();
         return;
     }
+    ++m_connectionGeneration;
+    ++m_reconnectAttempts;
+    emit connectionDiagnosticsChanged();
 
     const md_format_cap_t eglFormats[] {
         {.fourcc = DrmFormatXrgb8888, .plane_count = 1, .modifier = 0},
@@ -847,12 +1026,28 @@ void MirageDisplayItem::startConnection() {
     md_output_info_t output = makeOutputInfo(stableId, outputNameBytes);
     const QByteArray socketBytes = m_socketPath.toUtf8();
 
+    errno = 0;
     int result = md_display_begin_connect(m_display, socketBytes.constData(),
                                           "mirage-plasma", "0.2.0",
                                           &output, &capabilities);
+    const int connectErrno = errno;
     if (result != MD_OK) {
-        setLastError(QStringLiteral("Cannot connect to Mirage display broker"));
+        QString error = QStringLiteral(
+            "Cannot connect to Mirage display broker (result=%1, socket=%2)")
+                            .arg(result)
+                            .arg(m_socketPath);
+        if (connectErrno != 0) {
+            error += QStringLiteral(" (errno=%1: %2)")
+                         .arg(connectErrno)
+                         .arg(QString::fromLocal8Bit(strerror(connectErrno)));
+        }
+        setLastError(error);
+        /* Some begin_connect() failures occur before the transport can notify
+         * onDisconnected(), so tear down here. Bumping the generation also
+         * invalidates the teardown that a synchronous onDisconnected() already
+         * queued for this very session, so it cannot close a later one. */
         closeConnection();
+        ++m_connectionGeneration;
         scheduleReconnect();
         return;
     }
@@ -861,6 +1056,7 @@ void MirageDisplayItem::startConnection() {
     if (fd < 0) {
         setLastError(QStringLiteral("Display broker connection has no socket"));
         closeConnection();
+        ++m_connectionGeneration;
         scheduleReconnect();
         return;
     }
@@ -870,6 +1066,7 @@ void MirageDisplayItem::startConnection() {
             this, &MirageDisplayItem::advanceHandshake);
     connect(m_writeNotifier, &QSocketNotifier::activated,
             this, &MirageDisplayItem::advanceHandshake);
+    m_handshakeTimeoutTimer.start();
     advanceHandshake();
 }
 
@@ -884,6 +1081,7 @@ void MirageDisplayItem::advanceHandshake() {
         int result = md_display_advance_handshake(m_display);
         if (result == MD_HANDSHAKE_PROGRESS) continue;
         if (result == MD_HANDSHAKE_DONE) {
+            m_handshakeTimeoutTimer.stop();
             disconnect(m_readNotifier, nullptr, this, nullptr);
             disconnect(m_writeNotifier, nullptr, this, nullptr);
             connect(m_readNotifier, &QSocketNotifier::activated,
@@ -892,8 +1090,12 @@ void MirageDisplayItem::advanceHandshake() {
                     this, &MirageDisplayItem::flushSocket);
             m_readNotifier->setEnabled(true);
             m_writeNotifier->setEnabled(false);
-            (void)md_display_send_window_state(m_display,
-                                                static_cast<uint32_t>(m_windowStateFlags));
+            const md_result_t stateResult = md_display_send_window_state(
+                m_display, static_cast<uint32_t>(m_windowStateFlags));
+            if (stateResult != MD_OK && stateResult != MD_ERR_WOULD_BLOCK) {
+                handleConnectionFailure();
+                return;
+            }
             armWritable();
             return;
         }
@@ -945,7 +1147,11 @@ void MirageDisplayItem::pushOutputUpdate() {
     QByteArray stableId;
     QByteArray outputNameBytes;
     md_output_info_t output = makeOutputInfo(stableId, outputNameBytes);
-    if (md_display_update_output(m_display, &output) != MD_OK) return;
+    const md_result_t result = md_display_update_output(m_display, &output);
+    if (result != MD_OK && result != MD_ERR_WOULD_BLOCK) {
+        handleConnectionFailure();
+        return;
+    }
     armWritable();
 }
 
@@ -967,6 +1173,7 @@ void MirageDisplayItem::finishDeferredUnbind(qulonglong generation) {
  * frees the display, and resets the connected/output Q_PROPERTY state.
  */
 void MirageDisplayItem::closeConnection() {
+    m_handshakeTimeoutTimer.stop();
     releasePointerState(monotonicTimestampUs());
     if (m_readNotifier != nullptr) {
         delete m_readNotifier;
@@ -990,8 +1197,49 @@ void MirageDisplayItem::closeConnection() {
     }
 }
 
+/*
+ * Records the pathname socket identity and reports whether it replaced the
+ * endpoint this item previously observed.  The broker unlinks and re-binds the
+ * pathname when it starts, so st_dev + st_ino are the only stable evidence that
+ * an existing session belongs to an obsolete endpoint.  A missing path is not
+ * a replacement: the normal reconnect timer waits for the broker to create it.
+ */
+bool MirageDisplayItem::refreshSocketIdentity() {
+    if (m_socketPath.isEmpty() || m_socketPath.startsWith(QLatin1Char('@'))) return false;
+    const QByteArray socketBytes = m_socketPath.toUtf8();
+    struct stat socketStat {};
+    if (::stat(socketBytes.constData(), &socketStat) != 0) return false;
+    const qulonglong device = static_cast<qulonglong>(socketStat.st_dev);
+    const qulonglong inode = static_cast<qulonglong>(socketStat.st_ino);
+    const bool replaced = m_socketInode != 0 &&
+                          (m_socketDevice != device || m_socketInode != inode);
+    if (m_socketDevice != device || m_socketInode != inode) {
+        m_socketDevice = device;
+        m_socketInode = inode;
+        emit connectionDiagnosticsChanged();
+    }
+    return replaced;
+}
+
 void MirageDisplayItem::handleConnectionFailure() {
     closeConnection();
+    ++m_connectionGeneration;
+    scheduleReconnect();
+}
+
+
+/*
+ * Drops a session whose handshake never reached READY.  Without this the
+ * non-null m_display would block startConnection() forever, so the wallpaper
+ * would stay disconnected even after the broker becomes healthy.
+ */
+void MirageDisplayItem::abortStalledHandshake() {
+    if (m_display == nullptr) return;
+    if (md_display_connection_state(m_display) == MD_CONNECTION_READY) return;
+    setLastError(QStringLiteral(
+        "Mirage display broker did not finish the handshake; retrying."));
+    closeConnection();
+    ++m_connectionGeneration;
     scheduleReconnect();
 }
 
@@ -1010,6 +1258,20 @@ void MirageDisplayItem::scheduleReconnect() {
  */
 void MirageDisplayItem::onConnected(void* userData, uint64_t outputIdValue) {
     auto* self = static_cast<MirageDisplayItem*>(userData);
+    self->m_reconnectTimer.stop();
+    self->m_reconnectAttempts = 0;
+    if (self->refreshSocketIdentity()) {
+        QPointer<MirageDisplayItem> guard(self);
+        const quint64 generation = self->m_connectionGeneration;
+        QMetaObject::invokeMethod(self, [guard, generation]() {
+            if (guard == nullptr || guard->m_connectionGeneration != generation) return;
+            guard->closeConnection();
+            ++guard->m_connectionGeneration;
+            guard->scheduleReconnect();
+        }, Qt::QueuedConnection);
+        return;
+    }
+    emit self->connectionDiagnosticsChanged();
     self->m_connected = true;
     self->m_outputId = static_cast<qulonglong>(outputIdValue);
     self->setLastError({});
@@ -1071,7 +1333,11 @@ void MirageDisplayItem::dropFrame(PendingFrame& frame) {
     if (!frame.valid) return;
     if (frame.value.acquire_sync_fd >= 0) close(frame.value.acquire_sync_fd);
     if (frame.value.release_syncobj_fd >= 0) {
-        (void)md_display_signal_release_syncobj(frame.value.release_syncobj_fd);
+        const md_result_t result = md_display_signal_release_syncobj(
+            frame.value.release_syncobj_fd);
+        if (result != MD_OK) {
+            qWarning() << "[KDE wallpaper] Failed to signal dropped frame release syncobj:" << result;
+        }
     }
     frame = PendingFrame {};
 }
@@ -1106,13 +1372,20 @@ void MirageDisplayItem::onDisconnected(void* userData, md_result_t reason, const
     /* A broker can vanish at any time; the library may fail the session from
      * a send path where no QSocketNotifier event follows. Tear down the dead
      * session and resume the reconnect loop so the wallpaper recovers as soon
-     * as the broker comes back. */
+     * as the broker comes back.
+     *
+     * The generation guard matters for the synchronous failure inside
+     * md_display_begin_connect(): this callback runs before startConnection()
+     * returns, so by the time the queued lambda executes, a later attempt may
+     * already own a fresh session. Closing that one would drop the wallpaper
+     * out of the reconnect loop for good. */
     QPointer<MirageDisplayItem> guard(self);
-    QMetaObject::invokeMethod(self, [guard]() {
-        if (guard != nullptr) {
-            guard->closeConnection();
-            guard->scheduleReconnect();
-        }
+    const quint64 generation = self->m_connectionGeneration;
+    QMetaObject::invokeMethod(self, [guard, generation]() {
+        if (guard == nullptr || guard->m_connectionGeneration != generation) return;
+        guard->closeConnection();
+        ++guard->m_connectionGeneration;
+        guard->scheduleReconnect();
     }, Qt::QueuedConnection);
 }
 
@@ -1192,7 +1465,10 @@ void MirageDisplayItem::releaseRenderPool() {
         if (QOpenGLContext::currentContext() != nullptr) {
             QOpenGLContext::currentContext()->functions()->glFinish();
         }
-        (void)md_display_signal_release_syncobj(m_activeReleaseFd);
+        const md_result_t result = md_display_signal_release_syncobj(m_activeReleaseFd);
+        if (result != MD_OK) {
+            qWarning() << "[KDE wallpaper] Failed to signal active release syncobj:" << result;
+        }
         m_activeReleaseFd = -1;
     }
 
@@ -1323,7 +1599,12 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
                                                    acquireFd, &acquireSemaphore);
                 if (rc != MD_OK) {
                     if (frame.value.release_syncobj_fd >= 0) {
-                        (void)md_display_signal_release_syncobj(frame.value.release_syncobj_fd);
+                        const md_result_t signalResult = md_display_signal_release_syncobj(
+                            frame.value.release_syncobj_fd);
+                        if (signalResult != MD_OK) {
+                            qWarning() << "[KDE wallpaper] Failed to signal Vulkan acquire-failure release syncobj:"
+                                       << signalResult;
+                        }
                         frame.value.release_syncobj_fd = -1;
                     }
                     setLastError(QStringLiteral("Vulkan acquire sync import failed: %1")
@@ -1346,13 +1627,21 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
                     }
                     if (rc == MD_OK) {
                         if (releaseFd >= 0) {
-                            (void)md_display_signal_release_syncobj(releaseFd);
+                            const md_result_t signalResult = md_display_signal_release_syncobj(releaseFd);
+                            if (signalResult != MD_OK) {
+                                setLastError(QStringLiteral("Vulkan release sync signal failed (%1)")
+                                                 .arg(static_cast<int>(signalResult)));
+                            }
                         }
                         m_currentBuffer = 0;
                         setLastError({});
                     } else {
                         if (releaseFd >= 0) {
-                            (void)md_display_signal_release_syncobj(releaseFd);
+                            const md_result_t signalResult = md_display_signal_release_syncobj(releaseFd);
+                            if (signalResult != MD_OK) {
+                                setLastError(QStringLiteral("Vulkan release sync signal failed (%1)")
+                                                 .arg(static_cast<int>(signalResult)));
+                            }
                         }
                         setLastError(QStringLiteral("Vulkan frame relay failed (rc=%1)")
                                          .arg(static_cast<int>(rc)));
@@ -1362,26 +1651,35 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
         } else
 #endif
         {
-        bool valid = frame.value.buffer_generation == m_importedGeneration.load() &&
-                     frame.value.buffer_index < static_cast<uint32_t>(m_qsgTextures.size());
-        const int waitResult = m_importer != nullptr
-                                   ? md_egl_wait_acquire_sync(m_importer, frame.value.acquire_sync_fd)
-                                   : MD_ERR_INVALID;
-        if (!valid || waitResult != MD_OK) {
-            frame.value.acquire_sync_fd = -1;
-            if (frame.value.release_syncobj_fd >= 0) {
-                (void)md_display_signal_release_syncobj(frame.value.release_syncobj_fd);
+            bool valid = frame.value.buffer_generation == m_importedGeneration.load() &&
+                         frame.value.buffer_index < static_cast<uint32_t>(m_qsgTextures.size());
+            const int waitResult = m_importer != nullptr
+                                       ? md_egl_wait_acquire_sync(m_importer, frame.value.acquire_sync_fd)
+                                       : MD_ERR_INVALID;
+            if (!valid || waitResult != MD_OK) {
+                frame.value.acquire_sync_fd = -1;
+                if (frame.value.release_syncobj_fd >= 0) {
+                    const md_result_t signalResult = md_display_signal_release_syncobj(
+                        frame.value.release_syncobj_fd);
+                    if (signalResult != MD_OK) {
+                        setLastError(QStringLiteral("EGL release sync signal failed (%1)")
+                                         .arg(static_cast<int>(signalResult)));
+                    }
+                }
+            } else {
+                frame.value.acquire_sync_fd = -1;
+                if (m_activeReleaseFd >= 0) {
+                    QOpenGLContext::currentContext()->functions()->glFinish();
+                    const md_result_t signalResult = md_display_signal_release_syncobj(m_activeReleaseFd);
+                    if (signalResult != MD_OK) {
+                        setLastError(QStringLiteral("EGL release sync signal failed (%1)")
+                                         .arg(static_cast<int>(signalResult)));
+                    }
+                }
+                m_activeReleaseFd = frame.value.release_syncobj_fd;
+                frame.value.release_syncobj_fd = -1;
+                m_currentBuffer = static_cast<int>(frame.value.buffer_index);
             }
-        } else {
-            frame.value.acquire_sync_fd = -1;
-            if (m_activeReleaseFd >= 0) {
-                QOpenGLContext::currentContext()->functions()->glFinish();
-                (void)md_display_signal_release_syncobj(m_activeReleaseFd);
-            }
-            m_activeReleaseFd = frame.value.release_syncobj_fd;
-            frame.value.release_syncobj_fd = -1;
-            m_currentBuffer = static_cast<int>(frame.value.buffer_index);
-        }
         }
     }
 
@@ -1517,27 +1815,32 @@ void MirageDisplayItem::forwardPointerEvent(const MiragePointerForwarder::Event&
     if (m_display == nullptr || md_display_connection_state(m_display) != MD_CONNECTION_READY) {
         return;
     }
+    md_result_t result = MD_OK;
     switch (event.type) {
     case MiragePointerForwarder::Event::Type::Enter:
-        (void)md_display_send_pointer_enter(m_display, event.x, event.y, event.timestamp);
+        result = md_display_send_pointer_enter(m_display, event.x, event.y, event.timestamp);
         break;
     case MiragePointerForwarder::Event::Type::Leave:
-        (void)md_display_send_pointer_leave(m_display, event.timestamp);
+        result = md_display_send_pointer_leave(m_display, event.timestamp);
         break;
     case MiragePointerForwarder::Event::Type::Motion:
-        (void)md_display_send_pointer_motion(m_display, event.x, event.y,
-                                              event.timestamp, event.modifiers);
+        result = md_display_send_pointer_motion(m_display, event.x, event.y,
+                                                event.timestamp, event.modifiers);
         break;
     case MiragePointerForwarder::Event::Type::Button:
-        (void)md_display_send_pointer_button(m_display, event.x, event.y, event.button,
-                                             event.buttonState, event.timestamp,
-                                             event.modifiers);
+        result = md_display_send_pointer_button(m_display, event.x, event.y, event.button,
+                                                event.buttonState, event.timestamp,
+                                                event.modifiers);
         break;
     case MiragePointerForwarder::Event::Type::Axis:
-        (void)md_display_send_pointer_axis(m_display, event.x, event.y, event.deltaX,
-                                           event.deltaY, event.axisSource, event.timestamp,
-                                           event.modifiers);
+        result = md_display_send_pointer_axis(m_display, event.x, event.y, event.deltaX,
+                                              event.deltaY, event.axisSource, event.timestamp,
+                                              event.modifiers);
         break;
+    }
+    if (result != MD_OK && result != MD_ERR_WOULD_BLOCK) {
+        handleConnectionFailure();
+        return;
     }
     armWritable();
 }

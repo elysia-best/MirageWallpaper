@@ -50,3 +50,8 @@ Both package formats install `MirageQt` in `/usr/bin`, private renderer and
 SteamService files in `/usr/libexec/miragewallpaper`, and shared wallpaper
 assets in `/usr/share/miragewallpaper`. The desktop session still needs a
 compatible mirage-display adapter to consume renderer frames.
+
+多显示器播放状态按 `kde:` 稳定输出 ID 持久化，而不是按 Qt 当前屏幕索引
+持久化。这样 KDE 调整屏幕顺序或主屏后，壁纸仍回到原输出；旧版按索引保存
+的 `playlists.json` 会在首次启动迁移，并保留一份
+`playlists.json.pre-stable-id` 备份。

@@ -173,6 +173,15 @@ if(MIRAGEQT_BUILD_TESTS)
         MirageQtCore
         Qt6::Test)
     add_test(NAME MirageQtGlobalSettings COMMAND MirageQtGlobalSettingsTests)
+    add_executable(MirageQtPlaylistManagerPersistenceTests
+        Tests/PlaylistManagerPersistenceTests.cpp)
+    target_link_libraries(MirageQtPlaylistManagerPersistenceTests PRIVATE
+        MirageQtCore
+        Qt6::Test)
+    add_test(NAME MirageQtPlaylistManagerPersistence
+        COMMAND MirageQtPlaylistManagerPersistenceTests)
+    set_tests_properties(MirageQtPlaylistManagerPersistence PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
 set_target_properties(MirageQt PROPERTIES
