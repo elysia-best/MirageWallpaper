@@ -270,6 +270,10 @@ private:
     std::atomic_bool m_rendererReady { false };
     md_egl_importer_t* m_importer = nullptr;
     GlEglImageTargetTexture2D m_imageTargetTexture = nullptr;
+    /* A GLX scene graph has no Qt-owned EGL display.  The item initializes and
+     * terminates this display itself solely to create DMA-BUF EGLImages; a
+     * non-null value also selects the GLX-safe synchronization path. */
+    EGLDisplay m_glxEglDisplay = EGL_NO_DISPLAY;
     std::atomic_uint64_t m_importedGeneration { 0 };
     QVector<unsigned int> m_glTextures;
     QVector<QSGTexture*> m_qsgTextures;

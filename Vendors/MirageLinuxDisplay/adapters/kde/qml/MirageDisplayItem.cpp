@@ -7,6 +7,7 @@
 #include <QDebug>
 #include <QEvent>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QMouseEvent>
 #include <QMatrix4x4>
 #include <QOpenGLContext>
@@ -26,6 +27,7 @@
 #include <QVulkanInstance>
 #endif
 #include <QtGui/qopenglcontext_platform.h>
+#include <QtGui/qguiapplication_platform.h>
 #include <QtCore/qnativeinterface.h>
 #include <QtQuick/qsgtexture_platform.h>
 #include <algorithm>
@@ -34,7 +36,11 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <filesystem>
 #include <limits>
+#include <poll.h>
+#include <string>
+#include <system_error>
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -396,10 +402,10 @@ void MirageDisplayItem::initializeRenderer() {
 
 
 /*
- * Creates the EGL importer from the current QOpenGLContext and resolves
- * glEGLImageTargetTexture2DOES through the EGL loader (it is not an exported
- * linkable symbol).  Fails fast with a diagnostic when the extension is
- * missing.
+ * Creates the EGL importer from the current QOpenGLContext.  Qt Quick uses
+ * EGL on Wayland, but Plasma X11 may use GLX.  In the latter case the EGL
+ * display is initialized from Qt's X11 connection solely for DMA-BUF image
+ * creation; GL textures still belong to the GLX scene graph context.
  */
 bool MirageDisplayItem::initializeOpenGLRenderer() {
     QOpenGLContext* context = QOpenGLContext::currentContext();
@@ -408,71 +414,161 @@ bool MirageDisplayItem::initializeOpenGLRenderer() {
         return false;
     }
     auto* eglContext = context->nativeInterface<QNativeInterface::QEGLContext>();
-    if (eglContext == nullptr || eglContext->display() == EGL_NO_DISPLAY) {
-        setLastError(QStringLiteral("OpenGL scene graph is not using EGL"));
-        return false;
+    EGLDisplay eglDisplay = EGL_NO_DISPLAY;
+    bool ownsEglDisplay = false;
+    if (eglContext != nullptr) {
+        eglDisplay = eglContext->display();
+        if (eglDisplay == EGL_NO_DISPLAY) {
+            setLastError(QStringLiteral("Qt Quick EGL context has no display"));
+            return false;
+        }
+    } else {
+        auto* glxContext = context->nativeInterface<QNativeInterface::QGLXContext>();
+        QGuiApplication* application = qApp;
+        auto* x11Application = application != nullptr
+                                   ? application->nativeInterface<QNativeInterface::QX11Application>()
+                                   : nullptr;
+        if (glxContext == nullptr || glxContext->nativeContext() == nullptr ||
+            x11Application == nullptr || x11Application->display() == nullptr) {
+            setLastError(QStringLiteral("OpenGL scene graph has no EGL or GLX/X11 display"));
+            return false;
+        }
+        eglDisplay = eglGetDisplay(x11Application->display());
+        if (eglDisplay == EGL_NO_DISPLAY) {
+            setLastError(QStringLiteral("Cannot obtain EGL display for the GLX scene graph"));
+            return false;
+        }
+        EGLint majorVersion = 0;
+        EGLint minorVersion = 0;
+        if (eglInitialize(eglDisplay, &majorVersion, &minorVersion) != EGL_TRUE) {
+            setLastError(QStringLiteral("Cannot initialize EGL display for the GLX scene graph"));
+            return false;
+        }
+        ownsEglDisplay = true;
     }
 
-    /* The existing Qt EGL display is already bound to the consumer's scene
-     * graph GPU. Report its DRM render node before connecting, so the broker
-     * can make producers create resources on the same device. */
+    /* The GLX EGL display is owned only during this initialization attempt.
+     * Every later failure must terminate it, while Qt retains ownership of an
+     * EGL display obtained from QEGLContext. */
+    const auto failInitialization = [this, eglDisplay, ownsEglDisplay](const QString& error) {
+        if (ownsEglDisplay && eglTerminate(eglDisplay) != EGL_TRUE) {
+            qWarning() << "[KDE wallpaper] Cannot terminate GLX EGL display";
+        }
+        setLastError(error);
+        return false;
+    };
+
+    /* The EGL display targets the consumer scene-graph GPU. Report its DRM
+     * render node before connecting, so the broker can make producers create
+     * resources on the same device. */
     const auto queryDisplayAttrib = std::bit_cast<PFNEGLQUERYDISPLAYATTRIBEXTPROC>(
         eglGetProcAddress("eglQueryDisplayAttribEXT"));
     const auto queryDeviceString = std::bit_cast<PFNEGLQUERYDEVICESTRINGEXTPROC>(
         eglGetProcAddress("eglQueryDeviceStringEXT"));
     if (queryDisplayAttrib == nullptr || queryDeviceString == nullptr) {
-        setLastError(QStringLiteral("EGL cannot report the consumer DRM render node"));
-        return false;
+        return failInitialization(
+            QStringLiteral("EGL cannot report the consumer DRM render node"));
     }
     EGLAttrib deviceValue = 0;
-    if (queryDisplayAttrib(eglContext->display(), EGL_DEVICE_EXT, &deviceValue) != EGL_TRUE ||
+    if (queryDisplayAttrib(eglDisplay, EGL_DEVICE_EXT, &deviceValue) != EGL_TRUE ||
         deviceValue == 0) {
-        setLastError(QStringLiteral("EGL display has no associated consumer device"));
-        return false;
+        return failInitialization(
+            QStringLiteral("EGL display has no associated consumer device"));
     }
     const EGLDeviceEXT device = std::bit_cast<EGLDeviceEXT>(deviceValue);
     const char* const renderNode = queryDeviceString(device, EGL_DRM_RENDER_NODE_FILE_EXT);
-    if (renderNode == nullptr) {
-        setLastError(QStringLiteral("EGL consumer device has no DRM render node"));
-        return false;
+    QByteArray nodePath;
+    if (renderNode != nullptr) {
+        nodePath = QByteArray(renderNode);
+    } else {
+        /* MTT's EGL implementation exposes EGL_EXT_device_drm but omits the
+         * render-node string. Resolve the render node through the same DRM
+         * device's sysfs directory; this preserves the producer/consumer GPU
+         * identity instead of guessing a renderD number. */
+        const char* const drmDevice = queryDeviceString(device, EGL_DRM_DEVICE_FILE_EXT);
+        if (drmDevice == nullptr) {
+            return failInitialization(
+                QStringLiteral("EGL consumer device exposes no DRM device path"));
+        }
+        struct stat drmDeviceStat {};
+        if (::stat(drmDevice, &drmDeviceStat) != 0 || !S_ISCHR(drmDeviceStat.st_mode)) {
+            return failInitialization(
+                QStringLiteral("cannot identify EGL consumer DRM device"));
+        }
+        const QByteArray sysfsPath = QByteArrayLiteral("/sys/dev/char/") +
+                                     QByteArray::number(major(drmDeviceStat.st_rdev)) +
+                                     QByteArrayLiteral(":") +
+                                     QByteArray::number(minor(drmDeviceStat.st_rdev));
+        const std::filesystem::path drmDirectory =
+            std::filesystem::path(sysfsPath.constData()) / "device" / "drm";
+        std::error_code filesystemError;
+        std::filesystem::directory_iterator iterator(drmDirectory, filesystemError);
+        if (filesystemError) {
+            return failInitialization(
+                QStringLiteral("cannot inspect EGL consumer DRM device"));
+        }
+        const std::filesystem::directory_iterator end;
+        while (iterator != end) {
+            const std::string entryName = iterator->path().filename().string();
+            if (entryName.rfind("renderD", 0U) == 0U) {
+                const QByteArray candidate = QByteArrayLiteral("/dev/dri/") +
+                                             QByteArray::fromStdString(entryName);
+                struct stat candidateStat {};
+                if (::stat(candidate.constData(), &candidateStat) == 0 &&
+                    S_ISCHR(candidateStat.st_mode) &&
+                    minor(candidateStat.st_rdev) >= 128U &&
+                    minor(candidateStat.st_rdev) <= 255U) {
+                    nodePath = candidate;
+                    break;
+                }
+            }
+            iterator.increment(filesystemError);
+            if (filesystemError) {
+                return failInitialization(
+                    QStringLiteral("cannot inspect EGL consumer DRM device"));
+            }
+        }
+        if (nodePath.isEmpty()) {
+            return failInitialization(
+                QStringLiteral("EGL consumer device has no DRM render node"));
+        }
     }
-    const QByteArray nodePath(renderNode);
     const int nodeFd = ::open(nodePath.constData(), O_RDONLY | O_CLOEXEC);
     if (nodeFd < 0) {
-        setLastError(QStringLiteral("cannot open EGL consumer DRM render node"));
-        return false;
+        return failInitialization(
+            QStringLiteral("cannot open EGL consumer DRM render node"));
     }
     struct stat nodeStat {};
     const int statResult = fstat(nodeFd, &nodeStat);
     const int closeResult = ::close(nodeFd);
     if (statResult != 0 || closeResult != 0 || !S_ISCHR(nodeStat.st_mode) ||
         minor(nodeStat.st_rdev) < 128U || minor(nodeStat.st_rdev) > 255U) {
-        setLastError(QStringLiteral("cannot identify EGL consumer DRM render node"));
-        return false;
+        return failInitialization(
+            QStringLiteral("cannot identify EGL consumer DRM render node"));
     }
     m_drmRenderMajor = static_cast<uint32_t>(major(nodeStat.st_rdev));
     m_drmRenderMinor = static_cast<uint32_t>(minor(nodeStat.st_rdev));
 
     md_egl_context_t importerContext {
-        .display = eglContext->display(),
+        .display = eglDisplay,
     };
     m_importer = md_egl_importer_new(&importerContext);
     if (m_importer == nullptr) {
-        setLastError(QStringLiteral("EGL DMA-BUF import is unavailable"));
-        return false;
+        return failInitialization(QStringLiteral("EGL DMA-BUF import is unavailable"));
     }
 
-    /* glEGLImageTargetTexture2DOES is an EGL/GLES extension entry point that
-     * libEGL does not export as a linkable symbol, so it must be resolved once
-     * through the EGL loader and validated before the render path uses it. */
+    /* The entry point must be resolved through Qt's current context: on GLX it
+     * belongs to the GLX dispatch table, whereas the EGL scene graph resolves
+     * the same extension through its EGL-backed OpenGL context. */
     m_imageTargetTexture = std::bit_cast<GlEglImageTargetTexture2D>(
-        eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+        context->getProcAddress("glEGLImageTargetTexture2DOES"));
     if (m_imageTargetTexture == nullptr) {
         md_egl_importer_free(m_importer);
         m_importer = nullptr;
-        setLastError(QStringLiteral("glEGLImageTargetTexture2DOES is unavailable"));
-        return false;
+        return failInitialization(
+            QStringLiteral("glEGLImageTargetTexture2DOES is unavailable"));
     }
+    if (ownsEglDisplay) m_glxEglDisplay = eglDisplay;
     setRendererBackend(BackendOpenGLEGL);
     setLastError({});
     return true;
@@ -668,6 +764,12 @@ void MirageDisplayItem::invalidateRenderer() {
     md_egl_importer_free(m_importer);
     m_importer = nullptr;
     m_imageTargetTexture = nullptr;
+    if (m_glxEglDisplay != EGL_NO_DISPLAY) {
+        if (eglTerminate(m_glxEglDisplay) != EGL_TRUE) {
+            qWarning() << "[KDE wallpaper] Cannot terminate GLX EGL display";
+        }
+        m_glxEglDisplay = EGL_NO_DISPLAY;
+    }
 #ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
     md_vk_blitter_free(m_vkBlitter);
     md_vk_importer_free(m_vkImporter);
@@ -1503,6 +1605,17 @@ void MirageDisplayItem::releaseAfterRendering() {
     if (m_activeReleaseFd < 0) return;
     int releaseFd = m_activeReleaseFd;
     m_activeReleaseFd = -1;
+    if (m_glxEglDisplay != EGL_NO_DISPLAY) {
+        /* A native EGL fence is not connected to a GLX command stream. The
+         * explicit finish is therefore required before the protocol release
+         * syncobj is signalled on this backend. */
+        QOpenGLContext* context = QOpenGLContext::currentContext();
+        if (context != nullptr) context->functions()->glFinish();
+        if (md_display_signal_release_syncobj(releaseFd) != MD_OK) {
+            qWarning() << "[KDE wallpaper] Failed to signal GLX release syncobj";
+        }
+        return;
+    }
     if (m_importer == nullptr ||
         md_egl_release_after_current_context(m_importer, releaseFd) != MD_OK) {
         return;
@@ -1653,9 +1766,39 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
         {
             bool valid = frame.value.buffer_generation == m_importedGeneration.load() &&
                          frame.value.buffer_index < static_cast<uint32_t>(m_qsgTextures.size());
-            const int waitResult = m_importer != nullptr
-                                       ? md_egl_wait_acquire_sync(m_importer, frame.value.acquire_sync_fd)
-                                       : MD_ERR_INVALID;
+            int waitResult = MD_ERR_INVALID;
+            if (frame.value.acquire_sync_fd >= 0) {
+                if (!valid) {
+                    if (::close(frame.value.acquire_sync_fd) != 0) {
+                        qWarning() << "[KDE wallpaper] Failed to close dropped EGL acquire sync FD";
+                    }
+                } else if (m_glxEglDisplay != EGL_NO_DISPLAY) {
+                    /* EGL syncs cannot order commands issued by a GLX
+                     * context. Wait on the sync_file before sampling, then
+                     * use glFinish for the release boundary. */
+                    struct pollfd descriptor {
+                        .fd = frame.value.acquire_sync_fd,
+                        .events = POLLIN,
+                        .revents = 0,
+                    };
+                    int pollResult = 0;
+                    do {
+                        pollResult = ::poll(&descriptor, 1U, -1);
+                    } while (pollResult < 0 && errno == EINTR);
+                    if (pollResult == 1 &&
+                        (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) == 0) {
+                        waitResult = MD_OK;
+                    } else {
+                        waitResult = MD_ERR_IO;
+                    }
+                    if (::close(frame.value.acquire_sync_fd) != 0) {
+                        qWarning() << "[KDE wallpaper] Failed to close GLX acquire sync FD";
+                    }
+                } else if (m_importer != nullptr) {
+                    waitResult = md_egl_wait_acquire_sync(
+                        m_importer, frame.value.acquire_sync_fd);
+                }
+            }
             if (!valid || waitResult != MD_OK) {
                 frame.value.acquire_sync_fd = -1;
                 if (frame.value.release_syncobj_fd >= 0) {
