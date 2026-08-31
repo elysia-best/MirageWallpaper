@@ -59,7 +59,31 @@ int RenderNode(std::uint32_t major, std::uint32_t minor) {
 
 class ProtocolWebRenderer::Impl {
 public:
-    explicit Impl(Config config) : m_config(std::move(config)) {}
+    explicit Impl(Config config) : m_config(std::move(config)) {
+        // QtWebEngine starts Chromium GPU workers while its view is created.
+        // Initialize the Vulkan loader first to avoid concurrent ICD setup.
+        VkApplicationInfo app {
+            .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .pNext = nullptr,
+            .pApplicationName = "WebWallpaper",
+            .applicationVersion = 1,
+            .pEngineName = nullptr,
+            .engineVersion = 0,
+            .apiVersion = VK_API_VERSION_1_1,
+        };
+        VkInstanceCreateInfo createInfo {
+            .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .pApplicationInfo = &app,
+            .enabledLayerCount = 0,
+            .ppEnabledLayerNames = nullptr,
+            .enabledExtensionCount = 0,
+            .ppEnabledExtensionNames = nullptr,
+        };
+        m_instanceReady = vkCreateInstance(&createInfo, nullptr, &m_instance) == VK_SUCCESS;
+        if (!m_instanceReady) m_instanceError = QStringLiteral("vkCreateInstance failed");
+    }
     ~Impl() { stop(); }
 
     bool start(QString* error) {
@@ -146,6 +170,7 @@ public:
             vkDestroyInstance(m_instance, nullptr);
             m_instance = VK_NULL_HANDLE;
         }
+        m_instanceReady = false;
         if (m_drmFd >= 0) ::close(m_drmFd);
         m_drmFd = -1;
         m_queue = VK_NULL_HANDLE;
@@ -266,39 +291,24 @@ private:
             if (error != nullptr) *error = QStringLiteral("broker did not provide a valid consumer DRM render node");
             return false;
         }
-        VkApplicationInfo app {VK_STRUCTURE_TYPE_APPLICATION_INFO};
-        app.pApplicationName = "WebWallpaper";
-        app.apiVersion = VK_API_VERSION_1_1;
-        VkInstanceCreateInfo instance {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-        instance.pApplicationInfo = &app;
-        const char* instanceExtensions[] = {VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME};
-        std::uint32_t instanceExtensionCount = 0;
-        vkEnumerateInstanceExtensionProperties(nullptr, &instanceExtensionCount, nullptr);
-        std::vector<VkExtensionProperties> instanceProperties(instanceExtensionCount);
-        vkEnumerateInstanceExtensionProperties(nullptr, &instanceExtensionCount, instanceProperties.data());
-        bool haveDrmExtension = false;
-        for (const VkExtensionProperties& property : instanceProperties) {
-            if (std::strcmp(property.extensionName, instanceExtensions[0]) == 0) {
-                haveDrmExtension = true;
-                break;
-            }
-        }
-        if (!haveDrmExtension) {
-            if (error != nullptr) *error = QStringLiteral("VK_EXT_physical_device_drm is required for GPU binding");
-            return false;
-        }
-        instance.enabledExtensionCount = 1u;
-        instance.ppEnabledExtensionNames = instanceExtensions;
-        if (vkCreateInstance(&instance, nullptr, &m_instance) != VK_SUCCESS) {
-            if (error != nullptr) *error = QStringLiteral("vkCreateInstance failed");
+        if (!m_instanceReady) {
+            if (error != nullptr) *error = m_instanceError;
             return false;
         }
         std::uint32_t count = 0;
-        vkEnumeratePhysicalDevices(m_instance, &count, nullptr);
-        if (count == 0) return false;
+        const VkResult deviceQuery = vkEnumeratePhysicalDevices(m_instance, &count, nullptr);
+        if (deviceQuery != VK_SUCCESS || count == 0U) {
+            if (error != nullptr) *error = QStringLiteral("no Vulkan physical devices");
+            return false;
+        }
         std::vector<VkPhysicalDevice> devices(count);
-        vkEnumeratePhysicalDevices(m_instance, &count, devices.data());
+        const VkResult deviceRead = vkEnumeratePhysicalDevices(m_instance, &count, devices.data());
+        if (deviceRead != VK_SUCCESS) {
+            if (error != nullptr) *error = QStringLiteral("cannot enumerate Vulkan physical devices");
+            return false;
+        }
         const char* deviceExtensions[] = {
+            VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME,
             VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
             VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
             VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
@@ -306,6 +316,30 @@ private:
             VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
         };
         for (VkPhysicalDevice device : devices) {
+            std::uint32_t deviceExtensionCount = 0;
+            const VkResult extensionQuery =
+                vkEnumerateDeviceExtensionProperties(device, nullptr, &deviceExtensionCount, nullptr);
+            if (extensionQuery != VK_SUCCESS) {
+                if (error != nullptr) *error = QStringLiteral("cannot enumerate Vulkan device extensions");
+                return false;
+            }
+            std::vector<VkExtensionProperties> deviceProperties(deviceExtensionCount);
+            const VkResult extensionRead = vkEnumerateDeviceExtensionProperties(
+                device, nullptr, &deviceExtensionCount, deviceProperties.data());
+            if (extensionRead != VK_SUCCESS) {
+                if (error != nullptr) *error = QStringLiteral("cannot read Vulkan device extensions");
+                return false;
+            }
+            bool extensionsSupported = true;
+            for (const char* required : deviceExtensions) {
+                bool found = false;
+                for (const VkExtensionProperties& property : deviceProperties) {
+                    if (std::strcmp(property.extensionName, required) == 0) { found = true; break; }
+                }
+                if (!found) { extensionsSupported = false; break; }
+            }
+            if (!extensionsSupported) continue;
+
             VkPhysicalDeviceDrmPropertiesEXT drm {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
             VkPhysicalDeviceIDProperties id {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
             id.pNext = &drm;
@@ -321,19 +355,6 @@ private:
                  std::memcmp(id.driverUUID, target.target_driver_uuid, sizeof(id.driverUUID)) != 0)) {
                 continue;
             }
-            std::uint32_t deviceExtensionCount = 0;
-            vkEnumerateDeviceExtensionProperties(device, nullptr, &deviceExtensionCount, nullptr);
-            std::vector<VkExtensionProperties> deviceProperties(deviceExtensionCount);
-            vkEnumerateDeviceExtensionProperties(device, nullptr, &deviceExtensionCount, deviceProperties.data());
-            bool extensionsSupported = true;
-            for (const char* required : deviceExtensions) {
-                bool found = false;
-                for (const VkExtensionProperties& property : deviceProperties) {
-                    if (std::strcmp(property.extensionName, required) == 0) { found = true; break; }
-                }
-                if (!found) { extensionsSupported = false; break; }
-            }
-            if (!extensionsSupported) continue;
             std::uint32_t families = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(device, &families, nullptr);
             std::vector<VkQueueFamilyProperties> props(families);
@@ -518,6 +539,8 @@ private:
     std::uint64_t m_sequence = 0;
     std::mutex m_renderMutex;
     VkInstance m_instance = VK_NULL_HANDLE;
+    bool m_instanceReady = false;
+    QString m_instanceError;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VkQueue m_queue = VK_NULL_HANDLE;

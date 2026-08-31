@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <array>
+#include <memory>
 #include <utility>
 
 int main(int argc, char** argv) {
@@ -71,32 +72,33 @@ int main(int argc, char** argv) {
     // independent monitor streams and preserves the macOS control protocol.
     const bool externalSpectrum = parser.isSet(QStringLiteral("external-spectrum"));
     config.enableAudioSpectrum = !parser.isSet(QStringLiteral("no-spectrum")) && !externalSpectrum;
-    WebRendererEngine engine(config);
-    engine.view()->setAttribute(Qt::WA_DontShowOnScreen, true);
-    engine.view()->resize(1920, 1080);
+    std::unique_ptr<WebRendererEngine> engine;
     ProtocolWebRenderer::Config protocolConfig {
         .socketPath = parser.value(QStringLiteral("display-socket")),
         .outputId = parser.value(QStringLiteral("display-output-id")),
         .pointerEnter = [&engine](float x, float y) {
-            QMetaObject::invokeMethod(&engine, [&, x, y] { engine.sendPointerEnter(x, y); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(engine.get(), [&, x, y] { engine->sendPointerEnter(x, y); }, Qt::QueuedConnection);
         },
         .pointerMotion = [&engine](float x, float y) {
-            QMetaObject::invokeMethod(&engine, [&, x, y] { engine.sendPointerMotion(x, y); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(engine.get(), [&, x, y] { engine->sendPointerMotion(x, y); }, Qt::QueuedConnection);
         },
         .pointerButton = [&engine](float x, float y, uint32_t button, bool pressed) {
-            QMetaObject::invokeMethod(&engine, [&, x, y, button, pressed] { engine.sendPointerButton(x, y, button, pressed); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(engine.get(), [&, x, y, button, pressed] { engine->sendPointerButton(x, y, button, pressed); }, Qt::QueuedConnection);
         },
         .pointerAxis = [&engine](float x, float y, float dx, float dy) {
-            QMetaObject::invokeMethod(&engine, [&, x, y, dx, dy] { engine.sendPointerAxis(x, y, dx, dy); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(engine.get(), [&, x, y, dx, dy] { engine->sendPointerAxis(x, y, dx, dy); }, Qt::QueuedConnection);
         },
         .outputSizeChanged = [&engine](uint32_t width, uint32_t height) {
-            QMetaObject::invokeMethod(&engine, [&, width, height] {
-                engine.view()->resize(static_cast<int>(width), static_cast<int>(height));
+            QMetaObject::invokeMethod(engine.get(), [&, width, height] {
+                engine->view()->resize(static_cast<int>(width), static_cast<int>(height));
             }, Qt::QueuedConnection);
         },
     };
-    ProtocolWebRenderer protocol(std::move(protocolConfig), &engine);
-    QObject::connect(&engine, &WebRendererEngine::frameReady, &protocol,
+    ProtocolWebRenderer protocol(std::move(protocolConfig), &app);
+    engine = std::make_unique<WebRendererEngine>(config);
+    engine->view()->setAttribute(Qt::WA_DontShowOnScreen, true);
+    engine->view()->resize(1920, 1080);
+    QObject::connect(engine.get(), &WebRendererEngine::frameReady, &protocol,
                      &ProtocolWebRenderer::submitFrame, Qt::QueuedConnection);
     QString protocolError;
     if (!protocol.start(&protocolError)) {
@@ -106,51 +108,51 @@ int main(int argc, char** argv) {
     // Initialize the DMA-BUF producer before activating WebEngine so Qt and the
     // producer create their Vulkan devices in a fixed order. show() activates
     // the off-screen backing store without mapping an extra desktop window.
-    engine.view()->show();
+    engine->view()->show();
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &protocol, &ProtocolWebRenderer::stop);
-    engine.openWallpaper(manifest);
-    engine.setMuted(parser.isSet(QStringLiteral("muted")));
-    engine.startAudioSpectrum();
-    QObject::connect(&app, &QCoreApplication::aboutToQuit, &engine,
-                     [&engine] { engine.stopAudioSpectrum(); });
-    QObject::connect(&engine, &WebRendererEngine::audioSpectrumDemandChanged,
+    engine->openWallpaper(manifest);
+    engine->setMuted(parser.isSet(QStringLiteral("muted")));
+    engine->startAudioSpectrum();
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, engine.get(),
+                     [&engine] { engine->stopAudioSpectrum(); });
+    QObject::connect(engine.get(), &WebRendererEngine::audioSpectrumDemandChanged,
                      [](bool needed) {
         std::fprintf(stdout, "{\"event\":\"audio-demand\",\"needed\":%s}\n",
                      needed ? "true" : "false");
         std::fflush(stdout);
     });
-    QObject::connect(&engine, &WebRendererEngine::contentReady, [] {
+    QObject::connect(engine.get(), &WebRendererEngine::contentReady, [] {
         std::fprintf(stdout, "{\"event\":\"content-ready\"}\n");
         std::fflush(stdout);
     });
-    QObject::connect(&engine, &WebRendererEngine::failed, [](const QString& message) {
+    QObject::connect(engine.get(), &WebRendererEngine::failed, [](const QString& message) {
         std::fprintf(stderr, "WebWallpaper: %s\n", qPrintable(message));
     });
     ControlChannel channel([&engine](const QJsonObject& command) {
         const QString name = command.value(QStringLiteral("cmd")).toString();
-        if (name == QStringLiteral("pause")) engine.setPaused(true);
-        else if (name == QStringLiteral("resume") || name == QStringLiteral("play")) engine.setPaused(false);
+        if (name == QStringLiteral("pause")) engine->setPaused(true);
+        else if (name == QStringLiteral("resume") || name == QStringLiteral("play")) engine->setPaused(false);
         else if (name == QStringLiteral("muted")) {
             const QJsonValue value = command.value(QStringLiteral("value"));
             if (!value.isBool()) {
                 std::fprintf(stderr, "WebWallpaper: muted requires a boolean value\n");
                 return;
             }
-            engine.setMuted(value.toBool());
+            engine->setMuted(value.toBool());
         } else if (name == QStringLiteral("volume")) {
             const QJsonValue value = command.value(QStringLiteral("value"));
             if (!value.isDouble()) {
                 std::fprintf(stderr, "WebWallpaper: volume requires a numeric value\n");
                 return;
             }
-            engine.setVolume(static_cast<float>(value.toDouble()));
+            engine->setVolume(static_cast<float>(value.toDouble()));
         } else if (name == QStringLiteral("fps")) {
             const QJsonValue value = command.value(QStringLiteral("value"));
             if (!value.isDouble()) {
                 std::fprintf(stderr, "WebWallpaper: fps requires a numeric value\n");
                 return;
             }
-            engine.setFrameRate(value.toInt());
+            engine->setFrameRate(value.toInt());
         } else if (name == QStringLiteral("setProperty")) {
             const QJsonValue key = command.value(QStringLiteral("key"));
             const QJsonValue value = command.value(QStringLiteral("value"));
@@ -160,14 +162,14 @@ int main(int argc, char** argv) {
             }
             // Wallpaper Engine listeners require every live value to use the
             // same {key: {value: ...}} shape as the initial property snapshot.
-            engine.applyUserProperty(key.toString(), QJsonObject{{QStringLiteral("value"), value}});
+            engine->applyUserProperty(key.toString(), QJsonObject{{QStringLiteral("value"), value}});
         } else if (name == QStringLiteral("setProperties")) {
             const QJsonValue values = command.value(QStringLiteral("values"));
             if (!values.isObject()) {
                 std::fprintf(stderr, "WebWallpaper: setProperties requires a values object\n");
                 return;
             }
-            engine.applyUserProperties(values.toObject());
+            engine->applyUserProperties(values.toObject());
         } else if (name == QStringLiteral("playbackState")) {
             const QJsonValue volume = command.value(QStringLiteral("volume"));
             const QJsonValue muted = command.value(QStringLiteral("muted"));
@@ -178,19 +180,19 @@ int main(int argc, char** argv) {
             }
             const QString playbackState = state.toString();
             if (playbackState == QStringLiteral("pause")) {
-                engine.setVolume(static_cast<float>(volume.toDouble()));
-                engine.setMuted(muted.toBool());
-                engine.setPaused(true);
+                engine->setVolume(static_cast<float>(volume.toDouble()));
+                engine->setMuted(muted.toBool());
+                engine->setPaused(true);
             } else if (playbackState == QStringLiteral("run") || playbackState == QStringLiteral("throttle")) {
                 const QJsonValue fps = command.value(QStringLiteral("fps"));
                 if (!fps.isUndefined() && !fps.isDouble()) {
                     std::fprintf(stderr, "WebWallpaper: playbackState fps must be numeric\n");
                     return;
                 }
-                engine.setVolume(static_cast<float>(volume.toDouble()));
-                engine.setMuted(muted.toBool());
-                if (!fps.isUndefined()) engine.setFrameRate(fps.toInt());
-                engine.setPaused(false);
+                engine->setVolume(static_cast<float>(volume.toDouble()));
+                engine->setMuted(muted.toBool());
+                if (!fps.isUndefined()) engine->setFrameRate(fps.toInt());
+                engine->setPaused(false);
             } else {
                 std::fprintf(stderr, "WebWallpaper: unsupported playback state\n");
             }
@@ -202,15 +204,15 @@ int main(int argc, char** argv) {
             }
             const QString powerState = state.toString();
             if (powerState == QStringLiteral("pause")) {
-                engine.setPaused(true);
+                engine->setPaused(true);
             } else if (powerState == QStringLiteral("run") || powerState == QStringLiteral("throttle")) {
                 const QJsonValue fps = command.value(QStringLiteral("fps"));
                 if (!fps.isUndefined() && !fps.isDouble()) {
                     std::fprintf(stderr, "WebWallpaper: power fps must be numeric\n");
                     return;
                 }
-                if (!fps.isUndefined()) engine.setFrameRate(fps.toInt());
-                engine.setPaused(false);
+                if (!fps.isUndefined()) engine->setFrameRate(fps.toInt());
+                engine->setPaused(false);
             } else {
                 std::fprintf(stderr, "WebWallpaper: unsupported power state\n");
             }
@@ -230,9 +232,9 @@ int main(int argc, char** argv) {
                 }
                 spectrum[static_cast<std::size_t>(index)] = static_cast<float>(sample.toDouble());
             }
-            engine.pushAudioSpectrum(spectrum);
+            engine->pushAudioSpectrum(spectrum);
         }
-        else if (name == QStringLiteral("snapshot")) engine.takeSnapshotToPath(command.value(QStringLiteral("path")).toString());
+        else if (name == QStringLiteral("snapshot")) engine->takeSnapshotToPath(command.value(QStringLiteral("path")).toString());
     }, [&app] { app.quit(); }, &app);
     if (parser.isSet(QStringLiteral("control-stdin"))) channel.start();
     return app.exec();
