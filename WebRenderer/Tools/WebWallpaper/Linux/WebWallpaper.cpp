@@ -77,21 +77,44 @@ int main(int argc, char** argv) {
         .socketPath = parser.value(QStringLiteral("display-socket")),
         .outputId = parser.value(QStringLiteral("display-output-id")),
         .pointerEnter = [&engine](float x, float y) {
-            QMetaObject::invokeMethod(engine.get(), [&, x, y] { engine->sendPointerEnter(x, y); }, Qt::QueuedConnection);
+            const bool queued = QMetaObject::invokeMethod(
+                engine.get(), [&, x, y] { engine->sendPointerEnter(x, y); },
+                Qt::QueuedConnection);
+            if (!queued) std::fprintf(stderr, "WebWallpaper: cannot queue pointer enter\n");
+        },
+        .pointerLeave = [&engine] {
+            const bool queued = QMetaObject::invokeMethod(
+                engine.get(), [&] { engine->sendPointerLeave(); }, Qt::QueuedConnection);
+            if (!queued) std::fprintf(stderr, "WebWallpaper: cannot queue pointer leave\n");
         },
         .pointerMotion = [&engine](float x, float y) {
-            QMetaObject::invokeMethod(engine.get(), [&, x, y] { engine->sendPointerMotion(x, y); }, Qt::QueuedConnection);
+            const bool queued = QMetaObject::invokeMethod(
+                engine.get(), [&, x, y] {
+                    engine->sendPointerMotion(x, y);
+                }, Qt::QueuedConnection);
+            if (!queued) std::fprintf(stderr, "WebWallpaper: cannot queue pointer motion\n");
         },
-        .pointerButton = [&engine](float x, float y, uint32_t button, bool pressed) {
-            QMetaObject::invokeMethod(engine.get(), [&, x, y, button, pressed] { engine->sendPointerButton(x, y, button, pressed); }, Qt::QueuedConnection);
+        .pointerButton = [&engine](float x, float y, Qt::MouseButton button, bool pressed) {
+            const bool queued = QMetaObject::invokeMethod(
+                engine.get(), [&, x, y, button, pressed] {
+                    engine->sendPointerButton(x, y, button, pressed);
+                }, Qt::QueuedConnection);
+            if (!queued) std::fprintf(stderr, "WebWallpaper: cannot queue pointer button\n");
         },
-        .pointerAxis = [&engine](float x, float y, float dx, float dy) {
-            QMetaObject::invokeMethod(engine.get(), [&, x, y, dx, dy] { engine->sendPointerAxis(x, y, dx, dy); }, Qt::QueuedConnection);
+        .pointerAxis = [&engine](float x, float y, float dx, float dy, bool pixelBased) {
+            const bool queued = QMetaObject::invokeMethod(
+                engine.get(), [&, x, y, dx, dy, pixelBased] {
+                    engine->sendPointerAxis(x, y, dx, dy, pixelBased);
+                }, Qt::QueuedConnection);
+            if (!queued) std::fprintf(stderr, "WebWallpaper: cannot queue pointer axis\n");
         },
         .outputSizeChanged = [&engine](uint32_t width, uint32_t height) {
-            QMetaObject::invokeMethod(engine.get(), [&, width, height] {
-                engine->view()->resize(static_cast<int>(width), static_cast<int>(height));
-            }, Qt::QueuedConnection);
+            const bool queued = QMetaObject::invokeMethod(
+                engine.get(), [&, width, height] {
+                    engine->view()->resize(static_cast<int>(width),
+                                           static_cast<int>(height));
+                }, Qt::QueuedConnection);
+            if (!queued) std::fprintf(stderr, "WebWallpaper: cannot queue output resize\n");
         },
     };
     ProtocolWebRenderer protocol(std::move(protocolConfig), &app);

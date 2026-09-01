@@ -25,6 +25,7 @@
 #include <QWebEngineProfile>
 #include <QWebEngineSettings>
 #include <QWebEngineView>
+#include <QtMath>
 
 #include <cstdlib>
 
@@ -317,6 +318,14 @@ WebRendererEngine::WebRendererEngine(const Config& config, QObject* parent)
             emit failed(QStringLiteral("QtWebEngine failed to load wallpaper"));
             return;
         }
+        // QWebEngineView installs its Chromium render widget as the focus
+        // proxy. Native WebViewer events are delivered to this child, so the
+        // off-screen wallpaper must use the same target explicitly.
+        m_inputTarget = m_view->focusProxy();
+        if (m_inputTarget == nullptr) {
+            emit failed(QStringLiteral("QtWebEngine input target is unavailable"));
+            return;
+        }
         // All host state is retained until the document-start shim exists.
         // This avoids sending a snapshot into the previous navigation and lets
         // the shim hold it until a wallpaper installs its property listener.
@@ -539,34 +548,91 @@ void WebRendererEngine::takeSnapshotToPath(const QString& path) {
     emit snapshotFinished(ok);
 }
 
+bool WebRendererEngine::mapPointerEventPosition(float x, float y, QPointF& position,
+                                                QPointF& globalPosition) {
+    // A document cannot consume input before loadFinished establishes its
+    // render child; do not carry startup events into the loaded page.
+    if (!m_pageLoaded) return false;
+    if (m_inputTarget == nullptr) {
+        // Latch the failure so a high-rate motion stream cannot emit the same
+        // renderer error for every queued event.
+        m_pageLoaded = false;
+        emit failed(QStringLiteral("QtWebEngine input target was destroyed"));
+        return false;
+    }
+    position = QPointF(static_cast<qreal>(x) * static_cast<qreal>(m_inputTarget->width()),
+                       static_cast<qreal>(y) * static_cast<qreal>(m_inputTarget->height()));
+    globalPosition = m_inputTarget->mapToGlobal(position.toPoint());
+    return true;
+}
+
 void WebRendererEngine::sendPointerMotion(float x, float y) {
-    const QPointF position(x, y);
-    QMouseEvent event(QEvent::MouseMove, position, position, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
-    QCoreApplication::sendEvent(m_view, &event);
+    QPointF position;
+    QPointF globalPosition;
+    if (!mapPointerEventPosition(x, y, position, globalPosition)) return;
+    QMouseEvent event(QEvent::MouseMove, position, globalPosition, Qt::NoButton,
+                      m_pressedButtons, Qt::NoModifier);
+    if (!QCoreApplication::sendEvent(m_inputTarget, &event)) {
+        qWarning("WebRenderer: QtWebEngine rejected pointer motion");
+    }
 }
 
 void WebRendererEngine::sendPointerEnter(float x, float y) {
-    const QPointF position(x, y);
-    QEnterEvent event(position, position, position);
-    QCoreApplication::sendEvent(m_view, &event);
+    QPointF position;
+    QPointF globalPosition;
+    if (!mapPointerEventPosition(x, y, position, globalPosition)) return;
+    const QPointF scenePosition = m_inputTarget->mapTo(m_view, position.toPoint());
+    QEnterEvent event(position, scenePosition, globalPosition);
+    if (!QCoreApplication::sendEvent(m_inputTarget, &event)) {
+        qWarning("WebRenderer: QtWebEngine rejected pointer enter");
+    }
 }
 
-void WebRendererEngine::sendPointerButton(float x, float y, uint32_t button, bool pressed) {
-    Qt::MouseButton mouseButton = Qt::NoButton;
-    if (button == 1u) mouseButton = Qt::LeftButton;
-    else if (button == 2u) mouseButton = Qt::RightButton;
-    else if (button == 3u) mouseButton = Qt::MiddleButton;
-    if (mouseButton == Qt::NoButton) return;
-    const QPointF position(x, y);
+void WebRendererEngine::sendPointerLeave() {
+    if (!m_pageLoaded) return;
+    if (m_inputTarget == nullptr) {
+        m_pageLoaded = false;
+        emit failed(QStringLiteral("QtWebEngine input target was destroyed"));
+        return;
+    }
+    QEvent event(QEvent::Leave);
+    if (!QCoreApplication::sendEvent(m_inputTarget, &event)) {
+        qWarning("WebRenderer: QtWebEngine rejected pointer leave");
+    }
+}
+
+void WebRendererEngine::sendPointerButton(float x, float y, Qt::MouseButton button,
+                                          bool pressed) {
+    QPointF position;
+    QPointF globalPosition;
+    if (!mapPointerEventPosition(x, y, position, globalPosition)) return;
+    if (button == Qt::NoButton) {
+        emit failed(QStringLiteral("QtWebEngine received an invalid pointer button"));
+        return;
+    }
+    if (pressed) m_pressedButtons |= button;
+    else m_pressedButtons &= ~Qt::MouseButtons(button);
     QMouseEvent event(pressed ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease,
-                      position, position, mouseButton, pressed ? mouseButton : Qt::NoButton,
+                      position, globalPosition, button, m_pressedButtons,
                       Qt::NoModifier);
-    QCoreApplication::sendEvent(m_view, &event);
+    if (!QCoreApplication::sendEvent(m_inputTarget, &event)) {
+        qWarning("WebRenderer: QtWebEngine rejected pointer button");
+    }
 }
 
-void WebRendererEngine::sendPointerAxis(float x, float y, float deltaX, float deltaY) {
-    const QPointF position(x, y);
-    QWheelEvent event(position, position, QPoint(), QPoint(static_cast<int>(deltaX), static_cast<int>(deltaY)),
-                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
-    QCoreApplication::sendEvent(m_view, &event);
+void WebRendererEngine::sendPointerAxis(float x, float y, float deltaX, float deltaY,
+                                        bool pixelBased) {
+    QPointF position;
+    QPointF globalPosition;
+    if (!mapPointerEventPosition(x, y, position, globalPosition)) return;
+    // Protocol deltas are logical wheel ticks; Qt expects 120 angle units for
+    // one conventional tick. Continuous/finger deltas originated as pixels
+    // divided by 120 and must return through QWheelEvent::pixelDelta.
+    const QPoint delta(qRound(deltaX * 120.0f), qRound(deltaY * 120.0f));
+    QWheelEvent event(position, globalPosition, pixelBased ? delta : QPoint(),
+                      pixelBased ? QPoint() : delta, m_pressedButtons,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+    if (!QCoreApplication::sendEvent(m_inputTarget, &event)) {
+        qWarning("WebRenderer: QtWebEngine rejected pointer axis");
+    }
 }

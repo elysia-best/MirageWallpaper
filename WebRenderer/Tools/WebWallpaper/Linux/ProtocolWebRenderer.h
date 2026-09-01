@@ -3,6 +3,7 @@
 #include <QImage>
 #include <QObject>
 #include <QString>
+#include <Qt>
 
 #include <functional>
 #include <memory>
@@ -16,10 +17,15 @@ public:
     struct Config {
         QString socketPath;
         QString outputId;
+        // Pointer callbacks run on the producer I/O thread. Coordinates are
+        // normalized against the configured physical output exactly as in
+        // SceneWallpaper. Linux BTN_* codes and axis sources are mapped here,
+        // keeping mirage-display wire values out of WebRendererEngine.
         std::function<void(float, float)> pointerEnter;
+        std::function<void()> pointerLeave;
         std::function<void(float, float)> pointerMotion;
-        std::function<void(float, float, uint32_t, bool)> pointerButton;
-        std::function<void(float, float, float, float)> pointerAxis;
+        std::function<void(float, float, Qt::MouseButton, bool)> pointerButton;
+        std::function<void(float, float, float, float, bool)> pointerAxis;
         std::function<void(uint32_t, uint32_t)> outputSizeChanged;
     };
 

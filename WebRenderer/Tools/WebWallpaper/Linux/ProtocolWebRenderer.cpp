@@ -33,6 +33,13 @@ constexpr std::uint32_t Fourcc(char a, char b, char c, char d) {
            (static_cast<std::uint32_t>(static_cast<unsigned char>(d)) << 24u);
 }
 constexpr std::uint32_t kXrgb8888 = Fourcc('X', 'B', '2', '4');
+// mirage-display transports Linux input-event button codes. Mapping them at
+// this boundary mirrors SceneWallpaper and keeps the renderer Qt-typed.
+constexpr std::uint32_t kButtonLeft = 0x110u;
+constexpr std::uint32_t kButtonRight = 0x111u;
+constexpr std::uint32_t kButtonMiddle = 0x112u;
+constexpr std::uint32_t kButtonSide = 0x113u;
+constexpr std::uint32_t kButtonExtra = 0x114u;
 
 std::uint32_t MemoryType(VkPhysicalDevice device, std::uint32_t bits,
                          VkMemoryPropertyFlags required) {
@@ -501,6 +508,21 @@ private:
         std::fprintf(stderr, "WebWallpaper: %s\n", qPrintable(message));
     }
 
+    // SceneWallpaper and SceneViewer expose pointer positions to their
+    // renderers as normalized coordinates. Applying the same protocol mapping
+    // here keeps Qt logical pixels independent from KDE's output scale.
+    bool mapPointerPosition(float physicalX, float physicalY, float& x, float& y) {
+        md_producer_config_t config {};
+        {
+            std::lock_guard lock(m_stateMutex);
+            config = m_outputConfig;
+        }
+        if (config.physical_width == 0U || config.physical_height == 0U) return false;
+        x = std::clamp(physicalX / static_cast<float>(config.physical_width), 0.0f, 1.0f);
+        y = std::clamp(physicalY / static_cast<float>(config.physical_height), 0.0f, 1.0f);
+        return true;
+    }
+
     static void OnConnected(void*, std::uint64_t, std::uint64_t) {}
     static void OnOutputConfig(void* opaque, const md_producer_config_t* config) {
         auto* self = static_cast<Impl*>(opaque); if (config == nullptr) return;
@@ -510,17 +532,51 @@ private:
     static void OnRetire(void*, std::uint64_t) {}
     static void OnPointerEnter(void* opaque, const md_pointer_enter_t* event) {
         auto* self = static_cast<Impl*>(opaque);
-        if (event != nullptr && self->m_config.pointerEnter) self->m_config.pointerEnter(event->x, event->y);
+        if (event == nullptr || !self->m_config.pointerEnter) return;
+        float x;
+        float y;
+        if (!self->mapPointerPosition(event->x, event->y, x, y)) return;
+        self->m_config.pointerEnter(x, y);
     }
-    static void OnPointerLeave(void*, std::uint64_t) {}
+    static void OnPointerLeave(void* opaque, std::uint64_t) {
+        auto* self = static_cast<Impl*>(opaque);
+        if (self->m_config.pointerLeave) self->m_config.pointerLeave();
+    }
     static void OnPointerMotion(void* opaque, const md_pointer_motion_t* event) {
-        auto* self = static_cast<Impl*>(opaque); if (event != nullptr && self->m_config.pointerMotion) self->m_config.pointerMotion(event->x, event->y);
+        auto* self = static_cast<Impl*>(opaque);
+        if (event == nullptr || !self->m_config.pointerMotion) return;
+        float x;
+        float y;
+        if (!self->mapPointerPosition(event->x, event->y, x, y)) return;
+        self->m_config.pointerMotion(x, y);
     }
     static void OnPointerButton(void* opaque, const md_pointer_button_t* event) {
-        auto* self = static_cast<Impl*>(opaque); if (event != nullptr && self->m_config.pointerButton) self->m_config.pointerButton(event->x, event->y, event->button, event->state == MD_BUTTON_PRESSED);
+        auto* self = static_cast<Impl*>(opaque);
+        if (event == nullptr || !self->m_config.pointerButton) return;
+        Qt::MouseButton button;
+        switch (event->button) {
+        case kButtonLeft: button = Qt::LeftButton; break;
+        case kButtonRight: button = Qt::RightButton; break;
+        case kButtonMiddle: button = Qt::MiddleButton; break;
+        case kButtonSide: button = Qt::BackButton; break;
+        case kButtonExtra: button = Qt::ForwardButton; break;
+        default: return;
+        }
+        float x;
+        float y;
+        if (!self->mapPointerPosition(event->x, event->y, x, y)) return;
+        self->m_config.pointerButton(x, y, button,
+                                     event->state == MD_BUTTON_PRESSED);
     }
     static void OnPointerAxis(void* opaque, const md_pointer_axis_t* event) {
-        auto* self = static_cast<Impl*>(opaque); if (event != nullptr && self->m_config.pointerAxis) self->m_config.pointerAxis(event->x, event->y, event->delta_x, event->delta_y);
+        auto* self = static_cast<Impl*>(opaque);
+        if (event == nullptr || !self->m_config.pointerAxis) return;
+        float x;
+        float y;
+        if (!self->mapPointerPosition(event->x, event->y, x, y)) return;
+        const bool pixelBased = event->source != MD_AXIS_WHEEL;
+        self->m_config.pointerAxis(x, y, event->delta_x, event->delta_y,
+                                   pixelBased);
     }
     static void OnDisconnected(void*, md_result_t, const char*) {}
 
