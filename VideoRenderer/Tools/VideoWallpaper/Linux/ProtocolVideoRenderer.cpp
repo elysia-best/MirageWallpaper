@@ -1119,8 +1119,8 @@ private:
     }
 
     struct FitRect {
-        std::uint32_t x;
-        std::uint32_t y;
+        std::int64_t x;
+        std::int64_t y;
         std::uint32_t w;
         std::uint32_t h;
     };
@@ -1138,8 +1138,10 @@ private:
                 rect.h = m_pool_height;
                 rect.w = static_cast<std::uint32_t>(m_pool_height * source_aspect);
             }
-            rect.x = (m_pool_width - rect.w) / 2;
-            rect.y = (m_pool_height - rect.h) / 2;
+            rect.x = (static_cast<std::int64_t>(m_pool_width) -
+                      static_cast<std::int64_t>(rect.w)) / 2;
+            rect.y = (static_cast<std::int64_t>(m_pool_height) -
+                      static_cast<std::int64_t>(rect.h)) / 2;
             break;
         case VRVideoFillModeCover:
             if (source_aspect > pool_aspect) {
@@ -1149,8 +1151,13 @@ private:
                 rect.w = m_pool_width;
                 rect.h = static_cast<std::uint32_t>(m_pool_width / source_aspect);
             }
-            rect.x = (m_pool_width - rect.w) / 2;
-            rect.y = (m_pool_height - rect.h) / 2;
+            // Cover intentionally produces a negative offset on the overflowing
+            // axis. Signed coordinates preserve that centered source crop instead
+            // of wrapping to a large unsigned destination coordinate.
+            rect.x = (static_cast<std::int64_t>(m_pool_width) -
+                      static_cast<std::int64_t>(rect.w)) / 2;
+            rect.y = (static_cast<std::int64_t>(m_pool_height) -
+                      static_cast<std::int64_t>(rect.h)) / 2;
             break;
         case VRVideoFillModeStretch:
         default:
@@ -1341,18 +1348,29 @@ private:
                      GL_RGBA, GL_UNSIGNED_BYTE, m_mpv_buf.data());
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // fit 区域拷贝进画布：黑边画布 + 居中/裁剪语义不变；cover 放大时 rect
-        // 可能超出画布，按画布边界裁剪防止越界写。
-        const std::uint32_t clip_x = std::min(rect.x, m_pool_width);
-        const std::uint32_t clip_y = std::min(rect.y, m_pool_height);
-        const std::uint32_t copy_w = std::min(rect.w, m_pool_width - clip_x);
-        const std::uint32_t copy_h = std::min(rect.h, m_pool_height - clip_y);
+        // fit 区域与画布求交后同时得到源裁剪和目标偏移：cover 从超出画布的
+        // mpv 帧中央取样，contain 则将完整帧居中写入黑边画布。
+        const std::int64_t copy_left = std::max<std::int64_t>(rect.x, 0);
+        const std::int64_t copy_top = std::max<std::int64_t>(rect.y, 0);
+        const std::int64_t copy_right = std::min<std::int64_t>(
+            rect.x + static_cast<std::int64_t>(rect.w), m_pool_width);
+        const std::int64_t copy_bottom = std::min<std::int64_t>(
+            rect.y + static_cast<std::int64_t>(rect.h), m_pool_height);
+        const std::uint32_t source_x = static_cast<std::uint32_t>(copy_left - rect.x);
+        const std::uint32_t source_y = static_cast<std::uint32_t>(copy_top - rect.y);
+        const std::uint32_t destination_x = static_cast<std::uint32_t>(copy_left);
+        const std::uint32_t destination_y = static_cast<std::uint32_t>(copy_top);
+        const std::uint32_t copy_w = static_cast<std::uint32_t>(copy_right - copy_left);
+        const std::uint32_t copy_h = static_cast<std::uint32_t>(copy_bottom - copy_top);
         const std::size_t row_bytes = static_cast<std::size_t>(rect.w) * 4u;
         std::memset(m_canvas.data(), 0, m_canvas.size());
         for (std::uint32_t y = 0; y < copy_h; ++y) {
-            std::memcpy(m_canvas.data() + (static_cast<std::size_t>(clip_y + y) * m_pool_width +
-                                           clip_x) * 4u,
-                        m_mpv_buf.data() + static_cast<std::size_t>(y) * row_bytes,
+            std::memcpy(m_canvas.data() +
+                            (static_cast<std::size_t>(destination_y + y) * m_pool_width +
+                             destination_x) * 4u,
+                        m_mpv_buf.data() +
+                            static_cast<std::size_t>(source_y + y) * row_bytes +
+                            static_cast<std::size_t>(source_x) * 4u,
                         static_cast<std::size_t>(copy_w) * 4u);
         }
         uploadAndSubmit();
