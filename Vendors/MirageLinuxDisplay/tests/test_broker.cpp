@@ -223,6 +223,9 @@ int main(void) {
         .features = MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
                     MD_FEATURE_POINTER_AXIS | MD_FEATURE_WINDOW_STATE,
         .max_routes = 2,
+        .on_output_added = nullptr,
+        .on_output_updated = nullptr,
+        .on_output_removed = nullptr,
         .on_window_state = on_host_window_state,
         .user_data = nullptr,
     };

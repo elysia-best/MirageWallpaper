@@ -39,17 +39,36 @@ int main(int argc, char** argv) {
                 << "serial=" << s->serialNumber();
     }
 
-    Mirage::DisplayBrokerService displayBroker;
-    QString brokerError;
-    if (!displayBroker.start(&brokerError)) {
-        qWarning().noquote() << brokerError;
-    }
-
     Mirage::MirageController controller;
+    Mirage::DisplayBrokerService displayBroker;
+    QObject::connect(&displayBroker, &Mirage::DisplayBrokerService::outputAdded,
+                     &controller, &Mirage::MirageController::handleOutputAdded,
+                     Qt::QueuedConnection);
+    QObject::connect(&displayBroker, &Mirage::DisplayBrokerService::outputUpdated,
+                     &controller, &Mirage::MirageController::handleOutputUpdated,
+                     Qt::QueuedConnection);
+    QObject::connect(&displayBroker, &Mirage::DisplayBrokerService::outputRemoved,
+                     &controller, &Mirage::MirageController::handleOutputRemoved,
+                     Qt::QueuedConnection);
+    // A producer needs a registered display consumer before the broker can
+    // send OUTPUT_CONFIG.  KDE creates that consumer from its wallpaper QML,
+    // which is later than the broker listener, so startup restoration waits
+    // for the first copied output event and is kept one-shot per process.
+    bool startupPlaybackStarted = false;
+    QObject::connect(&displayBroker, &Mirage::DisplayBrokerService::outputAdded,
+                     &controller, [&controller, &startupPlaybackStarted](const Mirage::DisplayOutputSnapshot&) {
+                         if (startupPlaybackStarted) return;
+                         startupPlaybackStarted = true;
+                         controller.startPlayback();
+                     }, Qt::QueuedConnection);
     // 桌面窗口事实（焦点/全屏）由 broker 宿主回调上报，应用据此按播放规则
     // 驱动渲染器（对齐 macOS 的应用侧播放策略）。
     QObject::connect(&displayBroker, &Mirage::DisplayBrokerService::windowStateChanged,
                      &controller, &Mirage::MirageController::handleWindowState);
+    QString brokerError;
+    if (!displayBroker.start(&brokerError)) {
+        qWarning().noquote() << brokerError;
+    }
     QQmlApplicationEngine engine;
     FluentUI::registerTypes(&engine);
     engine.rootContext()->setContextProperty(QStringLiteral("mirage"), &controller);

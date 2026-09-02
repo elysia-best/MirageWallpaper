@@ -89,6 +89,7 @@ struct md_proto_error_t {
 void md_writer_init(md_writer_t* writer, std::uint8_t* data, std::size_t capacity);
 std::int32_t md_write_u16(md_writer_t* writer, std::uint16_t value);
 std::int32_t md_write_u32(md_writer_t* writer, std::uint32_t value);
+std::int32_t md_write_i32(md_writer_t* writer, std::int32_t value);
 std::int32_t md_write_u64(md_writer_t* writer, std::uint64_t value);
 std::int32_t md_write_f32(md_writer_t* writer, float value);
 std::int32_t md_write_bytes(md_writer_t* writer, const void* data, std::size_t size);
@@ -97,6 +98,7 @@ std::int32_t md_write_string(md_writer_t* writer, const char* value);
 void md_reader_init(md_reader_t* reader, const std::uint8_t* data, std::size_t size);
 std::int32_t md_read_u16(md_reader_t* reader, std::uint16_t* value);
 std::int32_t md_read_u32(md_reader_t* reader, std::uint32_t* value);
+std::int32_t md_read_i32(md_reader_t* reader, std::int32_t* value);
 std::int32_t md_read_u64(md_reader_t* reader, std::uint64_t* value);
 std::int32_t md_read_f32(md_reader_t* reader, float* value);
 std::int32_t md_read_bytes(md_reader_t* reader, void* data, std::size_t size);

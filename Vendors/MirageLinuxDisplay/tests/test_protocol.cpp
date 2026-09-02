@@ -24,8 +24,8 @@ static void test_hello_golden_vector(void) {
     const uint8_t expected[] = {
         0x01, 0x00, 0x00, 0x00,
         0x00, 0x00,
-        0x01, 0x00,
-        0x01, 0x00,
+        0x02, 0x00,
+        0x02, 0x00,
         0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x06, 0x00, 0x00, 0x00, 'c', 'l', 'i', 'e', 'n', 't',
         0x03, 0x00, 0x00, 0x00, '1', '.', '0',
@@ -127,6 +127,22 @@ static void test_invalid_utf8(void) {
     assert(md_write_string(&writer, invalid) != 0);
 }
 
+static void test_i32_round_trip(void) {
+    uint8_t bytes[8];
+    md_writer_t writer;
+    md_writer_init(&writer, bytes, sizeof(bytes));
+    assert(md_write_i32(&writer, INT32_MIN) == 0);
+    assert(md_write_i32(&writer, INT32_MAX) == 0);
+    md_reader_t reader;
+    md_reader_init(&reader, bytes, writer.size);
+    int32_t minimum = 0;
+    int32_t maximum = 0;
+    assert(md_read_i32(&reader, &minimum) == 0);
+    assert(md_read_i32(&reader, &maximum) == 0);
+    assert(minimum == INT32_MIN && maximum == INT32_MAX);
+    assert(md_reader_finish(&reader) == 0);
+}
+
 static void test_window_state_decode(void) {
     uint8_t bytes[16];
     md_writer_t writer;
@@ -148,6 +164,7 @@ int main(void) {
     test_bind_decode();
     test_multiplane_bind_round_trip();
     test_invalid_utf8();
+    test_i32_round_trip();
     test_window_state_decode();
     return 0;
 }

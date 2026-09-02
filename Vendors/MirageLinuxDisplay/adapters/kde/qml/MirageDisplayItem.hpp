@@ -52,6 +52,8 @@ class MirageDisplayItem : public QQuickItem {
     Q_PROPERTY(int physicalHeight READ physicalHeight WRITE setPhysicalHeight NOTIFY outputChanged)
     Q_PROPERTY(int logicalWidth READ logicalWidth WRITE setLogicalWidth NOTIFY outputChanged)
     Q_PROPERTY(int logicalHeight READ logicalHeight WRITE setLogicalHeight NOTIFY outputChanged)
+    Q_PROPERTY(int logicalX READ logicalX WRITE setLogicalX NOTIFY outputChanged)
+    Q_PROPERTY(int logicalY READ logicalY WRITE setLogicalY NOTIFY outputChanged)
     Q_PROPERTY(int scale120 READ scale120 WRITE setScale120 NOTIFY outputChanged)
     Q_PROPERTY(int refreshMhz READ refreshMhz WRITE setRefreshMhz NOTIFY outputChanged)
     Q_PROPERTY(OutputTransform outputTransform READ outputTransform WRITE setOutputTransform NOTIFY outputChanged)
@@ -118,6 +120,10 @@ public:
     void setLogicalWidth(int value);
     int logicalHeight() const { return m_logicalHeight; }
     void setLogicalHeight(int value);
+    int logicalX() const { return m_logicalX; }
+    void setLogicalX(int value);
+    int logicalY() const { return m_logicalY; }
+    void setLogicalY(int value);
     int scale120() const { return m_scale120; }
     void setScale120(int value);
     int refreshMhz() const { return m_refreshMhz; }
@@ -224,6 +230,8 @@ private:
     int m_physicalHeight = 1080;
     int m_logicalWidth = 1920;
     int m_logicalHeight = 1080;
+    int m_logicalX = 0;
+    int m_logicalY = 0;
     int m_scale120 = 120;
     int m_refreshMhz = 60000;
     OutputTransform m_outputTransform = TransformNormal;

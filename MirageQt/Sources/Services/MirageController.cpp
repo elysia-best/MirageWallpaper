@@ -76,7 +76,8 @@ MirageController::MirageController(QObject* parent)
     , m_playlist(&m_library, &m_renderer, this)
     , m_trusted(this)
     , m_steamSetup(&m_steamService, this)
-    , m_playback(&m_settings, &m_renderer, &m_runtimeStore, &m_playlist, this) {
+    , m_playback(&m_settings, &m_renderer, &m_runtimeStore, &m_playlist, this)
+    , m_displayModel(this) {
     m_firstLaunch = QSettings().value(QStringLiteral("IsFirstLaunch"), true).toBool();
     m_renderer.setWallpaperTrustChecker([this](const Wallpaper& item) {
         return m_trusted.isTrusted(item.id());
@@ -99,7 +100,7 @@ MirageController::MirageController(QObject* parent)
             this, &MirageController::playbackPausedChanged);
     connect(&m_renderer, &RendererController::rendererMessage, this, &MirageController::setStatusMessage);
     connect(&m_renderer, &RendererController::rendererStateChanged,
-            this, &MirageController::displaysChanged);
+            this, [this] { refreshDisplayStates(); emit displaysChanged(); });
     connect(qGuiApp, &QGuiApplication::screenAdded, this, [this](QScreen*) {
         emit displaysChanged();
     });
@@ -166,6 +167,9 @@ MirageController::MirageController(QObject* parent)
     m_steamService.start();
     if (m_steamService.hasSavedSession()) m_steamService.restoreSessionIfNeeded();
     reloadWallpapers();
+}
+
+void MirageController::startPlayback() {
     m_playback.restoreStartupPlayback();
     m_playlist.startRotators();
 }
@@ -415,11 +419,21 @@ void MirageController::trustWallpaper(const QString& id, bool persist) {
 }
 
 void MirageController::applySelected(bool allScreens) {
+    if (!m_wallpaperAssignmentDisplayId.isEmpty()) {
+        applySelectedToDisplay(m_wallpaperAssignmentDisplayId);
+        cancelWallpaperAssignment();
+        return;
+    }
     m_playback.apply(wallpaper(m_selectedWallpaperId), allScreens);
 }
 
 void MirageController::applyWallpaper(const QString& id, bool allScreens) {
     selectWallpaper(id);
+    if (!m_wallpaperAssignmentDisplayId.isEmpty()) {
+        applySelectedToDisplay(m_wallpaperAssignmentDisplayId);
+        cancelWallpaperAssignment();
+        return;
+    }
     m_playback.apply(wallpaper(id), allScreens);
 }
 
@@ -490,6 +504,50 @@ void MirageController::applySelectedToScreen(int screen) {
 
 void MirageController::stopScreen(int screen) {
     m_playback.stopScreen(screen);
+}
+
+void MirageController::applySelectedToDisplay(const QString& displayId) {
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    for (int index = 0; index < screens.size(); ++index) {
+        if (RendererController::stableOutputId(screens.at(index)) == displayId) {
+            m_playback.applySelectedToScreen(index);
+            return;
+        }
+    }
+}
+
+void MirageController::applyWallpaperToDisplay(const QString& wallpaperId,
+                                               const QString& displayId) {
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    for (int index = 0; index < screens.size(); ++index) {
+        if (RendererController::stableOutputId(screens.at(index)) == displayId) {
+            selectWallpaper(wallpaperId);
+            m_playback.applySelectedToScreen(index);
+            return;
+        }
+    }
+}
+
+void MirageController::removeWallpaperFromDisplay(const QString& displayId) {
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    for (int index = 0; index < screens.size(); ++index) {
+        if (RendererController::stableOutputId(screens.at(index)) == displayId) {
+            m_playback.stopScreen(index);
+            return;
+        }
+    }
+}
+
+void MirageController::beginWallpaperAssignment(const QString& displayId) {
+    if (m_wallpaperAssignmentDisplayId == displayId) return;
+    m_wallpaperAssignmentDisplayId = displayId;
+    emit wallpaperAssignmentChanged();
+}
+
+void MirageController::cancelWallpaperAssignment() {
+    if (m_wallpaperAssignmentDisplayId.isEmpty()) return;
+    m_wallpaperAssignmentDisplayId.clear();
+    emit wallpaperAssignmentChanged();
 }
 
 void MirageController::addSelectedToPlaylist() {
@@ -770,6 +828,38 @@ void MirageController::handleWindowState(const QString& stableId, quint32 flags)
     m_playback.handleWindowState(stableId, flags);
 }
 
+void MirageController::handleOutputAdded(const DisplayOutputSnapshot& output) {
+    m_displayModel.addOutput(output);
+    refreshDisplayStates();
+    emit displaysChanged();
+}
+
+void MirageController::handleOutputUpdated(const DisplayOutputSnapshot& output) {
+    m_displayModel.updateOutput(output);
+    emit displaysChanged();
+}
+
+void MirageController::handleOutputRemoved(const QString& stableId) {
+    m_displayModel.removeOutput(stableId);
+    emit displaysChanged();
+}
+
+void MirageController::refreshDisplayStates() {
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    for (int row = 0; row < m_displayModel.rowCount(); ++row) {
+        const QString stableId = m_displayModel.stableIdAt(row);
+        for (int screen = 0; screen < screens.size(); ++screen) {
+            if (RendererController::stableOutputId(screens.at(screen)) != stableId) continue;
+            const Wallpaper current = m_playlist.currentWallpaper(screen);
+            const bool running = m_renderer.isRunningOnScreen(screen);
+            m_displayModel.setWallpaperState(stableId, running, running,
+                                              current.id(), current.project.title,
+                                              current.isValid() ? QUrl::fromLocalFile(current.previewPath()) : QUrl());
+            break;
+        }
+    }
+}
+
 bool MirageController::applySettings(const QVariantMap& values) {
     return m_playback.applySettings(values);
 }
@@ -784,6 +874,16 @@ void MirageController::setPlaylistScreen(int screen) {
     m_playlistScreen = selected;
     m_playlist.ensureScreen(m_playlistScreen);
     emit playlistChanged();
+}
+
+bool MirageController::showOnStart() const {
+    return QSettings().value(QStringLiteral("DisplaySettings/ShowOnStart"), true).toBool();
+}
+
+void MirageController::setShowOnStart(bool enabled) {
+    if (showOnStart() == enabled) return;
+    QSettings().setValue(QStringLiteral("DisplaySettings/ShowOnStart"), enabled);
+    emit showOnStartChanged();
 }
 
 void MirageController::setSelectedVolume(double volume) {

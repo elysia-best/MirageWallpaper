@@ -48,7 +48,7 @@ FluWindow {
         icon: ""
         showDark: true
         showStayTop: true
-        TopTabBar {
+    TopTabBar {
             id: appBarTabs
             height: 30
             anchors.left: parent.left
@@ -64,6 +64,17 @@ FluWindow {
         }
         Component.onCompleted: {
             appBarTabs.registerHitTest(window);
+        }
+    }
+
+    property bool displayStartupDialogShown: false
+    Connections {
+        target: mirage.displayModel
+        function onRowsInserted() {
+            if (!window.displayStartupDialogShown && mirage.showOnStart && mirage.displayModel.count > 0) {
+                window.displayStartupDialogShown = true
+                displaySettingsSheet.open()
+            }
         }
     }
 

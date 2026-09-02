@@ -884,6 +884,20 @@ void MirageDisplayItem::setLogicalHeight(int value) {
     m_outputUpdateTimer.start();
 }
 
+void MirageDisplayItem::setLogicalX(int value) {
+    if (m_logicalX == value) return;
+    m_logicalX = value;
+    emit outputChanged();
+    m_outputUpdateTimer.start();
+}
+
+void MirageDisplayItem::setLogicalY(int value) {
+    if (m_logicalY == value) return;
+    m_logicalY = value;
+    emit outputChanged();
+    m_outputUpdateTimer.start();
+}
+
 void MirageDisplayItem::setScale120(int value) {
     value = std::max(value, 1);
     if (m_scale120 == value) return;
@@ -985,12 +999,19 @@ md_output_info_t MirageDisplayItem::makeOutputInfo(QByteArray& stableId, QByteAr
     if (name.isEmpty()) name = QByteArrayLiteral("KDE wallpaper");
 
     uint32_t refreshMhz = positiveU32(m_refreshMhz, 60000);
+    int32_t logicalX = static_cast<int32_t>(m_logicalX);
+    int32_t logicalY = static_cast<int32_t>(m_logicalY);
     if (window() != nullptr && window()->screen() != nullptr &&
         window()->screen()->refreshRate() > 0.0) {
         const qreal screenRefresh = window()->screen()->refreshRate() * 1000.0;
         if (screenRefresh > 0.0 && screenRefresh < static_cast<qreal>(std::numeric_limits<uint32_t>::max())) {
-            refreshMhz = static_cast<uint32_t>(screenRefresh);
+        refreshMhz = static_cast<uint32_t>(screenRefresh);
         }
+        /* QScreen::geometry() is expressed in the virtual desktop coordinate
+         * space; its origin therefore carries the negative/offset monitor
+         * position required by mirage-display v1.2. */
+        logicalX = static_cast<int32_t>(window()->screen()->geometry().x());
+        logicalY = static_cast<int32_t>(window()->screen()->geometry().y());
     }
 
     return md_output_info_t {
@@ -1000,6 +1021,8 @@ md_output_info_t MirageDisplayItem::makeOutputInfo(QByteArray& stableId, QByteAr
         .physical_height = positiveU32(m_physicalHeight, 1),
         .logical_width = positiveU32(m_logicalWidth, 1),
         .logical_height = positiveU32(m_logicalHeight, 1),
+        .logical_x = logicalX,
+        .logical_y = logicalY,
         .scale_120 = positiveU32(m_scale120, 120),
         .refresh_mhz = refreshMhz,
         .transform = static_cast<md_transform_t>(m_outputTransform),

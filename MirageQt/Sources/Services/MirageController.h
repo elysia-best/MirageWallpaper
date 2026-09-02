@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Services/FavoritesManager.h"
+#include "Services/DisplayOutputModel.h"
 #include "Services/GlobalSettingsService.h"
 #include "Services/PlaybackController.h"
 #include "Services/PlaylistManager.h"
@@ -99,15 +100,22 @@ class MirageController : public QObject {
     Q_PROPERTY(int playlistScreen READ playlistScreen WRITE setPlaylistScreen NOTIFY playlistChanged)
     Q_PROPERTY(int screenCount READ screenCount NOTIFY displaysChanged)
     Q_PROPERTY(QVariantList displays READ displays NOTIFY displaysChanged)
+    Q_PROPERTY(Mirage::DisplayOutputModel* displayModel READ displayModel CONSTANT)
     Q_PROPERTY(QVariantList savedPlaylists READ savedPlaylists NOTIFY playlistsSavedChanged)
     Q_PROPERTY(QVariantMap playlistSettings READ playlistSettings NOTIFY playlistChanged)
     Q_PROPERTY(double selectedVolume READ selectedVolume WRITE setSelectedVolume NOTIFY selectedRuntimeChanged)
     Q_PROPERTY(double selectedSpeed READ selectedSpeed WRITE setSelectedSpeed NOTIFY selectedRuntimeChanged)
     Q_PROPERTY(QString selectedFillMode READ selectedFillMode WRITE setSelectedFillMode NOTIFY selectedRuntimeChanged)
+    Q_PROPERTY(QString wallpaperAssignmentDisplayId READ wallpaperAssignmentDisplayId NOTIFY wallpaperAssignmentChanged)
+    Q_PROPERTY(bool showOnStart READ showOnStart WRITE setShowOnStart NOTIFY showOnStartChanged)
 
 public:
     explicit MirageController(QObject* parent = nullptr);
     ~MirageController() override;
+
+    /* Starts persisted playback after DisplayBrokerService has successfully
+     * bound its socket. Renderer producers must never race broker startup. */
+    void startPlayback();
 
     QVariantList wallpapers() const;
     QVariantMap selectedWallpaper() const;
@@ -148,11 +156,14 @@ public:
     int playlistScreen() const;
     int screenCount() const;
     QVariantList displays() const;
+    DisplayOutputModel* displayModel() { return &m_displayModel; }
     QVariantList savedPlaylists() const;
     QVariantMap playlistSettings() const;
     double selectedVolume() const;
     double selectedSpeed() const;
     QString selectedFillMode() const;
+    QString wallpaperAssignmentDisplayId() const { return m_wallpaperAssignmentDisplayId; }
+    bool showOnStart() const;
 
     Q_INVOKABLE void reloadWallpapers();
     Q_INVOKABLE void selectWallpaper(const QString& id);
@@ -167,6 +178,11 @@ public:
     Q_INVOKABLE void stopWallpapers();
     Q_INVOKABLE void applySelectedToScreen(int screen);
     Q_INVOKABLE void stopScreen(int screen);
+    Q_INVOKABLE void applySelectedToDisplay(const QString& displayId);
+    Q_INVOKABLE void applyWallpaperToDisplay(const QString& wallpaperId, const QString& displayId);
+    Q_INVOKABLE void removeWallpaperFromDisplay(const QString& displayId);
+    Q_INVOKABLE void beginWallpaperAssignment(const QString& displayId);
+    Q_INVOKABLE void cancelWallpaperAssignment();
     Q_INVOKABLE void addSelectedToPlaylist();
     Q_INVOKABLE void playPlaylistItem(const QString& id);
     Q_INVOKABLE void removePlaylistItem(const QString& id);
@@ -240,6 +256,10 @@ public slots:
     // 桌面窗口事实（由 main.cpp 从 DisplayBrokerService 接入），转发给
     // PlaybackController 按播放规则驱动渲染器。
     void handleWindowState(const QString& stableId, quint32 flags);
+    void handleOutputAdded(const Mirage::DisplayOutputSnapshot& output);
+    void handleOutputUpdated(const Mirage::DisplayOutputSnapshot& output);
+    void handleOutputRemoved(const QString& stableId);
+    void setShowOnStart(bool enabled);
 
 signals:
     void wallpapersChanged();
@@ -258,6 +278,8 @@ signals:
     void displaysChanged();
     void steamChanged();
     void subscriptionsChanged();
+    void wallpaperAssignmentChanged();
+    void showOnStartChanged();
     void playbackPausedChanged(bool paused);
 
 private:
@@ -292,6 +314,7 @@ private:
     // 执行该全量重活。重建本身无法避免单次全量序列化（favorite/size 字段
     // 变化必须重算），缓存只消除信号后的重复调用。
     void refreshWallpapersCache();
+    void refreshDisplayStates();
 
     GlobalSettingsService m_settings;
     FavoritesManager m_favorites;
@@ -305,6 +328,7 @@ private:
     TrustedWallpaperService m_trusted;
     SteamSetupViewModel m_steamSetup;
     PlaybackController m_playback;
+    DisplayOutputModel m_displayModel;
     QVector<Wallpaper> m_allWallpapers;
     QString m_selectedWallpaperId;
     // 选中壁纸的序列化缓存（mutable：getter 为 const）。失效时机见
@@ -319,6 +343,7 @@ private:
     int m_playlistScreen = 0;
     bool m_firstLaunch = true;
     QString m_statusMessage;
+    QString m_wallpaperAssignmentDisplayId;
 };
 
 } // namespace Mirage

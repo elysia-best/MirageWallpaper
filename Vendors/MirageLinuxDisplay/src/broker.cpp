@@ -153,6 +153,9 @@ struct md_broker {
     /* Host notification hooks (see md_broker_options_t); the broker never
      * owns or frees user_data. */
     void (*on_window_state)(void* user_data, const char* stable_id, uint32_t flags){nullptr};
+    void (*on_output_added)(void* user_data, const md_output_info_t* output){nullptr};
+    void (*on_output_updated)(void* user_data, const md_output_info_t* output){nullptr};
+    void (*on_output_removed)(void* user_data, const char* stable_id){nullptr};
     void* user_data{nullptr};
 };
 
@@ -425,7 +428,8 @@ static int parse_hello(const md_packet_t* packet, md_broker_role_t* role, uint16
     if (rc == 0) rc = md_read_string(&reader, version);
     if (rc == 0) rc = md_reader_finish(&reader);
     if (rc != 0 || reserved != 0 || min_minor > max_minor ||
-        min_minor > MIRAGE_DISPLAY_PROTOCOL_MINOR ||
+        min_minor != MIRAGE_DISPLAY_PROTOCOL_MINOR ||
+        max_minor != MIRAGE_DISPLAY_PROTOCOL_MINOR ||
         (role_value != 1 && role_value != 2)) {
         md_protocol_free_string(*name);
         md_protocol_free_string(*version);
@@ -450,6 +454,8 @@ static int parse_output(const md_packet_t* packet, md_output_info_t* output, cha
     if (rc == 0) rc = md_read_u32(&reader, &output->physical_height);
     if (rc == 0) rc = md_read_u32(&reader, &output->logical_width);
     if (rc == 0) rc = md_read_u32(&reader, &output->logical_height);
+    if (rc == 0) rc = md_read_i32(&reader, &output->logical_x);
+    if (rc == 0) rc = md_read_i32(&reader, &output->logical_y);
     if (rc == 0) rc = md_read_u32(&reader, &output->scale_120);
     if (rc == 0) rc = md_read_u32(&reader, &output->refresh_mhz);
     if (rc == 0) rc = md_read_u32(&reader, &transform);
@@ -861,9 +867,13 @@ static int handle_display_packet(md_broker_t* broker, md_broker_peer_t* peer,
         peer->output = output;
         peer->output.stable_id = peer->output_stable_id.c_str();
         peer->output.name = peer->output_name.c_str();
+        const bool first_display = route->display_count == 0U;
         peer->route = route;
         rc = route_add_display(route, peer);
         if (rc != MD_OK) return rc;
+        if (first_display && broker->on_output_added != nullptr) {
+            broker->on_output_added(broker->user_data, &peer->output);
+        }
         uint8_t payload[8];
         size_t payload_size = 0;
         if (encode_u64_payload(route->output_id, payload, sizeof(payload), &payload_size) != MD_OK) {
@@ -905,17 +915,32 @@ static int handle_display_packet(md_broker_t* broker, md_broker_peer_t* peer,
         }
         md_reader_t reader;
         md_reader_init(&reader, packet->payload, packet->payload_size);
+        const md_output_info_t previous_output = peer->output;
         uint32_t transform;
         int rc = md_read_u32(&reader, &peer->output.physical_width);
         if (rc == 0) rc = md_read_u32(&reader, &peer->output.physical_height);
         if (rc == 0) rc = md_read_u32(&reader, &peer->output.logical_width);
         if (rc == 0) rc = md_read_u32(&reader, &peer->output.logical_height);
+        if (rc == 0) rc = md_read_i32(&reader, &peer->output.logical_x);
+        if (rc == 0) rc = md_read_i32(&reader, &peer->output.logical_y);
         if (rc == 0) rc = md_read_u32(&reader, &peer->output.scale_120);
         if (rc == 0) rc = md_read_u32(&reader, &peer->output.refresh_mhz);
         if (rc == 0) rc = md_read_u32(&reader, &transform);
         if (rc == 0) rc = md_reader_finish(&reader);
         if (rc != 0 || transform > MD_TRANSFORM_FLIPPED_270) return MD_ERR_PROTOCOL;
         peer->output.transform = static_cast<md_transform_t>(transform);
+        const bool geometry_changed = previous_output.physical_width != peer->output.physical_width ||
+            previous_output.physical_height != peer->output.physical_height ||
+            previous_output.logical_width != peer->output.logical_width ||
+            previous_output.logical_height != peer->output.logical_height ||
+            previous_output.logical_x != peer->output.logical_x ||
+            previous_output.logical_y != peer->output.logical_y ||
+            previous_output.scale_120 != peer->output.scale_120 ||
+            previous_output.refresh_mhz != peer->output.refresh_mhz ||
+            previous_output.transform != peer->output.transform;
+        if (geometry_changed && broker->on_output_updated != nullptr) {
+            broker->on_output_updated(broker->user_data, &peer->output);
+        }
         if (route->display != peer) return MD_OK;
         route->output_config_sent = false;
         route->producer_gpu_bound = false;
@@ -1312,12 +1337,16 @@ static int handle_peer_packet(md_broker_t* broker, md_broker_peer_t* peer,
     return MD_ERR_PROTOCOL;
 }
 
-static int detach_peer_from_route(md_broker_peer_t* peer) {
+static int detach_peer_from_route(md_broker_t* broker, md_broker_peer_t* peer) {
     md_broker_route_t* route = peer->route;
     if (route == nullptr) return MD_OK;
     int result = MD_OK;
     if (route_has_display(route, peer)) {
+        const bool was_last_display = route->display_count == 1U;
         route_remove_display(route, peer);
+        if (was_last_display && broker->on_output_removed != nullptr) {
+            broker->on_output_removed(broker->user_data, route->stable_id.c_str());
+        }
         /* Keep the producer and its broker-owned pool alive. A replacement
          * display can bind the exact same generation without forcing the
          * renderer to allocate again. */
@@ -1356,7 +1385,7 @@ static int detach_peer_from_route(md_broker_peer_t* peer) {
 static int disconnect_peer(md_broker_t* broker, md_broker_peer_t* peer) {
     if (peer == nullptr) return MD_OK;
     abandon_peer_fanouts(broker, peer);
-    const int detach_result = detach_peer_from_route(peer);
+    const int detach_result = detach_peer_from_route(broker, peer);
     remove_peer_slot(broker, peer);
     return detach_result;
 }
@@ -1422,6 +1451,9 @@ md_broker_t* md_broker_new(const md_broker_options_t* options) {
             return nullptr;
         }
         broker->on_window_state = options->on_window_state;
+        broker->on_output_added = options->on_output_added;
+        broker->on_output_updated = options->on_output_updated;
+        broker->on_output_removed = options->on_output_removed;
         broker->user_data = options->user_data;
         return broker.release();
     } catch (const std::bad_alloc&) {

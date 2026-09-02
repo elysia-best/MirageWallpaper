@@ -9,6 +9,21 @@
 
 namespace Mirage {
 
+namespace {
+DisplayOutputSnapshot snapshot(const md_output_info_t* output) {
+    DisplayOutputSnapshot result;
+    result.stableId = QString::fromUtf8(output->stable_id);
+    result.name = QString::fromUtf8(output->name);
+    result.logicalX = output->logical_x;
+    result.logicalY = output->logical_y;
+    result.logicalWidth = static_cast<int>(output->logical_width);
+    result.logicalHeight = static_cast<int>(output->logical_height);
+    result.scale120 = static_cast<int>(output->scale_120);
+    result.refreshMhz = static_cast<int>(output->refresh_mhz);
+    return result;
+}
+}
+
 DisplayBrokerService::DisplayBrokerService(QObject* parent)
     : QObject(parent) {}
 
@@ -49,6 +64,9 @@ bool DisplayBrokerService::start(QString* error) {
                     MD_FEATURE_MULTIPLANE | MD_FEATURE_POINTER_AXIS |
                     MD_FEATURE_WINDOW_STATE,
         .max_routes = 16,
+        .on_output_added = &DisplayBrokerService::onOutputAdded,
+        .on_output_updated = &DisplayBrokerService::onOutputUpdated,
+        .on_output_removed = &DisplayBrokerService::onOutputRemoved,
         .on_window_state = &DisplayBrokerService::onWindowState,
         .user_data = this,
     };
@@ -103,6 +121,23 @@ void DisplayBrokerService::onWindowState(void* userData, const char* stableId,
     auto* self = static_cast<DisplayBrokerService*>(userData);
     emit self->windowStateChanged(QString::fromUtf8(stableId != nullptr ? stableId : ""),
                                   static_cast<quint32>(flags));
+}
+
+void DisplayBrokerService::onOutputAdded(void* userData, const md_output_info_t* output) {
+    auto* self = static_cast<DisplayBrokerService*>(userData);
+    const DisplayOutputSnapshot copied = snapshot(output);
+    emit self->outputAdded(copied);
+}
+
+void DisplayBrokerService::onOutputUpdated(void* userData, const md_output_info_t* output) {
+    auto* self = static_cast<DisplayBrokerService*>(userData);
+    const DisplayOutputSnapshot copied = snapshot(output);
+    emit self->outputUpdated(copied);
+}
+
+void DisplayBrokerService::onOutputRemoved(void* userData, const char* stableId) {
+    auto* self = static_cast<DisplayBrokerService*>(userData);
+    emit self->outputRemoved(QString::fromUtf8(stableId));
 }
 
 } // namespace Mirage

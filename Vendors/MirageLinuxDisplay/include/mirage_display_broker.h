@@ -27,6 +27,10 @@ typedef struct md_broker_options {
     const char* server_version;
     uint64_t features;
     uint32_t max_routes;
+    void (*on_output_added)(void* user_data, const md_output_info_t* output);
+    void (*on_output_updated)(void* user_data, const md_output_info_t* output);
+    /* stable_id is borrowed only for the callback duration. */
+    void (*on_output_removed)(void* user_data, const char* stable_id);
     /* Optional host notification for desktop window-state changes received
      * from a display. Invoked on the broker dispatch thread; stable_id is
      * borrowed for the duration of the call, so the host must copy it if it

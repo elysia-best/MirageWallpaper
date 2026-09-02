@@ -60,6 +60,8 @@ add_library(MirageQtCore STATIC
     Sources/Services/FavoritesManager.h
     Sources/Services/DisplayBrokerService.cpp
     Sources/Services/DisplayBrokerService.h
+    Sources/Services/DisplayOutputModel.cpp
+    Sources/Services/DisplayOutputModel.h
     Sources/Services/GlobalSettingsService.cpp
     Sources/Services/GlobalSettingsService.h
     Sources/Services/LinuxSystemIntegration.cpp

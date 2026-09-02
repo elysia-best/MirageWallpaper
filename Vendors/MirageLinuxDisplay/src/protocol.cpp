@@ -150,6 +150,10 @@ std::int32_t md_write_u32(md_writer_t* const writer, const std::uint32_t value) 
     return 0;
 }
 
+std::int32_t md_write_i32(md_writer_t* const writer, const std::int32_t value) {
+    return md_write_u32(writer, static_cast<std::uint32_t>(value));
+}
+
 std::int32_t md_write_u64(md_writer_t* const writer, const std::uint64_t value) {
     const std::int32_t result = reserve(writer, 8U);
     if (result != 0) {
@@ -233,6 +237,14 @@ std::int32_t md_read_u32(md_reader_t* const reader, std::uint32_t* const value) 
              (static_cast<std::uint32_t>(data[1]) << 8U) |
              (static_cast<std::uint32_t>(data[2]) << 16U) |
              (static_cast<std::uint32_t>(data[3]) << 24U);
+    return 0;
+}
+
+std::int32_t md_read_i32(md_reader_t* const reader, std::int32_t* const value) {
+    std::uint32_t bits = 0U;
+    const std::int32_t result = md_read_u32(reader, &bits);
+    if (value == nullptr || result != 0) return -EPROTO;
+    *value = static_cast<std::int32_t>(bits);
     return 0;
 }
 
@@ -345,6 +357,10 @@ std::int32_t md_proto_encode_register_output(md_writer_t* const writer,
     if (result != 0) return result;
     result = md_write_u32(writer, output->logical_height);
     if (result != 0) return result;
+    result = md_write_i32(writer, output->logical_x);
+    if (result != 0) return result;
+    result = md_write_i32(writer, output->logical_y);
+    if (result != 0) return result;
     result = md_write_u32(writer, output->scale_120);
     if (result != 0) return result;
     result = md_write_u32(writer, output->refresh_mhz);
@@ -370,6 +386,10 @@ std::int32_t md_proto_encode_update_output(md_writer_t* const writer,
     result = md_write_u32(writer, output->logical_width);
     if (result != 0) return result;
     result = md_write_u32(writer, output->logical_height);
+    if (result != 0) return result;
+    result = md_write_i32(writer, output->logical_x);
+    if (result != 0) return result;
+    result = md_write_i32(writer, output->logical_y);
     if (result != 0) return result;
     result = md_write_u32(writer, output->scale_120);
     if (result != 0) return result;

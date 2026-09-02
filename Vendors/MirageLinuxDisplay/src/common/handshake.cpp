@@ -282,7 +282,7 @@ std::int32_t ClientSession::advance_handshake() {
             md_proto_welcome_t welcome;
             const std::int32_t decode_result =
                 md_proto_decode_welcome(packet.payload, packet.payload_size, &welcome);
-            if (decode_result != 0 || welcome.selected_minor > MIRAGE_DISPLAY_PROTOCOL_MINOR ||
+            if (decode_result != 0 || welcome.selected_minor != MIRAGE_DISPLAY_PROTOCOL_MINOR ||
                 (welcome.features & MD_FEATURE_EXPLICIT_SYNC) == 0U) {
                 md_proto_welcome_clear(&welcome);
                 return disconnect(MD_ERR_PROTOCOL, "unsupported welcome packet");

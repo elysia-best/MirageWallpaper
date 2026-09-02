@@ -49,7 +49,8 @@ typedef struct client_observer {
 
 static void send_writer(int fd, uint16_t opcode, uint32_t serial, md_writer_t* writer,
                         const int* fds, size_t fd_count) {
-    assert(md_codec_send(fd, 0, opcode, 0, serial, writer->data, writer->size,
+    const uint16_t minor = opcode == MD_OP_WELCOME ? 0U : MIRAGE_DISPLAY_PROTOCOL_MINOR;
+    assert(md_codec_send(fd, minor, opcode, 0, serial, writer->data, writer->size,
                          fds, fd_count) == 0);
 }
 
@@ -81,7 +82,7 @@ static void* broker_main(void* opaque) {
     uint8_t payload[1024];
     md_writer_t writer;
     md_writer_init(&writer, payload, sizeof(payload));
-    assert(md_write_u16(&writer, 0) == 0);
+    assert(md_write_u16(&writer, MIRAGE_DISPLAY_PROTOCOL_MINOR) == 0);
     assert(md_write_u16(&writer, 0) == 0);
     assert(md_write_u64(&writer, MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_DRM_MODIFIERS |
                                   MD_FEATURE_POINTER_AXIS | MD_FEATURE_WINDOW_STATE) == 0);

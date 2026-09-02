@@ -28,7 +28,7 @@ extern "C" {
 #define MIRAGE_DISPLAY_VERSION_PATCH 0
 
 #define MIRAGE_DISPLAY_PROTOCOL_MAJOR 1
-#define MIRAGE_DISPLAY_PROTOCOL_MINOR 1
+#define MIRAGE_DISPLAY_PROTOCOL_MINOR 2
 
 #define MIRAGE_DISPLAY_MAX_BUFFERS 4
 #define MIRAGE_DISPLAY_MAX_PLANES 4
@@ -141,6 +141,8 @@ typedef struct md_output_info {
     uint32_t physical_height;
     uint32_t logical_width;
     uint32_t logical_height;
+    int32_t logical_x;
+    int32_t logical_y;
     uint32_t scale_120;
     uint32_t refresh_mhz;
     md_transform_t transform;

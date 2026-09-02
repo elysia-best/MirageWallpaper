@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<protocol name="mirage-display" major="1" minor="1"
+<protocol name="mirage-display" major="1" minor="2"
           transport="unix-seqpacket" byte-order="little-endian">
   <roles>
     <role name="display-consumer" value="1"/>
@@ -70,6 +70,8 @@
       <arg name="physical_height" type="u32"/>
       <arg name="logical_width" type="u32"/>
       <arg name="logical_height" type="u32"/>
+      <arg name="logical_x" type="i32"/>
+      <arg name="logical_y" type="i32"/>
       <arg name="scale_120" type="u32"/>
       <arg name="refresh_mhz" type="u32"/>
       <arg name="transform" type="u32" enum="transform"/>
@@ -82,6 +84,8 @@
       <arg name="physical_height" type="u32"/>
       <arg name="logical_width" type="u32"/>
       <arg name="logical_height" type="u32"/>
+      <arg name="logical_x" type="i32"/>
+      <arg name="logical_y" type="i32"/>
       <arg name="scale_120" type="u32"/>
       <arg name="refresh_mhz" type="u32"/>
       <arg name="transform" type="u32" enum="transform"/>
