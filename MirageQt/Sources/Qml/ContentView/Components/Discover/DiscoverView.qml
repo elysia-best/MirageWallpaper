@@ -12,6 +12,7 @@ Item {
         spacing: 8
 
         RowLayout {
+            id: header
             Layout.fillWidth: true
             FluFilledButton {
                 text: "筛选"
@@ -44,11 +45,14 @@ Item {
                 id: discoverColumn
                 Layout.fillWidth: true
                 spacing: 18
-
-                FluProgressRing {
-                    Layout.alignment: Qt.AlignHCenter
+                Item {
+                    Layout.fillWidth: true
+                    height: root.height - header.height
                     visible: mirage.discoverLoading && mirage.discoverSections.length === 0
-                    indeterminate: true
+                    FluProgressRing {
+                        anchors.centerIn: parent
+                        indeterminate: true
+                    }
                 }
                 FluText {
                     Layout.alignment: Qt.AlignHCenter
