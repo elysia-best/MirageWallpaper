@@ -34,6 +34,13 @@ struct md_vk_export_slot {
     bool foreign_owned;
 };
 
+struct md_vk_copy_slot {
+    VkCommandBuffer command_buffer;
+    VkFence fence;
+    VkSemaphore semaphore;
+    bool fence_pending;
+};
+
 struct md_vk_exporter {
     md_vk_export_context_t context;
     /* Resolved once from the device; NULL means the driver lacks the extension. */
@@ -48,10 +55,7 @@ struct md_vk_exporter {
     uint32_t cursor;
     bool pool_active;
     VkCommandPool copy_command_pool;
-    VkCommandBuffer copy_command_buffer;
-    VkFence copy_fence;
-    VkSemaphore copy_semaphore;
-    bool copy_fence_pending;
+    std::array<md_vk_copy_slot, MIRAGE_DISPLAY_MAX_BUFFERS> copy_slots;
 };
 
 namespace {
@@ -63,6 +67,29 @@ void clear_slot(md_vk_export_slot* const slot) {
     slot->acquired = false;
     slot->busy = false;
     slot->foreign_owned = false;
+}
+
+void clear_copy_slot(md_vk_copy_slot* const slot) {
+    slot->command_buffer = VK_NULL_HANDLE;
+    slot->fence = VK_NULL_HANDLE;
+    slot->semaphore = VK_NULL_HANDLE;
+    slot->fence_pending = false;
+}
+
+void destroy_copy_resources(md_vk_exporter_t* const exporter) {
+    for (md_vk_copy_slot& copy : exporter->copy_slots) {
+        if (copy.semaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(exporter->context.device, copy.semaphore, nullptr);
+        }
+        if (copy.fence != VK_NULL_HANDLE) {
+            vkDestroyFence(exporter->context.device, copy.fence, nullptr);
+        }
+        clear_copy_slot(&copy);
+    }
+    if (exporter->copy_command_pool != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(exporter->context.device, exporter->copy_command_pool, nullptr);
+        exporter->copy_command_pool = VK_NULL_HANDLE;
+    }
 }
 
 void destroy_release_handle(md_vk_exporter_t* const exporter, const uint32_t index) {
@@ -99,6 +126,23 @@ md_result_t poll_release(md_vk_exporter_t* const exporter, const uint32_t index)
         return MD_ERR_WOULD_BLOCK;
     }
     return MD_ERR_IO;
+}
+
+/*
+ * A consumer may drop a frame by signalling its release syncobj before the
+ * producer's copy submission has completed.  Wait for that slot's own copy
+ * fence before reusing its destination image or host staging memory; other
+ * slots continue without inheriting this host-side wait.
+ */
+md_result_t wait_copy_slot(md_vk_exporter_t* const exporter, const uint32_t index) {
+    md_vk_copy_slot& copy = exporter->copy_slots[index];
+    if (!copy.fence_pending) return MD_OK;
+    if (vkWaitForFences(exporter->context.device, 1U, &copy.fence, VK_TRUE,
+                        UINT64_MAX) != VK_SUCCESS) {
+        return MD_ERR_IO;
+    }
+    copy.fence_pending = false;
+    return MD_OK;
 }
 
 /*
@@ -141,23 +185,17 @@ md_result_t prepare_copy_commands(md_vk_exporter_t* const exporter,
                                   const uint32_t buffer_index,
                                   const VkImage source_image,
                                   const VkImageLayout source_layout) {
-    if (exporter->copy_fence_pending) {
-        if (vkWaitForFences(exporter->context.device, 1U, &exporter->copy_fence,
-                            VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-            return MD_ERR_IO;
-        }
-        exporter->copy_fence_pending = false;
-    }
-    if (vkResetFences(exporter->context.device, 1U, &exporter->copy_fence) != VK_SUCCESS ||
-        vkResetCommandPool(exporter->context.device, exporter->copy_command_pool, 0U) !=
-            VK_SUCCESS) {
+    md_vk_copy_slot& copy = exporter->copy_slots[buffer_index];
+    if (wait_copy_slot(exporter, buffer_index) != MD_OK ||
+        vkResetFences(exporter->context.device, 1U, &copy.fence) != VK_SUCCESS ||
+        vkResetCommandBuffer(copy.command_buffer, 0U) != VK_SUCCESS) {
         return MD_ERR_IO;
     }
 
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(exporter->copy_command_buffer, &begin_info) != VK_SUCCESS) {
+    if (vkBeginCommandBuffer(copy.command_buffer, &begin_info) != VK_SUCCESS) {
         return MD_ERR_IO;
     }
 
@@ -194,7 +232,7 @@ md_result_t prepare_copy_commands(md_vk_exporter_t* const exporter,
                                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
                                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
         : static_cast<VkPipelineStageFlags>(VK_PIPELINE_STAGE_TRANSFER_BIT);
-    vkCmdPipelineBarrier(exporter->copy_command_buffer, source_stage,
+    vkCmdPipelineBarrier(copy.command_buffer, source_stage,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr,
                          static_cast<uint32_t>(before.size()), before.data());
 
@@ -207,7 +245,7 @@ md_result_t prepare_copy_commands(md_vk_exporter_t* const exporter,
     region.srcSubresource.layerCount = 1U;
     region.dstSubresource = region.srcSubresource;
     region.extent = VkExtent3D{exporter->pool.width, exporter->pool.height, 1U};
-    vkCmdCopyImage(exporter->copy_command_buffer, source_image,
+    vkCmdCopyImage(copy.command_buffer, source_image,
                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, slot.image,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &region);
 
@@ -231,10 +269,10 @@ md_result_t prepare_copy_commands(md_vk_exporter_t* const exporter,
     after[1U].image = slot.image;
     configure_color_range(&after[1U].subresourceRange);
 
-    vkCmdPipelineBarrier(exporter->copy_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    vkCmdPipelineBarrier(copy.command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0U, 0U, nullptr, 0U, nullptr,
                          static_cast<uint32_t>(after.size()), after.data());
-    return vkEndCommandBuffer(exporter->copy_command_buffer) == VK_SUCCESS ? MD_OK : MD_ERR_IO;
+    return vkEndCommandBuffer(copy.command_buffer) == VK_SUCCESS ? MD_OK : MD_ERR_IO;
 }
 
 /* Staging-buffer variant used by CPU capture paths.  The host-visible buffer
@@ -245,22 +283,16 @@ md_result_t prepare_copy_buffer_commands(md_vk_exporter_t* const exporter,
                                          const VkBuffer source_buffer,
                                          const uint32_t source_width,
                                          const uint32_t source_height) {
-    if (exporter->copy_fence_pending) {
-        if (vkWaitForFences(exporter->context.device, 1U, &exporter->copy_fence,
-                            VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-            return MD_ERR_IO;
-        }
-        exporter->copy_fence_pending = false;
-    }
-    if (vkResetFences(exporter->context.device, 1U, &exporter->copy_fence) != VK_SUCCESS ||
-        vkResetCommandPool(exporter->context.device, exporter->copy_command_pool, 0U) !=
-            VK_SUCCESS) {
+    md_vk_copy_slot& copy = exporter->copy_slots[buffer_index];
+    if (wait_copy_slot(exporter, buffer_index) != MD_OK ||
+        vkResetFences(exporter->context.device, 1U, &copy.fence) != VK_SUCCESS ||
+        vkResetCommandBuffer(copy.command_buffer, 0U) != VK_SUCCESS) {
         return MD_ERR_IO;
     }
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(exporter->copy_command_buffer, &begin_info) != VK_SUCCESS) {
+    if (vkBeginCommandBuffer(copy.command_buffer, &begin_info) != VK_SUCCESS) {
         return MD_ERR_IO;
     }
     md_vk_export_slot& slot = exporter->slots[buffer_index];
@@ -277,7 +309,7 @@ md_result_t prepare_copy_buffer_commands(md_vk_exporter_t* const exporter,
                                      : VK_QUEUE_FAMILY_IGNORED;
     before.image = slot.image;
     configure_color_range(&before.subresourceRange);
-    vkCmdPipelineBarrier(exporter->copy_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    vkCmdPipelineBarrier(copy.command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr,
                          1U, &before);
     VkBufferImageCopy region{};
@@ -287,7 +319,7 @@ md_result_t prepare_copy_buffer_commands(md_vk_exporter_t* const exporter,
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1U;
     region.imageExtent = VkExtent3D{exporter->pool.width, exporter->pool.height, 1U};
-    vkCmdCopyBufferToImage(exporter->copy_command_buffer, source_buffer, slot.image,
+    vkCmdCopyBufferToImage(copy.command_buffer, source_buffer, slot.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &region);
     VkImageMemoryBarrier after{};
     after.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -298,10 +330,10 @@ md_result_t prepare_copy_buffer_commands(md_vk_exporter_t* const exporter,
     after.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
     after.image = slot.image;
     configure_color_range(&after.subresourceRange);
-    vkCmdPipelineBarrier(exporter->copy_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    vkCmdPipelineBarrier(copy.command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0U, 0U, nullptr, 0U, nullptr,
                          1U, &after);
-    return vkEndCommandBuffer(exporter->copy_command_buffer) == VK_SUCCESS ? MD_OK : MD_ERR_IO;
+    return vkEndCommandBuffer(copy.command_buffer) == VK_SUCCESS ? MD_OK : MD_ERR_IO;
 }
 
 md_result_t allocate_slot(md_vk_exporter_t* const exporter,
@@ -496,6 +528,9 @@ extern "C" md_vk_exporter_t* md_vk_exporter_new(
     for (md_vk_export_slot& slot : exporter->slots) {
         clear_slot(&slot);
     }
+    for (md_vk_copy_slot& copy : exporter->copy_slots) {
+        clear_copy_slot(&copy);
+    }
     exporter->format = VK_FORMAT_UNDEFINED;
 
     VkCommandPoolCreateInfo pool_info{};
@@ -512,18 +547,21 @@ extern "C" md_vk_exporter_t* md_vk_exporter_new(
     command_info.commandPool = exporter->copy_command_pool;
     command_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     command_info.commandBufferCount = 1U;
-    if (vkAllocateCommandBuffers(context->device, &command_info,
-                                 &exporter->copy_command_buffer) != VK_SUCCESS) {
-        vkDestroyCommandPool(context->device, exporter->copy_command_pool, nullptr);
-        return nullptr;
+    for (md_vk_copy_slot& copy : exporter->copy_slots) {
+        if (vkAllocateCommandBuffers(context->device, &command_info,
+                                     &copy.command_buffer) != VK_SUCCESS) {
+            destroy_copy_resources(exporter.get());
+            return nullptr;
+        }
     }
 
     VkFenceCreateInfo fence_info{};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    if (vkCreateFence(context->device, &fence_info, nullptr, &exporter->copy_fence) !=
-        VK_SUCCESS) {
-        vkDestroyCommandPool(context->device, exporter->copy_command_pool, nullptr);
-        return nullptr;
+    for (md_vk_copy_slot& copy : exporter->copy_slots) {
+        if (vkCreateFence(context->device, &fence_info, nullptr, &copy.fence) != VK_SUCCESS) {
+            destroy_copy_resources(exporter.get());
+            return nullptr;
+        }
     }
 
     VkExportSemaphoreCreateInfo export_semaphore{};
@@ -532,11 +570,12 @@ extern "C" md_vk_exporter_t* md_vk_exporter_new(
     VkSemaphoreCreateInfo semaphore_info{};
     semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     semaphore_info.pNext = &export_semaphore;
-    if (vkCreateSemaphore(context->device, &semaphore_info, nullptr,
-                          &exporter->copy_semaphore) != VK_SUCCESS) {
-        vkDestroyFence(context->device, exporter->copy_fence, nullptr);
-        vkDestroyCommandPool(context->device, exporter->copy_command_pool, nullptr);
-        return nullptr;
+    for (md_vk_copy_slot& copy : exporter->copy_slots) {
+        if (vkCreateSemaphore(context->device, &semaphore_info, nullptr,
+                              &copy.semaphore) != VK_SUCCESS) {
+            destroy_copy_resources(exporter.get());
+            return nullptr;
+        }
     }
     return exporter.release();
 }
@@ -567,7 +606,9 @@ extern "C" void md_vk_exporter_release_pool(md_vk_exporter_t* const exporter) {
     exporter->format = VK_FORMAT_UNDEFINED;
     exporter->cursor = 0U;
     exporter->pool_active = false;
-    exporter->copy_fence_pending = false;
+    for (md_vk_copy_slot& copy : exporter->copy_slots) {
+        copy.fence_pending = false;
+    }
 }
 
 extern "C" void md_vk_exporter_free(md_vk_exporter_t* const exporter) {
@@ -575,15 +616,7 @@ extern "C" void md_vk_exporter_free(md_vk_exporter_t* const exporter) {
         return;
     }
     md_vk_exporter_release_pool(exporter);
-    if (exporter->copy_semaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(exporter->context.device, exporter->copy_semaphore, nullptr);
-    }
-    if (exporter->copy_fence != VK_NULL_HANDLE) {
-        vkDestroyFence(exporter->context.device, exporter->copy_fence, nullptr);
-    }
-    if (exporter->copy_command_pool != VK_NULL_HANDLE) {
-        vkDestroyCommandPool(exporter->context.device, exporter->copy_command_pool, nullptr);
-    }
+    destroy_copy_resources(exporter);
     delete exporter;
 }
 
@@ -669,6 +702,11 @@ extern "C" md_result_t md_vk_exporter_acquire(md_vk_exporter_t* const exporter,
         const md_result_t poll_result = poll_release(exporter, index);
         md_vk_export_slot& slot = exporter->slots[index];
         if (poll_result == MD_OK && !slot.busy && !slot.acquired) {
+            const md_result_t copy_result = wait_copy_slot(exporter, index);
+            if (copy_result != MD_OK) {
+                if (first_error == MD_OK) first_error = copy_result;
+                continue;
+            }
             exporter->cursor = (index + 1U) % exporter->pool.buffer_count;
             slot.acquired = true;
             *out_buffer_index = index;
@@ -767,22 +805,23 @@ extern "C" md_result_t md_vk_exporter_copy_frame(
         return command_result;
     }
 
+    md_vk_copy_slot& copy = exporter->copy_slots[buffer_index];
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1U;
-    submit_info.pCommandBuffers = &exporter->copy_command_buffer;
+    submit_info.pCommandBuffers = &copy.command_buffer;
     submit_info.signalSemaphoreCount = 1U;
-    submit_info.pSignalSemaphores = &exporter->copy_semaphore;
+    submit_info.pSignalSemaphores = &copy.semaphore;
     if (vkQueueSubmit(exporter->context.queue, 1U, &submit_info,
-                      exporter->copy_fence) != VK_SUCCESS) {
+                      copy.fence) != VK_SUCCESS) {
         return MD_ERR_IO;
     }
-    exporter->copy_fence_pending = true;
+    copy.fence_pending = true;
     exporter->slots[buffer_index].foreign_owned = true;
 
     VkSemaphoreGetFdInfoKHR semaphore_info{};
     semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-    semaphore_info.semaphore = exporter->copy_semaphore;
+    semaphore_info.semaphore = copy.semaphore;
     semaphore_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
     int32_t acquire_descriptor = mirage::kInvalidFd;
     const VkResult acquire_result = exporter->get_semaphore_fd(
@@ -832,21 +871,22 @@ extern "C" md_result_t md_vk_exporter_copy_buffer_frame(
                                      source_height) != MD_OK) {
         return MD_ERR_IO;
     }
+    md_vk_copy_slot& copy = exporter->copy_slots[buffer_index];
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1U;
-    submit_info.pCommandBuffers = &exporter->copy_command_buffer;
+    submit_info.pCommandBuffers = &copy.command_buffer;
     submit_info.signalSemaphoreCount = 1U;
-    submit_info.pSignalSemaphores = &exporter->copy_semaphore;
+    submit_info.pSignalSemaphores = &copy.semaphore;
     if (vkQueueSubmit(exporter->context.queue, 1U, &submit_info,
-                      exporter->copy_fence) != VK_SUCCESS) {
+                      copy.fence) != VK_SUCCESS) {
         return MD_ERR_IO;
     }
-    exporter->copy_fence_pending = true;
+    copy.fence_pending = true;
     exporter->slots[buffer_index].foreign_owned = true;
     VkSemaphoreGetFdInfoKHR semaphore_info{};
     semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-    semaphore_info.semaphore = exporter->copy_semaphore;
+    semaphore_info.semaphore = copy.semaphore;
     semaphore_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
     int32_t acquire_descriptor = mirage::kInvalidFd;
     const VkResult acquire_result = exporter->get_semaphore_fd(

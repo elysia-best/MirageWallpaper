@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -33,6 +34,7 @@ constexpr std::uint32_t Fourcc(char a, char b, char c, char d) {
            (static_cast<std::uint32_t>(static_cast<unsigned char>(d)) << 24u);
 }
 constexpr std::uint32_t kXrgb8888 = Fourcc('X', 'B', '2', '4');
+constexpr std::uint32_t kWebExportBufferCount = 3U;
 // mirage-display transports Linux input-event button codes. Mapping them at
 // this boundary mirrors SceneWallpaper and keeps the renderer Qt-typed.
 constexpr std::uint32_t kButtonLeft = 0x110u;
@@ -65,6 +67,12 @@ int RenderNode(std::uint32_t major, std::uint32_t minor) {
 } // namespace
 
 class ProtocolWebRenderer::Impl {
+    struct UploadSlot {
+        VkBuffer buffer { VK_NULL_HANDLE };
+        VkDeviceMemory memory { VK_NULL_HANDLE };
+        void* mapped { nullptr };
+    };
+
 public:
     explicit Impl(Config config) : m_config(std::move(config)) {
         // QtWebEngine starts Chromium GPU workers while its view is created.
@@ -215,17 +223,28 @@ public:
                                        std::chrono::steady_clock::now() - conversionStart)
                                        .count();
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(m_uploadWidth) * m_uploadHeight * 4u;
+        std::uint32_t index = 0;
+        const auto acquireStart = std::chrono::steady_clock::now();
+        if (md_vk_exporter_acquire(m_exporter, &index) != MD_OK) return;
+        const auto acquireUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now() - acquireStart)
+                                       .count();
+        if (index >= m_uploadBufferCount || m_stagingSlots[index].mapped == nullptr) {
+            md_vk_exporter_cancel_frame(m_exporter, index);
+            emitFailure(QStringLiteral("Vulkan staging slot is unavailable"));
+            return;
+        }
         const auto stagingStart = std::chrono::steady_clock::now();
-        std::memcpy(m_stagingMap, converted.constBits(), static_cast<std::size_t>(bytes));
+        std::memcpy(m_stagingSlots[index].mapped, converted.constBits(),
+                    static_cast<std::size_t>(bytes));
         const auto stagingUs = std::chrono::duration_cast<std::chrono::microseconds>(
                                    std::chrono::steady_clock::now() - stagingStart)
-                                   .count();
-        std::uint32_t index = 0;
-        if (md_vk_exporter_acquire(m_exporter, &index) != MD_OK) return;
+                                       .count();
         const auto gpuStart = std::chrono::steady_clock::now();
         int acquireFd = -1;
         int releaseFd = -1;
-        if (md_vk_exporter_copy_buffer_frame(m_exporter, index, m_stagingBuffer,
+        if (md_vk_exporter_copy_buffer_frame(m_exporter, index,
+                                             m_stagingSlots[index].buffer,
                                              m_uploadWidth, m_uploadHeight,
                                              &acquireFd, &releaseFd) != MD_OK) {
             md_vk_exporter_cancel_frame(m_exporter, index);
@@ -243,8 +262,9 @@ public:
             const auto callbackUs = std::chrono::duration_cast<std::chrono::microseconds>(
                                         std::chrono::steady_clock::now() - captureStart)
                                         .count();
-            std::fprintf(stderr, "WebWallpaper diagnostics: callback=%lldus cpu_conversion=%lldus staging_write=%lldus gpu_copy_submit=%lldus bytes=%llu\n",
+            std::fprintf(stderr, "WebWallpaper diagnostics: callback=%lldus acquire=%lldus cpu_conversion=%lldus staging_write=%lldus gpu_copy_submit=%lldus bytes=%llu\n",
                          static_cast<long long>(callbackUs),
+                         static_cast<long long>(acquireUs),
                          static_cast<long long>(conversionUs),
                          static_cast<long long>(stagingUs),
                          static_cast<long long>(gpuUs),
@@ -404,7 +424,8 @@ private:
             if (error != nullptr) *error = QStringLiteral("invalid output configuration");
             return false;
         }
-        const md_vk_export_pool_info_t info {m_nextGeneration++, 3, config.physical_width,
+        const md_vk_export_pool_info_t info {m_nextGeneration++, kWebExportBufferCount,
+                                             config.physical_width,
                                              config.physical_height, config.fourcc != 0 ? config.fourcc : kXrgb8888,
                                              config.plane_count != 0 ? config.plane_count : 1, config.modifier};
         if (md_vk_exporter_create_pool(m_exporter, &info) != MD_OK) return false;
@@ -415,9 +436,9 @@ private:
         std::lock_guard lock(m_producerMutex);
         if (md_producer_offer_buffers(m_producer, pool) != MD_OK || md_producer_set_config(m_producer, &display) != MD_OK) return false;
         m_generation = info.generation;
+        if (!createUpload(info.width, info.height, info.buffer_count)) return false;
         m_uploadWidth = info.width;
         m_uploadHeight = info.height;
-        if (!createUpload(info.width, info.height)) return false;
         if (m_config.outputSizeChanged) m_config.outputSizeChanged(info.width, info.height);
         {
             std::lock_guard lock(m_stateMutex);
@@ -426,30 +447,50 @@ private:
         return true;
     }
 
-    bool createUpload(std::uint32_t width, std::uint32_t height) {
+    bool createUpload(std::uint32_t width, std::uint32_t height,
+                      std::uint32_t bufferCount) {
         destroyUpload();
-        VkMemoryRequirements requirements {};
         VkBufferCreateInfo buffer {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         buffer.size = static_cast<VkDeviceSize>(width) * height * 4u;
         buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateBuffer(m_device, &buffer, nullptr, &m_stagingBuffer) != VK_SUCCESS) return false;
-        vkGetBufferMemoryRequirements(m_device, m_stagingBuffer, &requirements);
-        const std::uint32_t stagingType = MemoryType(m_physicalDevice, requirements.memoryTypeBits,
-                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (stagingType == UINT32_MAX) return false;
-        VkMemoryAllocateInfo staging {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, requirements.size, stagingType};
-        return vkAllocateMemory(m_device, &staging, nullptr, &m_stagingMemory) == VK_SUCCESS &&
-               vkBindBufferMemory(m_device, m_stagingBuffer, m_stagingMemory, 0) == VK_SUCCESS &&
-               vkMapMemory(m_device, m_stagingMemory, 0, buffer.size, 0, &m_stagingMap) == VK_SUCCESS;
+        for (std::uint32_t index = 0; index < bufferCount; ++index) {
+            UploadSlot& slot = m_stagingSlots[index];
+            VkMemoryRequirements requirements {};
+            if (vkCreateBuffer(m_device, &buffer, nullptr, &slot.buffer) != VK_SUCCESS) {
+                destroyUpload();
+                return false;
+            }
+            vkGetBufferMemoryRequirements(m_device, slot.buffer, &requirements);
+            const std::uint32_t stagingType = MemoryType(
+                m_physicalDevice, requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            if (stagingType == UINT32_MAX) {
+                destroyUpload();
+                return false;
+            }
+            VkMemoryAllocateInfo staging {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr,
+                                          requirements.size, stagingType};
+            if (vkAllocateMemory(m_device, &staging, nullptr, &slot.memory) != VK_SUCCESS ||
+                vkBindBufferMemory(m_device, slot.buffer, slot.memory, 0) != VK_SUCCESS ||
+                vkMapMemory(m_device, slot.memory, 0, buffer.size, 0, &slot.mapped) != VK_SUCCESS) {
+                destroyUpload();
+                return false;
+            }
+        }
+        m_uploadBufferCount = bufferCount;
+        return true;
     }
 
     void destroyUpload() {
         if (m_device == VK_NULL_HANDLE) return;
-        if (m_stagingMap != nullptr) vkUnmapMemory(m_device, m_stagingMemory);
-        if (m_stagingBuffer != VK_NULL_HANDLE) vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
-        if (m_stagingMemory != VK_NULL_HANDLE) vkFreeMemory(m_device, m_stagingMemory, nullptr);
-        m_stagingMap = nullptr; m_stagingBuffer = VK_NULL_HANDLE; m_stagingMemory = VK_NULL_HANDLE;
+        for (UploadSlot& slot : m_stagingSlots) {
+            if (slot.mapped != nullptr) vkUnmapMemory(m_device, slot.memory);
+            if (slot.buffer != VK_NULL_HANDLE) vkDestroyBuffer(m_device, slot.buffer, nullptr);
+            if (slot.memory != VK_NULL_HANDLE) vkFreeMemory(m_device, slot.memory, nullptr);
+            slot = UploadSlot {};
+        }
+        m_uploadBufferCount = 0;
     }
 
     void ioLoop() {
@@ -564,11 +605,10 @@ private:
     VkQueue m_queue = VK_NULL_HANDLE;
     std::uint32_t m_queueFamily = 0;
     md_vk_exporter_t* m_exporter = nullptr;
-    VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;
-    void* m_stagingMap = nullptr;
+    std::array<UploadSlot, MIRAGE_DISPLAY_MAX_BUFFERS> m_stagingSlots {};
     std::uint32_t m_uploadWidth = 0;
     std::uint32_t m_uploadHeight = 0;
+    std::uint32_t m_uploadBufferCount = 0;
     int m_drmFd = -1;
     std::uint32_t m_drmMajor = 0;
     std::uint32_t m_drmMinor = 0;

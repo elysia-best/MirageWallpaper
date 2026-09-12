@@ -408,6 +408,12 @@ void MirageDisplayItem::initializeRenderer() {
  * creation; GL textures still belong to the GLX scene graph context.
  */
 bool MirageDisplayItem::initializeOpenGLRenderer() {
+    m_glDiagnostics = qEnvironmentVariableIsSet("MIRAGE_DISPLAY_DIAGNOSTICS");
+    m_glDiagnosticFrames = 0;
+    m_glAcquireWaitUs = 0;
+    m_glPoolImportUs = 0;
+    m_glReleaseUs = 0;
+    m_glDroppedFrames = 0;
     QOpenGLContext* context = QOpenGLContext::currentContext();
     if (context == nullptr) {
         setLastError(QStringLiteral("Qt Quick did not expose an OpenGL context"));
@@ -1587,12 +1593,46 @@ bool MirageDisplayItem::importPendingPool(const md_buffer_pool_t& pool) {
  */
 void MirageDisplayItem::releaseRenderPool() {
     if (m_activeReleaseFd >= 0) {
-        if (QOpenGLContext::currentContext() != nullptr) {
-            QOpenGLContext::currentContext()->functions()->glFinish();
+        const uint64_t releaseStart = m_glDiagnostics ? monotonicTimestampUs() : 0U;
+        QOpenGLContext* context = QOpenGLContext::currentContext();
+        md_result_t result = MD_ERR_STATE;
+        if (m_glxEglDisplay != EGL_NO_DISPLAY) {
+            /* GLX commands are not ordered by an EGL native fence.  Keep the
+             * blocking finish on this backend before signalling the producer. */
+            if (context != nullptr) context->functions()->glFinish();
+            result = md_display_signal_release_syncobj(m_activeReleaseFd);
+        } else if (m_importer != nullptr && context != nullptr) {
+            /* Wayland EGL can publish a GPU-side native fence.  Duplicate the
+             * release descriptor so a failed EGL/DRM bridge still has an
+             * explicit CPU signal path and cannot strand the producer slot. */
+            const int fallbackFd = fcntl(m_activeReleaseFd, F_DUPFD_CLOEXEC, 0);
+            if (fallbackFd < 0) {
+                const int duplicateErrno = errno;
+                /* The original descriptor is still ours when duplication
+                 * fails.  Finish before the CPU signal so producer reuse
+                 * cannot race outstanding scene-graph reads. */
+                context->functions()->glFinish();
+                result = md_display_signal_release_syncobj(m_activeReleaseFd);
+                qWarning() << "[KDE wallpaper] Failed to duplicate EGL release FD;"
+                           << "using synchronous signal, errno=" << duplicateErrno;
+            } else {
+                result = md_egl_release_after_current_context(m_importer, m_activeReleaseFd);
+                if (result != MD_OK) {
+                    context->functions()->glFinish();
+                    const md_result_t fallbackResult = md_display_signal_release_syncobj(fallbackFd);
+                    if (fallbackResult == MD_OK) result = MD_OK;
+                } else if (close(fallbackFd) != 0) {
+                    qWarning() << "[KDE wallpaper] Failed to close EGL release fallback FD";
+                }
+            }
+        } else {
+            result = md_display_signal_release_syncobj(m_activeReleaseFd);
         }
-        const md_result_t result = md_display_signal_release_syncobj(m_activeReleaseFd);
         if (result != MD_OK) {
             qWarning() << "[KDE wallpaper] Failed to signal active release syncobj:" << result;
+        }
+        if (m_glDiagnostics && releaseStart != 0U) {
+            m_glReleaseUs += monotonicTimestampUs() - releaseStart;
         }
         m_activeReleaseFd = -1;
     }
@@ -1628,6 +1668,7 @@ void MirageDisplayItem::releaseAfterRendering() {
     if (m_activeReleaseFd < 0) return;
     int releaseFd = m_activeReleaseFd;
     m_activeReleaseFd = -1;
+    const uint64_t releaseStart = m_glDiagnostics ? monotonicTimestampUs() : 0U;
     if (m_glxEglDisplay != EGL_NO_DISPLAY) {
         /* A native EGL fence is not connected to a GLX command stream. The
          * explicit finish is therefore required before the protocol release
@@ -1637,11 +1678,49 @@ void MirageDisplayItem::releaseAfterRendering() {
         if (md_display_signal_release_syncobj(releaseFd) != MD_OK) {
             qWarning() << "[KDE wallpaper] Failed to signal GLX release syncobj";
         }
+        if (m_glDiagnostics && releaseStart != 0U) {
+            m_glReleaseUs += monotonicTimestampUs() - releaseStart;
+        }
         return;
     }
-    if (m_importer == nullptr ||
-        md_egl_release_after_current_context(m_importer, releaseFd) != MD_OK) {
-        return;
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (m_importer == nullptr || context == nullptr) {
+        const md_result_t result = md_display_signal_release_syncobj(releaseFd);
+        if (result != MD_OK) {
+            qWarning() << "[KDE wallpaper] Failed to signal EGL release syncobj:" << result;
+        }
+    } else {
+        /* EGL native fences are non-blocking on the host.  Keep a duplicate so
+         * an import/DRM bridge error still releases the producer-owned slot. */
+        const int fallbackFd = fcntl(releaseFd, F_DUPFD_CLOEXEC, 0);
+        md_result_t result = MD_ERR_IO;
+        if (fallbackFd < 0) {
+            const int duplicateErrno = errno;
+            /* The original FD remains available when duplication fails.  A
+             * synchronous finish makes the direct CPU signal safe. */
+            context->functions()->glFinish();
+            result = md_display_signal_release_syncobj(releaseFd);
+            qWarning() << "[KDE wallpaper] Failed to duplicate EGL release FD;"
+                       << "using synchronous signal, errno=" << duplicateErrno;
+        } else {
+            result = md_egl_release_after_current_context(m_importer, releaseFd);
+            if (result != MD_OK) {
+                context->functions()->glFinish();
+                const md_result_t fallbackResult = md_display_signal_release_syncobj(fallbackFd);
+                if (fallbackResult != MD_OK) {
+                    qWarning() << "[KDE wallpaper] Failed to signal EGL release fallback syncobj"
+                               << fallbackResult;
+                }
+            } else if (close(fallbackFd) != 0) {
+                qWarning() << "[KDE wallpaper] Failed to close EGL release fallback FD";
+            }
+        }
+        if (result != MD_OK) {
+            qWarning() << "[KDE wallpaper] EGL release fence failed:" << result;
+        }
+    }
+    if (m_glDiagnostics && releaseStart != 0U) {
+        m_glReleaseUs += monotonicTimestampUs() - releaseStart;
     }
 }
 
@@ -1692,9 +1771,17 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
             importPool = true;
         }
     }
-    if (importPool && !importPendingPool(pendingPool)) {
-        delete oldNode;
-        oldNode = nullptr;
+    if (importPool) {
+        const uint64_t importStart = m_glDiagnostics ? monotonicTimestampUs() : 0U;
+        const bool imported = importPendingPool(pendingPool);
+        if (m_glDiagnostics && importStart != 0U) {
+            const uint64_t importEnd = monotonicTimestampUs();
+            if (importEnd >= importStart) m_glPoolImportUs += importEnd - importStart;
+        }
+        if (!imported) {
+            delete oldNode;
+            oldNode = nullptr;
+        }
     }
 
     PendingFrame frame;
@@ -1790,6 +1877,7 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
             bool valid = frame.value.buffer_generation == m_importedGeneration.load() &&
                          frame.value.buffer_index < static_cast<uint32_t>(m_qsgTextures.size());
             int waitResult = MD_ERR_INVALID;
+            const uint64_t waitStart = m_glDiagnostics ? monotonicTimestampUs() : 0U;
             if (frame.value.acquire_sync_fd >= 0) {
                 if (!valid) {
                     if (::close(frame.value.acquire_sync_fd) != 0) {
@@ -1822,7 +1910,12 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
                         m_importer, frame.value.acquire_sync_fd);
                 }
             }
+            if (m_glDiagnostics && waitStart != 0U) {
+                const uint64_t waitEnd = monotonicTimestampUs();
+                if (waitEnd >= waitStart) m_glAcquireWaitUs += waitEnd - waitStart;
+            }
             if (!valid || waitResult != MD_OK) {
+                if (m_glDiagnostics) ++m_glDroppedFrames;
                 frame.value.acquire_sync_fd = -1;
                 if (frame.value.release_syncobj_fd >= 0) {
                     const md_result_t signalResult = md_display_signal_release_syncobj(
@@ -1835,16 +1928,68 @@ QSGNode* MirageDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
             } else {
                 frame.value.acquire_sync_fd = -1;
                 if (m_activeReleaseFd >= 0) {
-                    QOpenGLContext::currentContext()->functions()->glFinish();
-                    const md_result_t signalResult = md_display_signal_release_syncobj(m_activeReleaseFd);
-                    if (signalResult != MD_OK) {
+                    const uint64_t releaseStart = m_glDiagnostics ? monotonicTimestampUs() : 0U;
+                    QOpenGLContext* context = QOpenGLContext::currentContext();
+                    md_result_t releaseResult = MD_ERR_STATE;
+                    if (m_glxEglDisplay != EGL_NO_DISPLAY) {
+                        /* GLX has no ordering edge with the EGL acquire
+                         * object, so finish before returning the old slot. */
+                        if (context != nullptr) context->functions()->glFinish();
+                        releaseResult = md_display_signal_release_syncobj(m_activeReleaseFd);
+                    } else if (m_importer != nullptr && context != nullptr) {
+                        const int fallbackFd = fcntl(m_activeReleaseFd, F_DUPFD_CLOEXEC, 0);
+                        if (fallbackFd < 0) {
+                            const int duplicateErrno = errno;
+                            /* Keep the old descriptor for a safe synchronous
+                             * signal when duplication cannot be acquired. */
+                            context->functions()->glFinish();
+                            releaseResult = md_display_signal_release_syncobj(m_activeReleaseFd);
+                            qWarning() << "[KDE wallpaper] Failed to duplicate EGL release FD;"
+                                       << "using synchronous signal, errno=" << duplicateErrno;
+                        } else {
+                            releaseResult = md_egl_release_after_current_context(
+                                m_importer, m_activeReleaseFd);
+                            if (releaseResult != MD_OK) {
+                                context->functions()->glFinish();
+                                const md_result_t fallbackResult =
+                                    md_display_signal_release_syncobj(fallbackFd);
+                                if (fallbackResult == MD_OK) releaseResult = MD_OK;
+                            } else if (close(fallbackFd) != 0) {
+                                qWarning() << "[KDE wallpaper] Failed to close EGL release fallback FD";
+                            }
+                        }
+                    } else {
+                        releaseResult = md_display_signal_release_syncobj(m_activeReleaseFd);
+                    }
+                    if (releaseResult != MD_OK) {
                         setLastError(QStringLiteral("EGL release sync signal failed (%1)")
-                                         .arg(static_cast<int>(signalResult)));
+                                         .arg(static_cast<int>(releaseResult)));
+                    }
+                    if (m_glDiagnostics && releaseStart != 0U) {
+                        const uint64_t releaseEnd = monotonicTimestampUs();
+                        if (releaseEnd >= releaseStart) m_glReleaseUs += releaseEnd - releaseStart;
                     }
                 }
                 m_activeReleaseFd = frame.value.release_syncobj_fd;
                 frame.value.release_syncobj_fd = -1;
                 m_currentBuffer = static_cast<int>(frame.value.buffer_index);
+                if (m_glDiagnostics) {
+                    ++m_glDiagnosticFrames;
+                    if ((m_glDiagnosticFrames % 120U) == 0U) {
+                        const char* const backend = m_glxEglDisplay != EGL_NO_DISPLAY
+                            ? "glx" : "egl";
+                        qInfo() << "[KDE wallpaper] OpenGL diagnostics backend=" << backend
+                                << "frames=" << m_glDiagnosticFrames
+                                << "acquire_wait_us=" << m_glAcquireWaitUs
+                                << "pool_import_us=" << m_glPoolImportUs
+                                << "release_us=" << m_glReleaseUs
+                                << "dropped=" << m_glDroppedFrames;
+                        m_glAcquireWaitUs = 0;
+                        m_glPoolImportUs = 0;
+                        m_glReleaseUs = 0;
+                        m_glDroppedFrames = 0;
+                    }
+                }
             }
         }
     }

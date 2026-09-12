@@ -288,6 +288,16 @@ private:
     int m_currentBuffer = -1;
     int m_activeReleaseFd = -1;
 
+    /* OpenGL diagnostics are render-thread counters enabled only for the
+     * existing MIRAGE_DISPLAY_DIAGNOSTICS switch.  They expose synchronization
+     * stages without adding a protocol property or changing frame ownership. */
+    bool m_glDiagnostics = false;
+    uint64_t m_glDiagnosticFrames = 0;
+    uint64_t m_glAcquireWaitUs = 0;
+    uint64_t m_glPoolImportUs = 0;
+    uint64_t m_glReleaseUs = 0;
+    uint64_t m_glDroppedFrames = 0;
+
 #ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
     md_vk_importer_t* m_vkImporter = nullptr;
     md_vk_blitter_t* m_vkBlitter = nullptr;

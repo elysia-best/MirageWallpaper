@@ -1541,6 +1541,27 @@ private:
         const auto append_render_formats = [&](const std::uint32_t fourcc,
                                                 const VkFormat vk_format,
                                                 const std::uint32_t gbm_format) {
+            /*
+             * EGL/GLX consumers advertise modifier zero as the explicit
+             * linear DRM layout.  Vulkan's modifier list is allowed to omit
+             * that implicit layout even though GBM can create it, so probe it
+             * through the same allocation API used by createDirectPool().
+             * Adding zero only after GBM confirms both allocation and the
+             * returned modifier keeps the protocol tuple exact; it is not a
+             * fallback for an unsupported layout.
+             */
+            gbm_bo* linear_probe = gbm_bo_create(
+                m_gbm_device, negotiated_config.physical_width,
+                negotiated_config.physical_height, gbm_format,
+                GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+            if (linear_probe != nullptr) {
+                const std::uint64_t actual_modifier = gbm_bo_get_modifier(linear_probe);
+                if (actual_modifier == 0U) {
+                    render_formats.push_back({fourcc, 1U, 0U});
+                }
+                gbm_bo_destroy(linear_probe);
+            }
+
             VkDrmFormatModifierPropertiesListEXT modifier_list{};
             modifier_list.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT;
             VkFormatProperties2 properties{};

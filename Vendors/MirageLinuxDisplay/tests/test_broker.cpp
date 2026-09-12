@@ -114,6 +114,9 @@ static void on_producer_config(void* opaque, const md_producer_config_t* config)
     assert(config->physical_width == 1280);
     assert(config->physical_height == 720);
     assert(config->fourcc == UINT32_C(0x34325258));
+    /* The producer advertises a non-zero candidate first.  Exact tuple
+     * matching must still select the display's explicit linear modifier. */
+    assert(config->modifier == 0U);
     assert((config->target_gpu_flags & MD_TARGET_GPU_RENDER_NODE_VALID) != 0U);
     assert(config->target_drm_render_major == 226U);
     assert(config->target_drm_render_minor == 128U);
@@ -270,6 +273,10 @@ int main(void) {
         .plane_count = 1,
         .modifier = 0,
     };
+    md_format_cap_t producer_formats[] = {
+        {.fourcc = format.fourcc, .plane_count = 1, .modifier = UINT64_C(0x100000000)},
+        format,
+    };
     md_output_info_t output{};
     output.stable_id = "test-output";
     output.name = "Test output";
@@ -299,8 +306,8 @@ int main(void) {
     md_producer_info_t producer_info{};
     producer_info.stable_output_id = "test-output";
     producer_info.kind = "test-renderer";
-    producer_info.formats = &format;
-    producer_info.format_count = 1U;
+    producer_info.formats = producer_formats;
+    producer_info.format_count = 2U;
 
     assert(md_display_connect(display, socket_path, "test-display", "0.2", &output, &caps,
                               3000) == MD_OK);

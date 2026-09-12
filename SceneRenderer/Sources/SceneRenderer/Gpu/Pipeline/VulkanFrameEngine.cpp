@@ -1657,6 +1657,17 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
         return false;
     }
 
+    /* The export semaphore is signalled by the submission above, so publish
+     * the protocol frame before waiting on the host fence.  The consumer's
+     * acquire sync_file carries the GPU dependency; the fence wait remains
+     * below because command buffers, dynamic data, and render targets are
+     * single-frame resources that must not be reset while in flight. */
+#ifdef __APPLE__
+    m_ex_swapchain->submitRendered(-1);
+#else
+    m_ex_swapchain->submitRendered(*rr.sem_export);
+#endif
+
     res = rr.fence_frame.Wait(vk_wait_time);
     if (res != VK_SUCCESS) {
         fail(res);
@@ -1672,11 +1683,6 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
         fail(res);
         return false;
     }
-#ifdef __APPLE__
-    m_ex_swapchain->submitRendered(-1);
-#else
-    m_ex_swapchain->submitRendered(*rr.sem_export);
-#endif
     return true;
 }
 
