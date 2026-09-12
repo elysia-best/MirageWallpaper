@@ -9,6 +9,7 @@ if(APPLE)
 elseif(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
+    find_package(Vulkan REQUIRED)
     # FFmpeg 探测保留：macOS 后端仍在使用，Linux 合成路径依赖 libswscale。
     pkg_check_modules(MIRAGE_FFMPEG REQUIRED IMPORTED_TARGET
         libavformat>=58 libavcodec>=58 libavutil>=56 libswscale>=5 libswresample>=3)
@@ -17,6 +18,8 @@ elseif(UNIX AND NOT APPLE)
     # headless EGL/GLES3：mpv OpenGL render API 的宿主（GPU 硬件缩放取帧）。
     pkg_check_modules(MIRAGE_EGL REQUIRED IMPORTED_TARGET egl)
     pkg_check_modules(MIRAGE_GLES REQUIRED IMPORTED_TARGET glesv2)
+    pkg_check_modules(MIRAGE_GBM REQUIRED IMPORTED_TARGET gbm)
+    pkg_check_modules(MIRAGE_DRM REQUIRED IMPORTED_TARGET libdrm)
 
     # Linux displays through the mirage-display protocol only (no X11 host).
     add_executable(VideoWallpaper
@@ -30,11 +33,14 @@ elseif(UNIX AND NOT APPLE)
     # Public headers of the vendored MirageLinuxDisplay library (see Vendors/README).
     target_include_directories(VideoWallpaper PRIVATE "${MIRAGE_DISPLAY_SOURCE_DIR}/include")
     target_link_libraries(VideoWallpaper PRIVATE
-        mirage_display_vulkan_static
+        mirage_display_static
         PkgConfig::MIRAGE_FFMPEG
         PkgConfig::MIRAGE_MPV
         PkgConfig::MIRAGE_EGL
         PkgConfig::MIRAGE_GLES
+        PkgConfig::MIRAGE_GBM
+        PkgConfig::MIRAGE_DRM
+        Vulkan::Vulkan
         Threads::Threads
         Qt6::Core
         VideoRendererEngine)

@@ -2,15 +2,14 @@
 
 #include <mirage_display.h>
 #include <mirage_display_producer.h>
-#include <mirage_display_vulkan_export.h>
 
 #include <QFileInfo>
-#include <QUrl>
 
 #include <vulkan/vulkan.h>
 
-#include <algorithm>
 #include <atomic>
+#include <array>
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <clocale>
@@ -40,6 +39,9 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
+#include <gbm.h>
+#include <xf86drm.h>
 
 namespace {
 
@@ -52,6 +54,8 @@ constexpr std::uint32_t DrmFourcc(char a, char b, char c, char d) {
 
 constexpr std::uint32_t kDrmXbgr8888 = DrmFourcc('X', 'B', '2', '4');
 constexpr std::uint32_t kDrmAbgr8888 = DrmFourcc('A', 'B', '2', '4');
+constexpr std::uint32_t kDrmXrgb8888 = DrmFourcc('X', 'R', '2', '4');
+constexpr std::uint32_t kDrmArgb8888 = DrmFourcc('A', 'R', '2', '4');
 
 constexpr std::uint32_t kExportBufferCount = 3;
 
@@ -191,6 +195,39 @@ public:
                md_producer_bind_gpu(m_producer, &gpu) == MD_OK;
     }
 
+    bool reconnectWithFormats(const std::vector<md_format_cap_t>& formats) {
+        if (formats.empty()) return false;
+        std::uint64_t previous_epoch = 0;
+        std::uint64_t previous_version = 0;
+        {
+            std::lock_guard lock(m_state_mutex);
+            previous_epoch = m_connection_epoch;
+            previous_version = m_config_version;
+        }
+        const bool was_running = m_running.exchange(false);
+        m_state_cv.notify_all();
+        if (was_running && m_io_thread.joinable()) m_io_thread.join();
+        {
+            std::lock_guard lock(m_producer_mutex);
+            m_formats = formats;
+            if (m_producer != nullptr) {
+                md_producer_free(m_producer);
+                m_producer = nullptr;
+            }
+            if (!connectProducerLocked()) return false;
+        }
+        if (was_running) {
+            m_running.store(true);
+            m_io_thread = std::thread([this] { ioLoop(); });
+        }
+        std::unique_lock lock(m_state_mutex);
+        return m_state_cv.wait_for(lock, std::chrono::seconds(15), [this, previous_epoch,
+                                                                      previous_version] {
+            return m_connection_epoch > previous_epoch &&
+                   m_config_version > previous_version;
+        });
+    }
+
     int submitFrame(std::uint64_t generation, std::uint32_t index, std::uint64_t sequence,
                     int acquire_fd, int release_fd) {
         std::lock_guard lock(m_producer_mutex);
@@ -267,10 +304,16 @@ private:
         };
         m_producer = md_producer_new(&callbacks);
         if (m_producer == nullptr) return false;
-        const md_format_cap_t formats[] = {
+        const md_format_cap_t default_formats[] = {
+            {.fourcc = kDrmXrgb8888, .plane_count = 1, .modifier = 0},
+            {.fourcc = kDrmArgb8888, .plane_count = 1, .modifier = 0},
             {.fourcc = kDrmXbgr8888, .plane_count = 1, .modifier = 0},
             {.fourcc = kDrmAbgr8888, .plane_count = 1, .modifier = 0},
         };
+        const md_format_cap_t* formats = m_formats.empty() ? default_formats : m_formats.data();
+        const std::uint32_t format_count = m_formats.empty()
+                                                ? static_cast<std::uint32_t>(std::size(default_formats))
+                                                : static_cast<std::uint32_t>(m_formats.size());
         md_producer_info_t info {
             .stable_output_id = m_output_id.c_str(),
             .kind = "video",
@@ -279,7 +322,7 @@ private:
             .device_uuid = {},
             .driver_uuid = {},
             .formats = formats,
-            .format_count = static_cast<std::uint32_t>(std::size(formats)),
+            .format_count = format_count,
         };
         std::memcpy(info.device_uuid, m_device_uuid, sizeof(info.device_uuid));
         std::memcpy(info.driver_uuid, m_driver_uuid, sizeof(info.driver_uuid));
@@ -354,6 +397,7 @@ private:
     md_producer_t* m_producer { nullptr };
     std::uint32_t m_drm_major { 0 };
     std::uint32_t m_drm_minor { 0 };
+    std::vector<md_format_cap_t> m_formats;
     std::uint8_t m_device_uuid[16] { 0 };
     std::uint8_t m_driver_uuid[16] { 0 };
     std::atomic_bool m_running { false };
@@ -362,12 +406,28 @@ private:
 
 class VRProtocolVideoRenderer::Impl : public QObject {
 public:
-    explicit Impl(Config config) : m_config(std::move(config)) {}
+    explicit Impl(Config config) : m_config(std::move(config)) {
+        m_diagnostics = qEnvironmentVariableIsSet("MIRAGE_DISPLAY_DIAGNOSTICS");
+    }
 
     ~Impl() { stop(); }
 
     Impl(const Impl&) = delete;
     Impl& operator=(const Impl&) = delete;
+
+private:
+    struct DirectSlot {
+        gbm_bo* bo { nullptr };
+        EGLImageKHR image { EGL_NO_IMAGE_KHR };
+        GLuint texture { 0 };
+        GLuint framebuffer { 0 };
+        int dma_fd { -1 };
+        std::uint32_t stride { 0 };
+        std::uint32_t release_handle { 0 };
+        bool busy { false };
+    };
+
+public:
 
     bool start(QString* error) {
         if (m_config.socketPath.isEmpty() || m_config.outputId.isEmpty() ||
@@ -404,11 +464,6 @@ public:
             setError(error, "target GPU binding was rejected by mirage-display");
             return false;
         }
-        if (!rebuildPool()) {
-            setError(error, "cannot create export pool for the negotiated output configuration");
-            return false;
-        }
-
         m_running.store(true);
         m_render_thread = std::thread([this] { renderLoop(); });
         return true;
@@ -424,11 +479,6 @@ public:
         m_control_cv.notify_all();
         if (m_render_thread.joinable()) m_render_thread.join();
         if (m_host != nullptr) m_host->stop();
-        destroyUploadResources();
-        if (m_exporter != nullptr) {
-            md_vk_exporter_free(m_exporter);
-            m_exporter = nullptr;
-        }
         destroyVulkan();
         m_host.reset();
     }
@@ -478,8 +528,9 @@ public:
     }
 
     void setFillMode(VRVideoFillMode fillMode) {
-        // 仅记录状态：presentMpvFrame 每帧按最新 fillMode 计算 fit 目标并重建
-        // GL FBO（渲染目标），无需通知 mpv。
+        // The render thread applies this to libmpv before the next frame.  The
+        // GL viewport alone is insufficient because mpv owns the final
+        // viewport/aspect calculation during mpv_render_context_render().
         m_fill_mode.store(fillMode);
     }
 
@@ -639,70 +690,11 @@ private:
             destroyVulkan();
             return false;
         }
-        md_vk_export_context_t context {
-            .instance = m_instance,
-            .physical_device = m_physical_device,
-            .device = m_device,
-            .queue = m_queue,
-            .queue_family_index = m_queue_family,
-            .drm_render_fd = m_drm_fd,
-            .drm_render_major = m_drm_major,
-            .drm_render_minor = m_drm_minor,
-        };
-        m_exporter = md_vk_exporter_new(&context);
-        if (m_exporter == nullptr) {
-            setError(error, "cannot create Vulkan export helper");
-            destroyVulkan();
-            return false;
-        }
-
-        VkCommandPoolCreateInfo pool_info {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = m_queue_family,
-        };
-        if (vkCreateCommandPool(m_device, &pool_info, nullptr, &m_upload_pool) != VK_SUCCESS) {
-            setError(error, "cannot create Vulkan upload command pool");
-            destroyVulkan();
-            return false;
-        }
-        VkCommandBufferAllocateInfo command_info {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .pNext = nullptr,
-            .commandPool = m_upload_pool,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
-        if (vkAllocateCommandBuffers(m_device, &command_info, &m_upload_cmd) != VK_SUCCESS) {
-            setError(error, "cannot create Vulkan upload command buffer");
-            destroyVulkan();
-            return false;
-        }
-        VkFenceCreateInfo fence_info {
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-        };
-        if (vkCreateFence(m_device, &fence_info, nullptr, &m_upload_fence) != VK_SUCCESS) {
-            setError(error, "cannot create Vulkan upload fence");
-            destroyVulkan();
-            return false;
-        }
         return true;
     }
 
     void destroyVulkan() {
         if (m_device != VK_NULL_HANDLE) vkDeviceWaitIdle(m_device);
-        if (m_upload_fence != VK_NULL_HANDLE) {
-            vkDestroyFence(m_device, m_upload_fence, nullptr);
-            m_upload_fence = VK_NULL_HANDLE;
-        }
-        if (m_upload_pool != VK_NULL_HANDLE) {
-            vkDestroyCommandPool(m_device, m_upload_pool, nullptr);
-            m_upload_pool = VK_NULL_HANDLE;
-            m_upload_cmd = VK_NULL_HANDLE;
-        }
         if (m_device != VK_NULL_HANDLE) vkDestroyDevice(m_device, nullptr);
         m_device = VK_NULL_HANDLE;
         if (m_instance != VK_NULL_HANDLE) vkDestroyInstance(m_instance, nullptr);
@@ -823,7 +815,7 @@ private:
             .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
         };
         vkCmdPipelineBarrier(m_upload_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
                              1, &barrier);
         if (vkEndCommandBuffer(m_upload_cmd) != VK_SUCCESS) {
             destroyUploadResources();
@@ -880,37 +872,43 @@ private:
         if (m_host == nullptr || !m_host->currentConfig(config, version, epoch)) return false;
         if (config.physical_width == 0 || config.physical_height == 0) return false;
 
-        const std::uint64_t generation = m_host->nextGeneration();
-        md_vk_export_pool_info_t pool_info {
-            .generation = generation,
-            .buffer_count = kExportBufferCount,
-            .width = config.physical_width,
-            .height = config.physical_height,
-            .fourcc = config.fourcc,
-            .plane_count = config.plane_count,
-            .modifier = config.modifier,
-        };
-        if (m_exporter == nullptr || md_vk_exporter_create_pool(m_exporter, &pool_info) != MD_OK) {
+        if (!createDirectPool(config)) {
+            if (m_diagnostics) {
+                std::fprintf(stderr, "VideoWallpaper diagnostics: direct pool create failed: %s\n",
+                             m_last_error.c_str());
+            }
             return false;
         }
-        const md_buffer_pool_t* pool = md_vk_exporter_pool(m_exporter);
-        if (m_host->offerPool(pool) != MD_OK) {
-            md_vk_exporter_release_pool(m_exporter);
+        const int offer_result = m_host->offerPool(&m_direct_pool);
+        if (offer_result != MD_OK) {
+            if (m_diagnostics) {
+                std::fprintf(stderr,
+                             "VideoWallpaper diagnostics: direct pool offer failed: %d\n",
+                             offer_result);
+            }
+            destroyDirectPool();
             return false;
         }
-        m_generation = generation;
+        m_generation = m_direct_pool.generation;
         m_config_version = version;
         m_connection_epoch = epoch;
         m_pool_width = config.physical_width;
         m_pool_height = config.physical_height;
-        m_canvas.assign(static_cast<std::size_t>(m_pool_width) * m_pool_height * 4u, 0);
-        return createUploadResources(m_pool_width, m_pool_height);
+        if (m_diagnostics) {
+            std::fprintf(stderr,
+                         "VideoWallpaper diagnostics: direct pool active generation=%llu "
+                         "size=%ux%u fourcc=%u modifier=%llu\n",
+                         static_cast<unsigned long long>(m_generation), m_pool_width,
+                         m_pool_height, config.fourcc,
+                         static_cast<unsigned long long>(config.modifier));
+        }
+        return true;
     }
 
     void serviceHostAndPool() {
         const std::uint64_t retire_generation = m_host->takeRetireGeneration();
         if (retire_generation != 0 && retire_generation == m_generation) {
-            md_vk_exporter_release_pool(m_exporter);
+            destroyDirectPool();
             m_generation = 0;
             m_host->retireDone(retire_generation);
         }
@@ -921,7 +919,7 @@ private:
             m_config_version = version;
             m_connection_epoch = epoch;
             if (!rebuildPool()) {
-                fail(QStringLiteral("cannot rebuild export pool for new output configuration"));
+                fail(QStringLiteral("cannot rebuild GBM/EGL pool for new output configuration"));
             }
         }
     }
@@ -1097,15 +1095,10 @@ private:
             handle = m_mpv;
             m_mpv = nullptr;
         }
+        destroyDirectPool();
         if (render != nullptr) mpv_render_context_free(render);
         if (handle != nullptr) mpv_terminate_destroy(handle);
-        // GL/EGL 资源与 mpv 同线程释放：先删 GL 对象，再销毁 EGL 上下文。
-        if (m_gl_fbo != 0) {
-            glDeleteFramebuffers(1, &m_gl_fbo);
-            glDeleteTextures(1, &m_gl_tex);
-            m_gl_fbo = 0;
-            m_gl_tex = 0;
-        }
+        // DirectSlot 的 GL 对象已在 destroyDirectPool 中释放，再销毁 EGL 上下文。
         if (m_egl_context != EGL_NO_CONTEXT) {
             eglMakeCurrent(m_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                            EGL_NO_CONTEXT);
@@ -1116,54 +1109,10 @@ private:
             eglTerminate(m_egl_display);
             m_egl_display = EGL_NO_DISPLAY;
         }
-    }
-
-    struct FitRect {
-        std::int64_t x;
-        std::int64_t y;
-        std::uint32_t w;
-        std::uint32_t h;
-    };
-
-    FitRect computeFitRect(int source_w, int source_h) const {
-        const double source_aspect = static_cast<double>(source_w) / source_h;
-        const double pool_aspect = static_cast<double>(m_pool_width) / m_pool_height;
-        FitRect rect {0, 0, m_pool_width, m_pool_height};
-        switch (m_fill_mode.load()) {
-        case VRVideoFillModeContain:
-            if (source_aspect > pool_aspect) {
-                rect.w = m_pool_width;
-                rect.h = static_cast<std::uint32_t>(m_pool_width / source_aspect);
-            } else {
-                rect.h = m_pool_height;
-                rect.w = static_cast<std::uint32_t>(m_pool_height * source_aspect);
-            }
-            rect.x = (static_cast<std::int64_t>(m_pool_width) -
-                      static_cast<std::int64_t>(rect.w)) / 2;
-            rect.y = (static_cast<std::int64_t>(m_pool_height) -
-                      static_cast<std::int64_t>(rect.h)) / 2;
-            break;
-        case VRVideoFillModeCover:
-            if (source_aspect > pool_aspect) {
-                rect.h = m_pool_height;
-                rect.w = static_cast<std::uint32_t>(m_pool_height * source_aspect);
-            } else {
-                rect.w = m_pool_width;
-                rect.h = static_cast<std::uint32_t>(m_pool_width / source_aspect);
-            }
-            // Cover intentionally produces a negative offset on the overflowing
-            // axis. Signed coordinates preserve that centered source crop instead
-            // of wrapping to a large unsigned destination coordinate.
-            rect.x = (static_cast<std::int64_t>(m_pool_width) -
-                      static_cast<std::int64_t>(rect.w)) / 2;
-            rect.y = (static_cast<std::int64_t>(m_pool_height) -
-                      static_cast<std::int64_t>(rect.h)) / 2;
-            break;
-        case VRVideoFillModeStretch:
-        default:
-            break;
+        if (m_gbm_device != nullptr) {
+            gbm_device_destroy(m_gbm_device);
+            m_gbm_device = nullptr;
         }
-        return rect;
     }
 
     // mpv GL render API 的 GL 函数解析回调（EGL 提供）。
@@ -1176,6 +1125,15 @@ private:
     // EGL_EXT_device_drm_render_node 选择设备，禁止 EGL_DEFAULT_DISPLAY，
     // 避免 EGL 与 Vulkan/VA-API 落到不同 GPU。
     bool createGlContext() {
+        if (m_drm_fd < 0) {
+            m_last_error = "DRM render node is not open for GBM";
+            return false;
+        }
+        m_gbm_device = gbm_create_device(m_drm_fd);
+        if (m_gbm_device == nullptr) {
+            m_last_error = "gbm_create_device failed";
+            return false;
+        }
         using QueryDevices = EGLBoolean (*)(EGLint, EGLDeviceEXT*, EGLint*);
         using QueryDeviceString = const char* (*)(EGLDeviceEXT, EGLint);
         auto query_devices = reinterpret_cast<QueryDevices>(eglGetProcAddress("eglQueryDevicesEXT"));
@@ -1247,50 +1205,243 @@ private:
             m_last_error = "eglMakeCurrent(surfaceless) failed";
             return false;
         }
-        return true;
-    }
-
-    // 确保 GL FBO 尺寸与 fit 目标一致（mpv 渲染目标，尺寸=mpv 输出尺寸）。
-    // 尺寸变化（fillMode 切换）时销毁重建；仅在渲染线程调用。
-    bool ensureFbo(int width, int height) {
-        if (m_gl_fbo != 0 && m_gl_fbo_w == width && m_gl_fbo_h == height) return true;
-        if (m_gl_fbo != 0) {
-            glDeleteFramebuffers(1, &m_gl_fbo);
-            glDeleteTextures(1, &m_gl_tex);
-            m_gl_fbo = 0;
-            m_gl_tex = 0;
-        }
-        glGenTextures(1, &m_gl_tex);
-        glBindTexture(GL_TEXTURE_2D, m_gl_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
-                     GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glGenFramebuffers(1, &m_gl_fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_gl_fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                               m_gl_tex, 0);
-        const bool complete =
-            glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        if (!complete) {
-            m_last_error = "GL framebuffer incomplete";
+        m_egl_create_image = std::bit_cast<PFNEGLCREATEIMAGEKHRPROC>(
+            eglGetProcAddress("eglCreateImageKHR"));
+        m_egl_destroy_image = std::bit_cast<PFNEGLDESTROYIMAGEKHRPROC>(
+            eglGetProcAddress("eglDestroyImageKHR"));
+        m_egl_create_sync = std::bit_cast<PFNEGLCREATESYNCKHRPROC>(
+            eglGetProcAddress("eglCreateSyncKHR"));
+        m_egl_destroy_sync = std::bit_cast<PFNEGLDESTROYSYNCKHRPROC>(
+            eglGetProcAddress("eglDestroySyncKHR"));
+        m_egl_dup_native_fence = std::bit_cast<PFNEGLDUPNATIVEFENCEFDANDROIDPROC>(
+            eglGetProcAddress("eglDupNativeFenceFDANDROID"));
+        m_gl_image_target = std::bit_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
+            eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+        if (m_egl_create_image == nullptr || m_egl_destroy_image == nullptr ||
+            m_egl_create_sync == nullptr || m_egl_destroy_sync == nullptr ||
+            m_egl_dup_native_fence == nullptr || m_gl_image_target == nullptr) {
+            m_last_error = "EGL DMA-BUF image or native-fence extensions are unavailable";
             return false;
         }
-        m_gl_fbo_w = width;
-        m_gl_fbo_h = height;
         return true;
     }
 
-    // 从 mpv 取当前帧（GL render：GPU 硬件缩放后读回 RGBA），按 fillMode 区域
-    // memcpy 合成进 pool 画布并上传导出。缩放/格式转换由 mpv（libplacebo）在
-    // GPU 完成（FBO 尺寸=fit 目标），CPU 仅做读回与合成——相比 SW render 方案
-    // 消除了 CPU 端 NV12→RGBA 转换与 zimg 缩放（CPU 占用高的根源）。
+    void destroyDirectPool() {
+        if (m_egl_display != EGL_NO_DISPLAY && m_egl_destroy_image != nullptr) {
+            for (DirectSlot& slot : m_direct_slots) {
+                if (slot.release_handle != 0U && m_drm_fd >= 0) {
+                    drmSyncobjDestroy(m_drm_fd, slot.release_handle);
+                }
+                if (slot.framebuffer != 0U) glDeleteFramebuffers(1, &slot.framebuffer);
+                if (slot.texture != 0U) glDeleteTextures(1, &slot.texture);
+                if (slot.image != EGL_NO_IMAGE_KHR) m_egl_destroy_image(m_egl_display, slot.image);
+                if (slot.dma_fd >= 0) ::close(slot.dma_fd);
+                if (slot.bo != nullptr) gbm_bo_destroy(slot.bo);
+                slot = DirectSlot{};
+            }
+        }
+        m_direct_pool = md_buffer_pool_t{};
+        m_direct_pool_active = false;
+    }
+
+    bool createDirectPool(const md_producer_config_t& config) {
+        if (m_gbm_device == nullptr || m_egl_display == EGL_NO_DISPLAY) return false;
+        if (config.fourcc != kDrmXrgb8888 && config.fourcc != kDrmArgb8888 &&
+            config.fourcc != kDrmXbgr8888 && config.fourcc != kDrmAbgr8888) {
+            m_last_error = "negotiated video format is not an RGBA GBM format";
+            return false;
+        }
+        destroyDirectPool();
+        const std::uint32_t gbm_format =
+            config.fourcc == kDrmArgb8888
+                ? GBM_FORMAT_ARGB8888
+                : config.fourcc == kDrmAbgr8888
+                      ? GBM_FORMAT_ABGR8888
+                      : config.fourcc == kDrmXrgb8888 ? GBM_FORMAT_XRGB8888
+                                                      : GBM_FORMAT_XBGR8888;
+        m_direct_pool.generation = m_host->nextGeneration();
+        m_direct_pool.buffer_count = kExportBufferCount;
+        m_direct_pool.width = config.physical_width;
+        m_direct_pool.height = config.physical_height;
+        m_direct_pool.fourcc = config.fourcc;
+        m_direct_pool.plane_count = 1U;
+        m_direct_pool.modifier = config.modifier;
+        for (std::uint32_t index = 0U; index < kExportBufferCount; ++index) {
+            DirectSlot& slot = m_direct_slots[index];
+            /* The display advertises modifier zero as the linear DRM layout.
+             * Rendering-only allocation lets GBM choose a tiled BO on several
+             * drivers, which no longer matches the protocol tuple. Request
+             * linear storage explicitly for zero; non-zero negotiated modifiers
+             * stay explicit so their tiling is preserved. */
+            if (config.modifier == 0U) {
+                slot.bo = gbm_bo_create(m_gbm_device, config.physical_width,
+                                        config.physical_height, gbm_format,
+                                        GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+            } else {
+                const std::uint64_t requested_modifier = config.modifier;
+                slot.bo = gbm_bo_create_with_modifiers2(
+                    m_gbm_device, config.physical_width, config.physical_height, gbm_format,
+                    &requested_modifier, 1U, GBM_BO_USE_RENDERING);
+            }
+            if (slot.bo == nullptr) {
+                const int allocation_errno = errno;
+                m_last_error = "GBM BO allocation failed for fourcc=" +
+                               std::to_string(config.fourcc) +
+                               " modifier=" + std::to_string(config.modifier) +
+                               " size=" + std::to_string(config.physical_width) + "x" +
+                               std::to_string(config.physical_height) +
+                               " errno=" + std::to_string(allocation_errno) + " (" +
+                               std::strerror(allocation_errno) + ")";
+                destroyDirectPool();
+                return false;
+            }
+            const std::uint64_t actual_modifier = gbm_bo_get_modifier(slot.bo);
+            if (actual_modifier != config.modifier) {
+                m_last_error = "GBM returned modifier=" + std::to_string(actual_modifier) +
+                               " for negotiated modifier=" + std::to_string(config.modifier);
+                destroyDirectPool();
+                return false;
+            }
+            slot.dma_fd = gbm_bo_get_fd(slot.bo);
+            slot.stride = gbm_bo_get_stride(slot.bo);
+            if (slot.dma_fd < 0 || slot.stride == 0U) {
+                m_last_error = "GBM DMA-BUF descriptor export failed";
+                destroyDirectPool();
+                return false;
+            }
+            std::array<EGLint, 20U> image_attrs{};
+            std::uint32_t attr_count = 0U;
+            image_attrs[attr_count++] = EGL_WIDTH;
+            image_attrs[attr_count++] = static_cast<EGLint>(config.physical_width);
+            image_attrs[attr_count++] = EGL_HEIGHT;
+            image_attrs[attr_count++] = static_cast<EGLint>(config.physical_height);
+            image_attrs[attr_count++] = EGL_LINUX_DRM_FOURCC_EXT;
+            image_attrs[attr_count++] = static_cast<EGLint>(config.fourcc);
+            image_attrs[attr_count++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+            image_attrs[attr_count++] = slot.dma_fd;
+            image_attrs[attr_count++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+            image_attrs[attr_count++] = 0;
+            image_attrs[attr_count++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+            image_attrs[attr_count++] = static_cast<EGLint>(slot.stride);
+            /* v1.2 treats modifier zero as an explicit linear modifier.  Pass
+             * both halves even for zero so EGL cannot reinterpret the BO as an
+             * implicit-layout image on drivers that distinguish the two forms. */
+            image_attrs[attr_count++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+            image_attrs[attr_count++] = static_cast<EGLint>(config.modifier & UINT64_C(0xffffffff));
+            image_attrs[attr_count++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+            image_attrs[attr_count++] = static_cast<EGLint>(config.modifier >> 32U);
+            image_attrs[attr_count] = EGL_NONE;
+            slot.image = m_egl_create_image(m_egl_display, EGL_NO_CONTEXT,
+                                            EGL_LINUX_DMA_BUF_EXT, nullptr, image_attrs.data());
+            if (slot.image == EGL_NO_IMAGE_KHR) {
+                m_last_error = "eglCreateImageKHR(DMA-BUF) failed";
+                destroyDirectPool();
+                return false;
+            }
+            glGenTextures(1, &slot.texture);
+            glBindTexture(GL_TEXTURE_2D, slot.texture);
+            /* EGLImage-backed DMA-BUF textures have no mipmap chain.  GLES
+             * defaults GL_TEXTURE_MIN_FILTER to a mipmap mode, which makes
+             * the FBO attachment incomplete even though the EGL import
+             * itself succeeded. */
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            m_gl_image_target(GL_TEXTURE_2D, static_cast<GLeglImageOES>(slot.image));
+            glGenFramebuffers(1, &slot.framebuffer);
+            glBindFramebuffer(GL_FRAMEBUFFER, slot.framebuffer);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                   slot.texture, 0);
+            const GLenum framebuffer_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            const GLenum gl_error = glGetError();
+            if (framebuffer_status != GL_FRAMEBUFFER_COMPLETE) {
+                m_last_error = "GBM/EGL framebuffer is incomplete status=" +
+                               std::to_string(static_cast<unsigned int>(framebuffer_status)) +
+                               " gl_error=" +
+                               std::to_string(static_cast<unsigned int>(gl_error));
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                destroyDirectPool();
+                return false;
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            md_plane_t& plane = m_direct_pool.planes[index][0];
+            plane.fd = slot.dma_fd;
+            plane.stride = slot.stride;
+            plane.offset = 0U;
+            plane.size = static_cast<std::uint64_t>(slot.stride) * config.physical_height;
+        }
+        m_direct_pool_active = true;
+        return true;
+    }
+
+    int acquireDirectSlot() {
+        for (std::uint32_t index = 0U; index < kExportBufferCount; ++index) {
+            DirectSlot& slot = m_direct_slots[index];
+            if (slot.busy) {
+                std::uint32_t handle = slot.release_handle;
+                if (drmSyncobjWait(m_drm_fd, &handle, 1U, 0, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL,
+                                   nullptr) == 0) {
+                    drmSyncobjDestroy(m_drm_fd, slot.release_handle);
+                    slot.release_handle = 0U;
+                    slot.busy = false;
+                }
+            }
+            if (!slot.busy) return static_cast<int>(index);
+        }
+        return -1;
+    }
+
+    bool submitDirectFrame(const std::uint32_t index) {
+        DirectSlot& slot = m_direct_slots[index];
+        glFlush();
+        const EGLint sync_attrs[] = {EGL_NONE};
+        const EGLSyncKHR sync = m_egl_create_sync(m_egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID,
+                                                  sync_attrs);
+        if (sync == EGL_NO_SYNC_KHR) return false;
+        const EGLint acquire_fd = m_egl_dup_native_fence(m_egl_display, sync);
+        m_egl_destroy_sync(m_egl_display, sync);
+        if (acquire_fd < 0) return false;
+        if (drmSyncobjCreate(m_drm_fd, 0U, &slot.release_handle) != 0) {
+            ::close(acquire_fd);
+            return false;
+        }
+        int release_fd = -1;
+        if (drmSyncobjHandleToFD(m_drm_fd, slot.release_handle, &release_fd) != 0) {
+            drmSyncobjDestroy(m_drm_fd, slot.release_handle);
+            slot.release_handle = 0U;
+            ::close(acquire_fd);
+            return false;
+        }
+        slot.busy = true;
+        const int result = m_host->submitFrame(m_direct_pool.generation, index, m_sequence++,
+                                               acquire_fd, release_fd);
+        if (result != MD_OK) {
+            drmSyncobjDestroy(m_drm_fd, slot.release_handle);
+            slot.release_handle = 0U;
+            slot.busy = false;
+            return false;
+        }
+        if (!m_first_frame.exchange(true) && m_config.firstFrameCallback) {
+            m_config.firstFrameCallback();
+        }
+        ++m_direct_frames;
+        if (m_diagnostics && (m_direct_frames % 120U) == 0U) {
+            std::fprintf(stderr,
+                         "VideoWallpaper diagnostics: direct_frames=%llu slot_drops=%llu bytes=%llu\n",
+                         static_cast<unsigned long long>(m_direct_frames),
+                         static_cast<unsigned long long>(m_direct_slot_drops),
+                         static_cast<unsigned long long>(m_pool_width) * m_pool_height * 4U);
+        }
+        return true;
+    }
+
+    // mpv renders directly into a GBM-backed EGLImage. Fill mode is expressed
+    // by viewport/scissor state, so no CPU canvas, readback, or Vulkan upload
+    // image is needed between mpv and the protocol DMA-BUF.
     void presentMpvFrame() {
-        if (m_pool_width == 0 || m_upload_image == VK_NULL_HANDLE) return;
         serviceHostAndPool();
-        if (m_exporter == nullptr || md_vk_exporter_pool(m_exporter) == nullptr ||
-            m_upload_image == VK_NULL_HANDLE) {
+        ++m_present_calls;
+        if (!m_direct_pool_active || m_pool_width == 0 || m_pool_height == 0) {
+            ++m_present_without_pool;
             return;
         }
 
@@ -1302,186 +1453,159 @@ private:
             if (mpv_get_property(m_mpv, "video-params/w", MPV_FORMAT_INT64, &src_w) < 0 ||
                 mpv_get_property(m_mpv, "video-params/h", MPV_FORMAT_INT64, &src_h) < 0 ||
                 src_w <= 0 || src_h <= 0) {
+                ++m_present_without_video_params;
                 return; // 尚无解码参数（加载中），跳过本帧
             }
             m_video_src_w = static_cast<int>(src_w);
             m_video_src_h = static_cast<int>(src_h);
         }
 
-        // fit 目标尺寸即 GL 渲染目标（FBO 尺寸=mpv 输出尺寸）。
-        const FitRect rect = computeFitRect(m_video_src_w, m_video_src_h);
-        if (rect.w == 0 || rect.h == 0) return;
-        if (!ensureFbo(static_cast<int>(rect.w), static_cast<int>(rect.h))) {
-            fail(QString::fromStdString(m_last_error));
+        const VRVideoFillMode fill_mode = m_fill_mode.load();
+        if (!m_fill_mode_applied || m_applied_fill_mode != fill_mode) {
+            int keep_aspect = fill_mode == VRVideoFillModeStretch ? 0 : 1;
+            double panscan = fill_mode == VRVideoFillModeCover ? 1.0 : 0.0;
+            if (mpv_set_property(m_mpv, "keepaspect", MPV_FORMAT_FLAG,
+                                 &keep_aspect) < 0 ||
+                mpv_set_property(m_mpv, "panscan", MPV_FORMAT_DOUBLE,
+                                 &panscan) < 0) {
+                ++m_present_render_errors;
+                return;
+            }
+            m_applied_fill_mode = fill_mode;
+            m_fill_mode_applied = true;
+        }
+        const int index = acquireDirectSlot();
+        if (index < 0) {
+            ++m_direct_slot_drops;
             return;
         }
-        if (m_mpv_buf_w != static_cast<int>(rect.w) ||
-            m_mpv_buf_h != static_cast<int>(rect.h)) {
-            m_mpv_buf_w = static_cast<int>(rect.w);
-            m_mpv_buf_h = static_cast<int>(rect.h);
-            m_mpv_buf_stride = m_mpv_buf_w * 4;
-            m_mpv_buf.assign(static_cast<std::size_t>(m_mpv_buf_stride) *
-                                 static_cast<std::size_t>(m_mpv_buf_h),
-                             0);
-        }
-        if (m_mpv_buf.empty()) return;
-
-        // mpv 渲染到 FBO（GPU 缩放）+ 读回 RGBA。GL 渲染必须在 EGL 上下文
-        // current 的线程（即本渲染线程）执行。
-        glBindFramebuffer(GL_FRAMEBUFFER, m_gl_fbo);
-        glViewport(0, 0, static_cast<GLsizei>(rect.w), static_cast<GLsizei>(rect.h));
+        DirectSlot& slot = m_direct_slots[static_cast<std::size_t>(index)];
+        glBindFramebuffer(GL_FRAMEBUFFER, slot.framebuffer);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, static_cast<GLsizei>(m_pool_width),
+                  static_cast<GLsizei>(m_pool_height));
+        glViewport(0, 0, static_cast<GLsizei>(m_pool_width),
+                   static_cast<GLsizei>(m_pool_height));
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
         mpv_opengl_fbo fbo_params = {
-            .fbo = static_cast<int>(m_gl_fbo),
-            .w = static_cast<int>(rect.w),
-            .h = static_cast<int>(rect.h),
+            .fbo = static_cast<int>(slot.framebuffer),
+            /* mpv requires the dimensions of the attached framebuffer, not
+             * the destination rectangle used by the wallpaper fill mode.
+             * Passing rect.w/rect.h makes mpv reject a valid FBO whenever the
+             * source aspect ratio differs from the output. */
+            .w = static_cast<int>(m_pool_width),
+            .h = static_cast<int>(m_pool_height),
             .internal_format = 0,
         };
         mpv_render_param render_params[] = {
             {MPV_RENDER_PARAM_OPENGL_FBO, &fbo_params},
             {MPV_RENDER_PARAM_INVALID, nullptr},
         };
-        if (mpv_render_context_render(m_render, render_params) < 0) return;
-        glFinish();                        // 确保 GPU 命令完成后再读回
-        glBindFramebuffer(GL_FRAMEBUFFER, m_gl_fbo); // mpv 渲染后可能改绑 GL 状态
-        glPixelStorei(GL_PACK_ALIGNMENT, 4);
-        glReadPixels(0, 0, static_cast<GLsizei>(rect.w), static_cast<GLsizei>(rect.h),
-                     GL_RGBA, GL_UNSIGNED_BYTE, m_mpv_buf.data());
+        const int render_result = mpv_render_context_render(m_render, render_params);
+        if (render_result < 0) {
+            ++m_present_render_errors;
+            glDisable(GL_SCISSOR_TEST);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            return;
+        }
+        glDisable(GL_SCISSOR_TEST);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        // fit 区域与画布求交后同时得到源裁剪和目标偏移：cover 从超出画布的
-        // mpv 帧中央取样，contain 则将完整帧居中写入黑边画布。
-        const std::int64_t copy_left = std::max<std::int64_t>(rect.x, 0);
-        const std::int64_t copy_top = std::max<std::int64_t>(rect.y, 0);
-        const std::int64_t copy_right = std::min<std::int64_t>(
-            rect.x + static_cast<std::int64_t>(rect.w), m_pool_width);
-        const std::int64_t copy_bottom = std::min<std::int64_t>(
-            rect.y + static_cast<std::int64_t>(rect.h), m_pool_height);
-        const std::uint32_t source_x = static_cast<std::uint32_t>(copy_left - rect.x);
-        const std::uint32_t source_y = static_cast<std::uint32_t>(copy_top - rect.y);
-        const std::uint32_t destination_x = static_cast<std::uint32_t>(copy_left);
-        const std::uint32_t destination_y = static_cast<std::uint32_t>(copy_top);
-        const std::uint32_t copy_w = static_cast<std::uint32_t>(copy_right - copy_left);
-        const std::uint32_t copy_h = static_cast<std::uint32_t>(copy_bottom - copy_top);
-        const std::size_t row_bytes = static_cast<std::size_t>(rect.w) * 4u;
-        std::memset(m_canvas.data(), 0, m_canvas.size());
-        for (std::uint32_t y = 0; y < copy_h; ++y) {
-            std::memcpy(m_canvas.data() +
-                            (static_cast<std::size_t>(destination_y + y) * m_pool_width +
-                             destination_x) * 4u,
-                        m_mpv_buf.data() +
-                            static_cast<std::size_t>(source_y + y) * row_bytes +
-                            static_cast<std::size_t>(source_x) * 4u,
-                        static_cast<std::size_t>(copy_w) * 4u);
+        if (!submitDirectFrame(static_cast<std::uint32_t>(index))) {
+            ++m_present_submit_errors;
         }
-        uploadAndSubmit();
     }
 
-    bool uploadAndSubmit() {
-        if (m_staging_map == nullptr) return false;
-        const std::size_t bytes = static_cast<std::size_t>(m_pool_width) * m_pool_height * 4u;
-        std::memcpy(m_staging_map, m_canvas.data(), bytes);
-
-        if (vkResetCommandPool(m_device, m_upload_pool, 0) != VK_SUCCESS ||
-            vkResetFences(m_device, 1, &m_upload_fence) != VK_SUCCESS) {
-            return false;
-        }
-        VkCommandBufferBeginInfo begin_info {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .pNext = nullptr,
-            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            .pInheritanceInfo = nullptr,
-        };
-        if (vkBeginCommandBuffer(m_upload_cmd, &begin_info) != VK_SUCCESS) return false;
-        VkImageMemoryBarrier to_dst {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = m_upload_image,
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        vkCmdPipelineBarrier(m_upload_cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
-                             1, &to_dst);
-        VkBufferImageCopy region {
-            .bufferOffset = 0,
-            .bufferRowLength = m_pool_width,
-            .bufferImageHeight = m_pool_height,
-            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .imageOffset = {0, 0, 0},
-            .imageExtent = {m_pool_width, m_pool_height, 1},
-        };
-        vkCmdCopyBufferToImage(m_upload_cmd, m_staging_buffer, m_upload_image,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        VkImageMemoryBarrier to_general {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = m_upload_image,
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        vkCmdPipelineBarrier(m_upload_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
-                             1, &to_general);
-        if (vkEndCommandBuffer(m_upload_cmd) != VK_SUCCESS) return false;
-        VkSubmitInfo submit_info {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .pNext = nullptr,
-            .waitSemaphoreCount = 0,
-            .pWaitSemaphores = nullptr,
-            .pWaitDstStageMask = nullptr,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &m_upload_cmd,
-            .signalSemaphoreCount = 0,
-            .pSignalSemaphores = nullptr,
-        };
-        if (vkQueueSubmit(m_queue, 1, &submit_info, m_upload_fence) != VK_SUCCESS) {
-            return false;
-        }
-        if (vkWaitForFences(m_device, 1, &m_upload_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-            return false;
-        }
-
-        if (md_vk_exporter_pool(m_exporter) == nullptr) return true;
-        std::uint32_t buffer_index = 0;
-        if (md_vk_exporter_acquire(m_exporter, &buffer_index) != MD_OK) {
-            return true; /* all slots owned by the consumer; drop the frame */
-        }
-        int acquire_fd = -1;
-        int release_fd = -1;
-        int rc = md_vk_exporter_copy_frame(m_exporter, buffer_index, m_upload_image,
-                                           VK_IMAGE_LAYOUT_GENERAL, m_pool_width,
-                                           m_pool_height, &acquire_fd, &release_fd);
-        if (rc != MD_OK) {
-            md_vk_exporter_cancel_frame(m_exporter, buffer_index);
-            return true;
-        }
-        rc = m_host->submitFrame(m_generation, buffer_index, m_sequence++,
-                                 acquire_fd, release_fd);
-        if (rc != MD_OK) {
-            md_vk_exporter_cancel_frame(m_exporter, buffer_index);
-            return true;
-        }
-        if (!m_first_frame.exchange(true) && m_config.firstFrameCallback) {
-            m_config.firstFrameCallback();
-        }
-        return true;
-    }
-
-    // 渲染线程 = mpv 线程：创建 mpv、处理事件与命令、SW 渲染取帧合成上传。
+    // 渲染线程 = mpv 线程：创建 mpv、处理事件与命令，并直接提交 GBM/EGL 帧。
     void renderLoop() {
         if (!openWithMpv()) {
             fail(QString::fromStdString(m_last_error));
             cleanupMpv(); // openWithMpv 中途失败可能已创建 mpv/render context，必须在此释放
+            return;
+        }
+        md_producer_config_t negotiated_config {};
+        std::uint64_t negotiated_version = 0;
+        std::uint64_t negotiated_epoch = 0;
+        if (m_host == nullptr ||
+            !m_host->currentConfig(negotiated_config, negotiated_version, negotiated_epoch)) {
+            fail(QStringLiteral("cannot read initial video output configuration"));
+            cleanupMpv();
+            return;
+        }
+        /* The bootstrap modifier zero only gets the target GPU identity.  GBM
+         * may choose a render-only compression modifier that the consumer
+         * cannot sample, so advertise the exact modifiers that this GBM
+         * device can create and let the broker intersect them with KDE's Vulkan
+         * sampled-image list. */
+        std::vector<md_format_cap_t> render_formats;
+        const auto append_render_formats = [&](const std::uint32_t fourcc,
+                                                const VkFormat vk_format,
+                                                const std::uint32_t gbm_format) {
+            VkDrmFormatModifierPropertiesListEXT modifier_list{};
+            modifier_list.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT;
+            VkFormatProperties2 properties{};
+            properties.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+            properties.pNext = &modifier_list;
+            vkGetPhysicalDeviceFormatProperties2(m_physical_device, vk_format, &properties);
+            std::vector<VkDrmFormatModifierPropertiesEXT> modifiers(
+                modifier_list.drmFormatModifierCount);
+            modifier_list.pDrmFormatModifierProperties = modifiers.data();
+            vkGetPhysicalDeviceFormatProperties2(m_physical_device, vk_format, &properties);
+            for (const VkDrmFormatModifierPropertiesEXT& modifier : modifiers) {
+                if (modifier.drmFormatModifier == 0U ||
+                    modifier.drmFormatModifierPlaneCount != 1U ||
+                    (modifier.drmFormatModifierTilingFeatures &
+                     VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) == 0U) {
+                    continue;
+                }
+                const std::uint64_t requested_modifier = modifier.drmFormatModifier;
+                gbm_bo* probe = gbm_bo_create_with_modifiers2(
+                    m_gbm_device, negotiated_config.physical_width,
+                    negotiated_config.physical_height, gbm_format, &requested_modifier, 1U,
+                    GBM_BO_USE_RENDERING);
+                if (probe == nullptr || gbm_bo_get_modifier(probe) != requested_modifier) {
+                    if (probe != nullptr) gbm_bo_destroy(probe);
+                    continue;
+                }
+                gbm_bo_destroy(probe);
+                render_formats.push_back({fourcc, 1U, requested_modifier});
+            }
+        };
+        append_render_formats(kDrmXrgb8888, VK_FORMAT_B8G8R8A8_UNORM, GBM_FORMAT_XRGB8888);
+        append_render_formats(kDrmArgb8888, VK_FORMAT_B8G8R8A8_UNORM, GBM_FORMAT_ARGB8888);
+        append_render_formats(kDrmXbgr8888, VK_FORMAT_R8G8B8A8_UNORM, GBM_FORMAT_XBGR8888);
+        append_render_formats(kDrmAbgr8888, VK_FORMAT_R8G8B8A8_UNORM, GBM_FORMAT_ABGR8888);
+        if (m_diagnostics) {
+            std::fprintf(stderr, "VideoWallpaper diagnostics: GBM/Vulkan render candidates=%zu\n",
+                         render_formats.size());
+            for (const md_format_cap_t& format : render_formats) {
+                std::fprintf(stderr, "  fourcc=%u modifier=0x%llx\n", format.fourcc,
+                             static_cast<unsigned long long>(format.modifier));
+            }
+        }
+        if (render_formats.empty() || !m_host->reconnectWithFormats(render_formats)) {
+            fail(QStringLiteral("GBM has no modifier supported by the display"));
+            cleanupMpv();
+            return;
+        }
+        md_producer_gpu_info_t rebound_gpu {
+            .drm_render_major = m_drm_major,
+            .drm_render_minor = m_drm_minor,
+            .device_uuid = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
+                            0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
+            .driver_uuid = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
+                            0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
+        };
+        std::memcpy(rebound_gpu.device_uuid, m_device_uuid, sizeof(rebound_gpu.device_uuid));
+        std::memcpy(rebound_gpu.driver_uuid, m_driver_uuid, sizeof(rebound_gpu.driver_uuid));
+        if (!m_host->bindGpu(rebound_gpu)) {
+            fail(QStringLiteral("display rejected rebound video GPU binding"));
+            cleanupMpv();
+            return;
+        }
+        if (!rebuildPool()) {
+            fail(QString::fromStdString(m_last_error));
+            cleanupMpv();
             return;
         }
         auto last_report = std::chrono::steady_clock::now();
@@ -1493,7 +1617,9 @@ private:
             if (!m_running.load()) break;
 
             const uint64_t flags = mpv_render_context_update(m_render);
+            ++m_update_polls;
             if ((flags & MPV_RENDER_UPDATE_FRAME) != 0u) {
+                ++m_update_frames;
                 presentMpvFrame();
             }
 
@@ -1503,8 +1629,26 @@ private:
             if (now - last_report >= std::chrono::seconds(2)) {
                 last_report = now;
                 char* hwdec = mpv_get_property_string(m_mpv, "hwdec-current");
-                std::fprintf(stderr, "VideoWallpaper: hwdec-current=%s\n",
-                             hwdec != nullptr ? hwdec : "?");
+                if (m_diagnostics) {
+                    std::fprintf(stderr,
+                                 "VideoWallpaper diagnostics: hwdec-current=%s pool=%s "
+                                 "fill=%s "
+                                 "updates=%llu frame_updates=%llu presents=%llu "
+                                 "no_pool=%llu no_params=%llu slot_drops=%llu "
+                                 "render_errors=%llu submit_errors=%llu direct_frames=%llu\n",
+                                 hwdec != nullptr ? hwdec : "?",
+                                 m_direct_pool_active ? "active" : "inactive",
+                                 m_fill_mode_applied ? FillModeName(m_applied_fill_mode) : "pending",
+                                 static_cast<unsigned long long>(m_update_polls),
+                                 static_cast<unsigned long long>(m_update_frames),
+                                 static_cast<unsigned long long>(m_present_calls),
+                                 static_cast<unsigned long long>(m_present_without_pool),
+                                 static_cast<unsigned long long>(m_present_without_video_params),
+                                 static_cast<unsigned long long>(m_direct_slot_drops),
+                                 static_cast<unsigned long long>(m_present_render_errors),
+                                 static_cast<unsigned long long>(m_present_submit_errors),
+                                 static_cast<unsigned long long>(m_direct_frames));
+                }
                 mpv_free(hwdec);
             }
         }
@@ -1537,7 +1681,26 @@ private:
     std::uint8_t m_driver_uuid[16] { 0 };
     int m_drm_fd { -1 };
 
-    md_vk_exporter_t* m_exporter { nullptr };
+    gbm_device* m_gbm_device { nullptr };
+    std::array<DirectSlot, kExportBufferCount> m_direct_slots {};
+    md_buffer_pool_t m_direct_pool {};
+    bool m_direct_pool_active { false };
+    bool m_diagnostics { false };
+    std::uint64_t m_direct_frames { 0 };
+    std::uint64_t m_direct_slot_drops { 0 };
+    std::uint64_t m_update_polls { 0 };
+    std::uint64_t m_update_frames { 0 };
+    std::uint64_t m_present_calls { 0 };
+    std::uint64_t m_present_without_pool { 0 };
+    std::uint64_t m_present_without_video_params { 0 };
+    std::uint64_t m_present_render_errors { 0 };
+    std::uint64_t m_present_submit_errors { 0 };
+    PFNEGLCREATEIMAGEKHRPROC m_egl_create_image { nullptr };
+    PFNEGLDESTROYIMAGEKHRPROC m_egl_destroy_image { nullptr };
+    PFNEGLCREATESYNCKHRPROC m_egl_create_sync { nullptr };
+    PFNEGLDESTROYSYNCKHRPROC m_egl_destroy_sync { nullptr };
+    PFNEGLDUPNATIVEFENCEFDANDROIDPROC m_egl_dup_native_fence { nullptr };
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC m_gl_image_target { nullptr };
     VkImage m_upload_image { VK_NULL_HANDLE };
     VkDeviceMemory m_upload_memory { VK_NULL_HANDLE };
     VkBuffer m_staging_buffer { VK_NULL_HANDLE };
@@ -1551,8 +1714,9 @@ private:
 
     std::uint32_t m_pool_width { 0 };
     std::uint32_t m_pool_height { 0 };
-    std::vector<std::uint8_t> m_canvas;
     std::atomic<VRVideoFillMode> m_fill_mode { VRVideoFillModeCover };
+    VRVideoFillMode m_applied_fill_mode { VRVideoFillModeCover };
+    bool m_fill_mode_applied { false };
     std::atomic_bool m_first_frame { false };
     std::atomic_bool m_stopped { false };
     std::atomic<float> m_volume { 1.0f };
@@ -1576,12 +1740,6 @@ private:
     mpv_render_context* m_render { nullptr };
     std::deque<std::function<void()>> m_mpv_commands;
 
-    // mpv GL 渲染读回缓冲（尺寸 = fit 目标，RGBA）
-    std::vector<std::uint8_t> m_mpv_buf;
-    int m_mpv_buf_w { 0 };
-    int m_mpv_buf_h { 0 };
-    int m_mpv_buf_stride { 0 };
-
     // 解码器输出尺寸（video-params/w,h 实测为源尺寸，不受渲染路径影响），
     // 用于计算 fit 目标尺寸。
     int m_video_src_w { 0 };
@@ -1590,11 +1748,6 @@ private:
     // headless EGL/GLES3 上下文（mpv GL render API 宿主，渲染线程独占）
     EGLDisplay m_egl_display { EGL_NO_DISPLAY };
     EGLContext m_egl_context { EGL_NO_CONTEXT };
-    // fit 尺寸 FBO（mpv 渲染目标；fillMode 切换导致尺寸变化时重建）
-    GLuint m_gl_fbo { 0 };
-    GLuint m_gl_tex { 0 };
-    int m_gl_fbo_w { 0 };
-    int m_gl_fbo_h { 0 };
     std::string m_last_error;
 };
 

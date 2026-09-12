@@ -90,6 +90,7 @@ public:
         };
         m_instanceReady = vkCreateInstance(&createInfo, nullptr, &m_instance) == VK_SUCCESS;
         if (!m_instanceReady) m_instanceError = QStringLiteral("vkCreateInstance failed");
+        m_diagnostics = qEnvironmentVariableIsSet("MIRAGE_DISPLAY_DIAGNOSTICS");
     }
     ~Impl() { stop(); }
 
@@ -162,14 +163,6 @@ public:
         }
         destroyUpload();
         if (m_device != VK_NULL_HANDLE) {
-            if (m_fence != VK_NULL_HANDLE) {
-                vkDestroyFence(m_device, m_fence, nullptr);
-                m_fence = VK_NULL_HANDLE;
-            }
-            if (m_commandPool != VK_NULL_HANDLE) {
-                vkDestroyCommandPool(m_device, m_commandPool, nullptr);
-                m_commandPool = VK_NULL_HANDLE;
-            }
             vkDestroyDevice(m_device, nullptr);
             m_device = VK_NULL_HANDLE;
         }
@@ -181,7 +174,6 @@ public:
         if (m_drmFd >= 0) ::close(m_drmFd);
         m_drmFd = -1;
         m_queue = VK_NULL_HANDLE;
-        m_commandBuffer = VK_NULL_HANDLE;
         m_physicalDevice = VK_NULL_HANDLE;
         std::lock_guard lock(m_producerMutex);
         if (m_producer != nullptr) {
@@ -192,6 +184,7 @@ public:
 
     void submitFrame(const QImage& image) {
         if (m_device == VK_NULL_HANDLE || m_exporter == nullptr || image.isNull()) return;
+        const auto captureStart = std::chrono::steady_clock::now();
         std::lock_guard lock(m_renderMutex);
         std::uint64_t configVersion = 0;
         {
@@ -206,52 +199,35 @@ public:
             }
         }
         if (m_uploadWidth == 0 || m_uploadHeight == 0) return;
-        const QImage scaled = image.scaled(static_cast<int>(m_uploadWidth), static_cast<int>(m_uploadHeight),
-                                           Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
-                                  .convertToFormat(QImage::Format_RGBA8888);
+        /* The output callback resizes QWebEngineView before the next capture.
+         * Refusing a stale-size frame keeps the protocol extent exact and
+         * avoids the full-frame CPU resample that used to precede every upload. */
+        if (image.width() != static_cast<int>(m_uploadWidth) ||
+            image.height() != static_cast<int>(m_uploadHeight)) {
+            emitFailure(QStringLiteral("Web capture size does not match negotiated output"));
+            return;
+        }
+        const auto conversionStart = std::chrono::steady_clock::now();
+        const QImage converted = image.format() == QImage::Format_RGBA8888
+                                     ? image
+                                     : image.convertToFormat(QImage::Format_RGBA8888);
+        const auto conversionUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now() - conversionStart)
+                                       .count();
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(m_uploadWidth) * m_uploadHeight * 4u;
-        std::memcpy(m_stagingMap, scaled.constBits(), static_cast<std::size_t>(bytes));
-        if (vkResetCommandPool(m_device, m_commandPool, 0) != VK_SUCCESS ||
-            vkResetFences(m_device, 1, &m_fence) != VK_SUCCESS) return;
-        VkCommandBufferBeginInfo begin {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if (vkBeginCommandBuffer(m_commandBuffer, &begin) != VK_SUCCESS) return;
-        VkImageMemoryBarrier toTransfer {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        toTransfer.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        toTransfer.oldLayout = m_uploadInitialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
-        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toTransfer.image = m_uploadImage;
-        toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdPipelineBarrier(m_commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransfer);
-        VkBufferImageCopy region {};
-        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        region.imageExtent = {m_uploadWidth, m_uploadHeight, 1};
-        vkCmdCopyBufferToImage(m_commandBuffer, m_stagingBuffer, m_uploadImage,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        VkImageMemoryBarrier toGeneral = toTransfer;
-        toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        toGeneral.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-        toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        vkCmdPipelineBarrier(m_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &toGeneral);
-        if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS) return;
-        VkSubmitInfo submit {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &m_commandBuffer;
-        if (vkQueueSubmit(m_queue, 1, &submit, m_fence) != VK_SUCCESS ||
-            vkWaitForFences(m_device, 1, &m_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) return;
-        m_uploadInitialized = true;
+        const auto stagingStart = std::chrono::steady_clock::now();
+        std::memcpy(m_stagingMap, converted.constBits(), static_cast<std::size_t>(bytes));
+        const auto stagingUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now() - stagingStart)
+                                   .count();
         std::uint32_t index = 0;
         if (md_vk_exporter_acquire(m_exporter, &index) != MD_OK) return;
+        const auto gpuStart = std::chrono::steady_clock::now();
         int acquireFd = -1;
         int releaseFd = -1;
-        if (md_vk_exporter_copy_frame(m_exporter, index, m_uploadImage, VK_IMAGE_LAYOUT_GENERAL,
-                                      m_uploadWidth, m_uploadHeight, &acquireFd, &releaseFd) != MD_OK) {
+        if (md_vk_exporter_copy_buffer_frame(m_exporter, index, m_stagingBuffer,
+                                             m_uploadWidth, m_uploadHeight,
+                                             &acquireFd, &releaseFd) != MD_OK) {
             md_vk_exporter_cancel_frame(m_exporter, index);
             return;
         }
@@ -259,6 +235,20 @@ public:
         if (m_producer == nullptr || md_producer_submit_frame(m_producer, m_generation, index,
                                                                ++m_sequence, acquireFd, releaseFd) != MD_OK) {
             md_vk_exporter_cancel_frame(m_exporter, index);
+        }
+        if (m_diagnostics) {
+            const auto gpuUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now() - gpuStart)
+                                   .count();
+            const auto callbackUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - captureStart)
+                                        .count();
+            std::fprintf(stderr, "WebWallpaper diagnostics: callback=%lldus cpu_conversion=%lldus staging_write=%lldus gpu_copy_submit=%lldus bytes=%llu\n",
+                         static_cast<long long>(callbackUs),
+                         static_cast<long long>(conversionUs),
+                         static_cast<long long>(stagingUs),
+                         static_cast<long long>(gpuUs),
+                         static_cast<unsigned long long>(bytes));
         }
     }
 
@@ -404,17 +394,7 @@ private:
                                         m_queueFamily, m_drmFd, m_drmMajor, m_drmMinor};
         m_exporter = md_vk_exporter_new(&context);
         if (m_exporter == nullptr) return false;
-        VkCommandPoolCreateInfo pool {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        pool.queueFamilyIndex = m_queueFamily;
-        if (vkCreateCommandPool(m_device, &pool, nullptr, &m_commandPool) != VK_SUCCESS) return false;
-        VkCommandBufferAllocateInfo alloc {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        alloc.commandPool = m_commandPool;
-        alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        alloc.commandBufferCount = 1;
-        if (vkAllocateCommandBuffers(m_device, &alloc, &m_commandBuffer) != VK_SUCCESS) return false;
-        VkFenceCreateInfo fence {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        return vkCreateFence(m_device, &fence, nullptr, &m_fence) == VK_SUCCESS;
+        return true;
     }
 
     bool rebuildPool(QString* error) {
@@ -448,22 +428,7 @@ private:
 
     bool createUpload(std::uint32_t width, std::uint32_t height) {
         destroyUpload();
-        VkImageCreateInfo image {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        image.imageType = VK_IMAGE_TYPE_2D;
-        image.format = VK_FORMAT_R8G8B8A8_UNORM;
-        image.extent = {width, height, 1};
-        image.mipLevels = 1; image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT;
-        image.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (vkCreateImage(m_device, &image, nullptr, &m_uploadImage) != VK_SUCCESS) return false;
         VkMemoryRequirements requirements {};
-        vkGetImageMemoryRequirements(m_device, m_uploadImage, &requirements);
-        const std::uint32_t imageType = MemoryType(m_physicalDevice, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (imageType == UINT32_MAX) return false;
-        VkMemoryAllocateInfo allocate {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, requirements.size, imageType};
-        if (vkAllocateMemory(m_device, &allocate, nullptr, &m_uploadMemory) != VK_SUCCESS ||
-            vkBindImageMemory(m_device, m_uploadImage, m_uploadMemory, 0) != VK_SUCCESS) return false;
         VkBufferCreateInfo buffer {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         buffer.size = static_cast<VkDeviceSize>(width) * height * 4u;
         buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -476,8 +441,7 @@ private:
         VkMemoryAllocateInfo staging {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, requirements.size, stagingType};
         return vkAllocateMemory(m_device, &staging, nullptr, &m_stagingMemory) == VK_SUCCESS &&
                vkBindBufferMemory(m_device, m_stagingBuffer, m_stagingMemory, 0) == VK_SUCCESS &&
-               vkMapMemory(m_device, m_stagingMemory, 0, buffer.size, 0, &m_stagingMap) == VK_SUCCESS &&
-               (m_uploadInitialized = false, true);
+               vkMapMemory(m_device, m_stagingMemory, 0, buffer.size, 0, &m_stagingMap) == VK_SUCCESS;
     }
 
     void destroyUpload() {
@@ -485,10 +449,7 @@ private:
         if (m_stagingMap != nullptr) vkUnmapMemory(m_device, m_stagingMemory);
         if (m_stagingBuffer != VK_NULL_HANDLE) vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
         if (m_stagingMemory != VK_NULL_HANDLE) vkFreeMemory(m_device, m_stagingMemory, nullptr);
-        if (m_uploadImage != VK_NULL_HANDLE) vkDestroyImage(m_device, m_uploadImage, nullptr);
-        if (m_uploadMemory != VK_NULL_HANDLE) vkFreeMemory(m_device, m_uploadMemory, nullptr);
         m_stagingMap = nullptr; m_stagingBuffer = VK_NULL_HANDLE; m_stagingMemory = VK_NULL_HANDLE;
-        m_uploadImage = VK_NULL_HANDLE; m_uploadMemory = VK_NULL_HANDLE;
     }
 
     void ioLoop() {
@@ -596,17 +557,13 @@ private:
     std::mutex m_renderMutex;
     VkInstance m_instance = VK_NULL_HANDLE;
     bool m_instanceReady = false;
+    bool m_diagnostics = false;
     QString m_instanceError;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VkQueue m_queue = VK_NULL_HANDLE;
     std::uint32_t m_queueFamily = 0;
-    VkCommandPool m_commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
-    VkFence m_fence = VK_NULL_HANDLE;
     md_vk_exporter_t* m_exporter = nullptr;
-    VkImage m_uploadImage = VK_NULL_HANDLE;
-    VkDeviceMemory m_uploadMemory = VK_NULL_HANDLE;
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;
     void* m_stagingMap = nullptr;
@@ -617,7 +574,6 @@ private:
     std::uint32_t m_drmMinor = 0;
     std::uint8_t m_deviceUuid[16] {};
     std::uint8_t m_driverUuid[16] {};
-    bool m_uploadInitialized = false;
 };
 
 ProtocolWebRenderer::ProtocolWebRenderer(Config config, QObject* parent)

@@ -27,6 +27,8 @@
 #include <QWebEngineView>
 #include <QtMath>
 
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 
 // Serves a web wallpaper through one controlled origin so preset overlays and
@@ -538,8 +540,18 @@ void WebRendererEngine::tickAudioSpectrum() {
 
 void WebRendererEngine::captureFrame() {
     if (m_paused || m_view->width() <= 0 || m_view->height() <= 0) return;
+    const auto captureStart = std::chrono::steady_clock::now();
     const QPixmap pixmap = m_view->grab();
-    if (!pixmap.isNull()) emit frameReady(pixmap.toImage().convertToFormat(QImage::Format_RGBA8888));
+    if (pixmap.isNull()) return;
+    const QImage image = pixmap.toImage().convertToFormat(QImage::Format_RGBA8888);
+    if (qEnvironmentVariableIsSet("MIRAGE_DISPLAY_DIAGNOSTICS")) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - captureStart).count();
+        std::fprintf(stderr, "WebWallpaper diagnostics: chromium_capture_rgba=%lldus bytes=%llu\n",
+                     static_cast<long long>(elapsed),
+                     static_cast<unsigned long long>(image.sizeInBytes()));
+    }
+    emit frameReady(image);
 }
 
 void WebRendererEngine::takeSnapshotToPath(const QString& path) {

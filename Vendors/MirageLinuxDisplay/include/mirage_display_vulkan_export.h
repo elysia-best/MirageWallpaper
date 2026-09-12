@@ -92,6 +92,21 @@ md_result_t md_vk_exporter_copy_frame(md_vk_exporter_t* exporter,
                                       int32_t* out_acquire_sync_fd,
                                       int32_t* out_release_syncobj_fd);
 
+/*
+ * Copies a caller-owned host-visible RGBA staging buffer directly into an
+ * acquired export slot.  The buffer must contain tightly packed rows of
+ * source_width*4 bytes and remain mapped until this call returns.  The
+ * exporter owns the asynchronous GPU submission; returned FDs are consumed by
+ * md_producer_submit_frame and must not be closed by the producer afterwards.
+ */
+md_result_t md_vk_exporter_copy_buffer_frame(md_vk_exporter_t* exporter,
+                                             uint32_t buffer_index,
+                                             VkBuffer source_buffer,
+                                             uint32_t source_width,
+                                             uint32_t source_height,
+                                             int32_t* out_acquire_sync_fd,
+                                             int32_t* out_release_syncobj_fd);
+
 /* Rolls a slot back when frame submission failed after export_frame(). */
 void md_vk_exporter_cancel_frame(md_vk_exporter_t* exporter, uint32_t buffer_index);
 
