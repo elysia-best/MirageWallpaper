@@ -113,6 +113,8 @@ static void on_producer_config(void* opaque, const md_producer_config_t* config)
     producer_observer_t* const observer = static_cast<producer_observer_t*>(opaque);
     assert(config->physical_width == 1280);
     assert(config->physical_height == 720);
+    assert(config->logical_width == 1280);
+    assert(config->logical_height == 720);
     assert(config->fourcc == UINT32_C(0x34325258));
     /* The producer advertises a non-zero candidate first.  Exact tuple
      * matching must still select the display's explicit linear modifier. */

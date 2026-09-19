@@ -180,16 +180,28 @@ public:
             md_producer_connection_state(m_producer) != MD_CONNECTION_READY) {
             return MD_ERR_DISCONNECTED;
         }
+        md_producer_config_t output_config {};
+        {
+            std::lock_guard state_lock(m_state_mutex);
+            if (m_config_version == 0U) return MD_ERR_STATE;
+            output_config = m_config;
+        }
         const int result = md_producer_offer_buffers(m_producer, pool);
         if (result != MD_OK) return result;
-        // Advertise the pool as covering the whole output; the desktop
-        // environment adapter scales it to the actual display geometry.
+        /* Source coordinates address the producer's buffer, while destination
+         * coordinates are output physical pixels.  These dimensions were
+         * previously identical, but Intel deliberately renders a smaller
+         * logical-size pool to reduce vaapi-copy bandwidth.  Keeping the pool
+         * size as the destination then covered only part of a fractionally
+         * scaled Plasma output.  Map the complete source onto the complete
+         * negotiated output so QSG performs exactly one final scale. */
         md_display_config_t display_config {
             .generation = pool->generation,
             .source = {0.0f, 0.0f, static_cast<float>(pool->width),
                        static_cast<float>(pool->height)},
-            .destination = {0.0f, 0.0f, static_cast<float>(pool->width),
-                            static_cast<float>(pool->height)},
+            .destination = {0.0f, 0.0f,
+                            static_cast<float>(output_config.physical_width),
+                            static_cast<float>(output_config.physical_height)},
             .transform = MD_TRANSFORM_NORMAL,
             .clear_color = {0.0f, 0.0f, 0.0f, 1.0f},
         };
@@ -878,7 +890,7 @@ private:
         std::uint64_t version = 0;
         std::uint64_t epoch = 0;
         if (m_host == nullptr || !m_host->currentConfig(config, version, epoch)) return false;
-        if (config.physical_width == 0 || config.physical_height == 0) return false;
+        if (config.logical_width == 0 || config.logical_height == 0) return false;
 
         if (!createDirectPool(config)) {
             if (m_diagnostics) {
@@ -900,8 +912,8 @@ private:
         m_generation = m_direct_pool.generation;
         m_config_version = version;
         m_connection_epoch = epoch;
-        m_pool_width = config.physical_width;
-        m_pool_height = config.physical_height;
+        m_pool_width = m_direct_pool.width;
+        m_pool_height = m_direct_pool.height;
         if (m_diagnostics) {
             std::fprintf(stderr,
                          "VideoWallpaper diagnostics: direct pool active generation=%llu "
@@ -976,7 +988,18 @@ private:
         const char* hardware_interop;
         switch (m_gpu_vendor_id) {
         case kIntelVendorId:
+            /* The tested iHD stack corrupts its VA surface pool when mpv
+             * repeatedly exports decoded surfaces into EGL.  Keep VA hardware
+             * decode but copy completed NV12 frames before GL upload; the
+             * negotiated Intel tiled output below avoids the separate 4K60
+             * linear-render-target bottleneck that made this mode saturate the
+             * integrated GPU. */
+            hardware_decoder = "vaapi-copy";
+            hardware_interop = "no";
+            break;
         case kAmdVendorId:
+            /* AMD keeps decoded VA surfaces on the GPU and imports them into
+             * EGL directly; its existing zero-copy path is unchanged. */
             hardware_decoder = "vaapi";
             hardware_interop = "vaapi";
             break;
@@ -1003,10 +1026,10 @@ private:
             // reported by mpv instead of silently shifting sustained work to the CPU.
             {"hwdec-software-fallback", "no"},
             {"vaapi-device", vaapi_device.c_str()},
-            // The presentation FBO is already the output's physical pixel size. Bilinear
-            // scaling needs one GPU pass, while mpv's higher-quality defaults add passes
-            // without creating desktop-visible detail. These renderer options preserve the
-            // direct hardware-decoded texture path and deliberately avoid CPU readback.
+            // The presentation FBO already has the negotiated pool size. Bilinear scaling
+            // needs one GPU pass, while mpv's higher-quality defaults add passes without
+            // creating desktop-visible detail. These renderer options preserve the direct
+            // hardware-decoded texture path and deliberately avoid an additional readback.
             {"scale", "bilinear"},
             {"cscale", "bilinear"},
             {"dscale", "bilinear"},
@@ -1024,6 +1047,28 @@ private:
             if (mpv_set_option_string(m_mpv, option.name, option.value) < 0) {
                 m_last_error = std::string("cannot set libmpv option ") + option.name;
                 return false;
+            }
+        }
+        if (m_gpu_vendor_id == kIntelVendorId) {
+            /* Intel uses vaapi-copy because the tested iHD zero-copy export
+             * corrupts after a few dozen frames. The wallpaper output is SDR
+             * RGBA8, so an rgba16f intermediate plus 8-bit dithering only
+             * doubles integrated-memory traffic. mpv documents PBO uploads as
+             * driver-dependent, and they increase GPU load on the tested Intel
+             * iHD/Mesa stack, so the default direct upload path is retained.
+             * Other vendors keep their existing zero-copy options unchanged. */
+            const struct {
+                const char* name;
+                const char* value;
+            } intel_options[] = {
+                {"fbo-format", "rgba8"},
+                {"dither-depth", "no"},
+            };
+            for (const auto& option : intel_options) {
+                if (mpv_set_option_string(m_mpv, option.name, option.value) < 0) {
+                    m_last_error = std::string("cannot set Intel libmpv option ") + option.name;
+                    return false;
+                }
             }
         }
         if (mpv_initialize(m_mpv) < 0) {
@@ -1340,10 +1385,22 @@ private:
                       ? GBM_FORMAT_ABGR8888
                       : config.fourcc == kDrmXrgb8888 ? GBM_FORMAT_XRGB8888
                                                       : GBM_FORMAT_XBGR8888;
+        /* Qt Wayland uses the next integer buffer scale for fractional-scale
+         * Plasma surfaces: a 125% desktop can therefore expose a much larger
+         * scene-graph backing store than its logical wallpaper item. Intel's
+         * vaapi-copy path must not render that oversized private target; the
+         * protocol pool has independent dimensions and QSG already scales its
+         * texture node. AMD and NVIDIA retain their physical-size zero-copy
+         * path, where this bandwidth reduction is neither needed nor desired. */
+        const bool use_logical_pool = m_gpu_vendor_id == kIntelVendorId;
+        const std::uint32_t pool_width =
+            use_logical_pool ? config.logical_width : config.physical_width;
+        const std::uint32_t pool_height =
+            use_logical_pool ? config.logical_height : config.physical_height;
         m_direct_pool.generation = m_host->nextGeneration();
         m_direct_pool.buffer_count = kExportBufferCount;
-        m_direct_pool.width = config.physical_width;
-        m_direct_pool.height = config.physical_height;
+        m_direct_pool.width = pool_width;
+        m_direct_pool.height = pool_height;
         m_direct_pool.fourcc = config.fourcc;
         m_direct_pool.plane_count = 1U;
         m_direct_pool.modifier = config.modifier;
@@ -1355,13 +1412,13 @@ private:
              * linear storage explicitly for zero; non-zero negotiated modifiers
              * stay explicit so their tiling is preserved. */
             if (config.modifier == 0U) {
-                slot.bo = gbm_bo_create(m_gbm_device, config.physical_width,
-                                        config.physical_height, gbm_format,
+                slot.bo = gbm_bo_create(m_gbm_device, pool_width,
+                                        pool_height, gbm_format,
                                         GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
             } else {
                 const std::uint64_t requested_modifier = config.modifier;
                 slot.bo = gbm_bo_create_with_modifiers2(
-                    m_gbm_device, config.physical_width, config.physical_height, gbm_format,
+                    m_gbm_device, pool_width, pool_height, gbm_format,
                     &requested_modifier, 1U, GBM_BO_USE_RENDERING);
             }
             if (slot.bo == nullptr) {
@@ -1369,8 +1426,8 @@ private:
                 m_last_error = "GBM BO allocation failed for fourcc=" +
                                std::to_string(config.fourcc) +
                                " modifier=" + std::to_string(config.modifier) +
-                               " size=" + std::to_string(config.physical_width) + "x" +
-                               std::to_string(config.physical_height) +
+                               " size=" + std::to_string(pool_width) + "x" +
+                               std::to_string(pool_height) +
                                " errno=" + std::to_string(allocation_errno) + " (" +
                                std::strerror(allocation_errno) + ")";
                 destroyDirectPool();
@@ -1393,9 +1450,9 @@ private:
             std::array<EGLint, 20U> image_attrs{};
             std::uint32_t attr_count = 0U;
             image_attrs[attr_count++] = EGL_WIDTH;
-            image_attrs[attr_count++] = static_cast<EGLint>(config.physical_width);
+            image_attrs[attr_count++] = static_cast<EGLint>(pool_width);
             image_attrs[attr_count++] = EGL_HEIGHT;
-            image_attrs[attr_count++] = static_cast<EGLint>(config.physical_height);
+            image_attrs[attr_count++] = static_cast<EGLint>(pool_height);
             image_attrs[attr_count++] = EGL_LINUX_DRM_FOURCC_EXT;
             image_attrs[attr_count++] = static_cast<EGLint>(config.fourcc);
             image_attrs[attr_count++] = EGL_DMA_BUF_PLANE0_FD_EXT;
@@ -1448,7 +1505,7 @@ private:
             plane.fd = slot.dma_fd;
             plane.stride = slot.stride;
             plane.offset = 0U;
-            plane.size = static_cast<std::uint64_t>(slot.stride) * config.physical_height;
+            plane.size = static_cast<std::uint64_t>(slot.stride) * pool_height;
         }
         m_direct_pool_active = true;
         return true;
@@ -1473,14 +1530,21 @@ private:
 
     bool submitDirectFrame(const std::uint32_t index) {
         DirectSlot& slot = m_direct_slots[index];
-        glFlush();
         const EGLint sync_attrs[] = {EGL_NONE};
         const EGLSyncKHR sync = m_egl_create_sync(m_egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID,
                                                   sync_attrs);
         if (sync == EGL_NO_SYNC_KHR) return false;
+        /* Creating a native fence inserts it after the frame writes in the GL
+         * command stream.  Flush only after that insertion: a pre-fence flush
+         * cannot submit the fence and leaves Intel/Mesa consumers waiting on an
+         * acquire sync_file while the producer exhausts its three buffer slots. */
+        glFlush();
         const EGLint acquire_fd = m_egl_dup_native_fence(m_egl_display, sync);
-        m_egl_destroy_sync(m_egl_display, sync);
-        if (acquire_fd < 0) return false;
+        const EGLBoolean sync_destroyed = m_egl_destroy_sync(m_egl_display, sync);
+        if (sync_destroyed != EGL_TRUE || acquire_fd < 0) {
+            if (acquire_fd >= 0) ::close(acquire_fd);
+            return false;
+        }
         if (drmSyncobjCreate(m_drm_fd, 0U, &slot.release_handle) != 0) {
             ::close(acquire_fd);
             return false;
@@ -1582,6 +1646,19 @@ private:
         const int index = acquireDirectSlot();
         if (index < 0) {
             ++m_direct_slot_drops;
+            /* The protocol slots remain consumer-owned until their release
+             * syncobjs signal, but libmpv must still consume this queued frame.
+             * Skipping through the render API releases its VA-API surface;
+             * returning without rendering eventually exhausts Intel's decoder
+             * surface pool and turns subsequent frames into corrupted output. */
+            int skip_rendering = 1;
+            mpv_render_param skip_params[] = {
+                {MPV_RENDER_PARAM_SKIP_RENDERING, &skip_rendering},
+                {MPV_RENDER_PARAM_INVALID, nullptr},
+            };
+            if (mpv_render_context_render(m_render, skip_params) < 0) {
+                ++m_present_render_errors;
+            }
             return;
         }
         DirectSlot& slot = m_direct_slots[static_cast<std::size_t>(index)];
@@ -1655,13 +1732,22 @@ private:
              * returned modifier keeps the protocol tuple exact; it is not a
              * fallback for an unsupported layout.
              */
+            bool linear_supported = false;
+            /* Capability probing must use the same vendor-specific dimensions
+             * as the eventual pool; a modifier accepted at another size does
+             * not prove that the actual protocol allocation will succeed. */
+            const bool use_logical_pool = m_gpu_vendor_id == kIntelVendorId;
+            const std::uint32_t probe_width = use_logical_pool
+                ? negotiated_config.logical_width : negotiated_config.physical_width;
+            const std::uint32_t probe_height = use_logical_pool
+                ? negotiated_config.logical_height : negotiated_config.physical_height;
             gbm_bo* linear_probe = gbm_bo_create(
-                m_gbm_device, negotiated_config.physical_width,
-                negotiated_config.physical_height, gbm_format,
+                m_gbm_device, probe_width, probe_height, gbm_format,
                 GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
             if (linear_probe != nullptr) {
                 const std::uint64_t actual_modifier = gbm_bo_get_modifier(linear_probe);
-                if (actual_modifier == 0U) {
+                linear_supported = actual_modifier == 0U;
+                if (linear_supported && m_gpu_vendor_id != kIntelVendorId) {
                     render_formats.push_back({fourcc, 1U, 0U});
                 }
                 gbm_bo_destroy(linear_probe);
@@ -1686,8 +1772,8 @@ private:
                 }
                 const std::uint64_t requested_modifier = modifier.drmFormatModifier;
                 gbm_bo* probe = gbm_bo_create_with_modifiers2(
-                    m_gbm_device, negotiated_config.physical_width,
-                    negotiated_config.physical_height, gbm_format, &requested_modifier, 1U,
+                    m_gbm_device, probe_width, probe_height, gbm_format,
+                    &requested_modifier, 1U,
                     GBM_BO_USE_RENDERING);
                 if (probe == nullptr || gbm_bo_get_modifier(probe) != requested_modifier) {
                     if (probe != nullptr) gbm_bo_destroy(probe);
@@ -1695,6 +1781,15 @@ private:
                 }
                 gbm_bo_destroy(probe);
                 render_formats.push_back({fourcc, 1U, requested_modifier});
+            }
+            /* On Intel, a 4K60 render target backed by explicit linear memory
+             * saturates the integrated GPU and can starve the concurrent VA
+             * decoder. Prefer an exact tiled intersection when EGL advertises
+             * one, while retaining linear as the final protocol candidate for
+             * displays that expose no texture-compatible tiled modifier.
+             * Other vendors retain their established linear-first ordering. */
+            if (linear_supported && m_gpu_vendor_id == kIntelVendorId) {
+                render_formats.push_back({fourcc, 1U, 0U});
             }
         };
         append_render_formats(kDrmXrgb8888, VK_FORMAT_B8G8R8A8_UNORM, GBM_FORMAT_XRGB8888);

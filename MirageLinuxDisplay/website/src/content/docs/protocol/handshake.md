@@ -110,6 +110,8 @@ broker 按 `stable_id` 管理输出。首个显示消费者注册时触发 `on_o
 ```text
 u32 physical_width
 u32 physical_height
+u32 logical_width
+u32 logical_height
 u32 refresh_mhz
 u32 transform
 u32 fourcc

@@ -376,6 +376,8 @@ static int encode_output_config(const md_producer_config_t* config, uint8_t* pay
     md_writer_init(&writer, payload, capacity);
     if (md_write_u32(&writer, config->physical_width) != 0 ||
         md_write_u32(&writer, config->physical_height) != 0 ||
+        md_write_u32(&writer, config->logical_width) != 0 ||
+        md_write_u32(&writer, config->logical_height) != 0 ||
         md_write_u32(&writer, config->refresh_mhz) != 0 ||
         md_write_u32(&writer, static_cast<uint32_t>(config->transform)) != 0 ||
         md_write_u32(&writer, config->fourcc) != 0 ||
@@ -652,6 +654,8 @@ static int send_output_config(md_broker_route_t* route) {
     md_producer_config_t config = {
         .physical_width = route->display->output.physical_width,
         .physical_height = route->display->output.physical_height,
+        .logical_width = route->display->output.logical_width,
+        .logical_height = route->display->output.logical_height,
         .refresh_mhz = route->display->output.refresh_mhz,
         .transform = route->display->output.transform,
         .fourcc = route->selected_format.fourcc,

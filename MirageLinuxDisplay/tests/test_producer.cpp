@@ -65,7 +65,7 @@ static md_packet_t receive_opcode(int fd, uint16_t opcode) {
 static void send_packet(int fd, uint16_t opcode, uint32_t serial,
                         const uint8_t* data, size_t size) {
     /* HELLO/WELCOME are sent before version selection; every following mock
-     * broker packet must carry the negotiated v1.1 minor. */
+     * broker packet must carry the current negotiated minor. */
     const uint16_t minor = opcode == MD_OP_WELCOME ? 0U : MIRAGE_DISPLAY_PROTOCOL_MINOR;
     assert(md_codec_send(fd, minor, opcode, 0, serial, data, size, NULL, 0) == 0);
 }
@@ -88,6 +88,8 @@ static void send_config(int fd) {
     md_writer_t writer; md_writer_init(&writer, payload, sizeof(payload));
     assert(md_write_u32(&writer, 1920) == 0);
     assert(md_write_u32(&writer, 1080) == 0);
+    assert(md_write_u32(&writer, 1536) == 0);
+    assert(md_write_u32(&writer, 864) == 0);
     assert(md_write_u32(&writer, 60000) == 0);
     assert(md_write_u32(&writer, 0) == 0);
     assert(md_write_u32(&writer, UINT32_C(0x34325258)) == 0);
@@ -192,6 +194,8 @@ static void on_config(void* opaque, const md_producer_config_t* config) {
     observer_t* const observer = static_cast<observer_t*>(opaque);
     ++observer->configs;
     assert(config->physical_width == 1920);
+    assert(config->logical_width == 1536);
+    assert(config->logical_height == 864);
     assert(config->fourcc == UINT32_C(0x34325258));
 }
 static void on_retire(void* opaque, uint64_t generation) {

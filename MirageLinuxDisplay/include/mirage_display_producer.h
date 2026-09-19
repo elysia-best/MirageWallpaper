@@ -36,6 +36,11 @@ typedef struct md_producer_info {
 typedef struct md_producer_config {
     uint32_t physical_width;
     uint32_t physical_height;
+    /* Logical wallpaper item dimensions supplied by the display consumer.
+     * Producers may use these as their buffer dimensions when the desktop's
+     * private scene-graph backing store is intentionally oversampled. */
+    uint32_t logical_width;
+    uint32_t logical_height;
     uint32_t refresh_mhz;
     md_transform_t transform;
     uint32_t fourcc;

@@ -849,6 +849,8 @@ std::int32_t md_proto_decode_output_config(const std::uint8_t* const data,
     std::uint32_t transform = 0U;
     std::int32_t result = md_read_u32(&reader, &config->physical_width);
     if (result == 0) result = md_read_u32(&reader, &config->physical_height);
+    if (result == 0) result = md_read_u32(&reader, &config->logical_width);
+    if (result == 0) result = md_read_u32(&reader, &config->logical_height);
     if (result == 0) result = md_read_u32(&reader, &config->refresh_mhz);
     if (result == 0) result = md_read_u32(&reader, &transform);
     if (result == 0) result = md_read_u32(&reader, &config->fourcc);
@@ -862,6 +864,7 @@ std::int32_t md_proto_decode_output_config(const std::uint8_t* const data,
     if (result == 0) result = md_read_bytes(&reader, config->target_driver_uuid,
                                             sizeof(config->target_driver_uuid));
     if (result != 0 || config->physical_width == 0U || config->physical_height == 0U ||
+        config->logical_width == 0U || config->logical_height == 0U ||
         transform > MD_TRANSFORM_FLIPPED_270 || config->plane_count == 0U ||
         config->plane_count > MIRAGE_DISPLAY_MAX_PLANES ||
         (config->target_gpu_flags & MD_TARGET_GPU_RENDER_NODE_VALID) == 0U ||

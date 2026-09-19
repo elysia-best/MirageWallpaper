@@ -278,6 +278,10 @@ private:
     std::atomic_bool m_rendererReady { false };
     md_egl_importer_t* m_importer = nullptr;
     GlEglImageTargetTexture2D m_imageTargetTexture = nullptr;
+    /* Exact non-external EGL DMA-BUF import tuples advertised to producers.
+     * The render thread populates the list before the main thread connects, and
+     * no connection survives renderer invalidation, so later reads are stable. */
+    QVector<md_format_cap_t> m_eglFormats;
     /* A GLX scene graph has no Qt-owned EGL display.  The item initializes and
      * terminates this display itself solely to create DMA-BUF EGLImages; a
      * non-null value also selects the GLX-safe synchronization path. */

@@ -555,6 +555,66 @@ bool MirageDisplayItem::initializeOpenGLRenderer() {
     m_drmRenderMajor = static_cast<uint32_t>(major(nodeStat.st_rdev));
     m_drmRenderMinor = static_cast<uint32_t>(minor(nodeStat.st_rdev));
 
+    /* EGL import is not restricted to linear DMA-BUFs.  Advertising only
+     * modifier zero forced a 4096x2304@60 video producer to render every frame
+     * into uncached linear storage on Intel.  Enumerate the exact RGB layouts
+     * that this EGL display can sample as ordinary GL_TEXTURE_2D images;
+     * external-only modifiers are excluded because QSGOpenGLTexture cannot
+     * represent GL_TEXTURE_EXTERNAL_OES. */
+    const auto queryDmaBufModifiers =
+        std::bit_cast<PFNEGLQUERYDMABUFMODIFIERSEXTPROC>(
+            eglGetProcAddress("eglQueryDmaBufModifiersEXT"));
+    if (queryDmaBufModifiers == nullptr) {
+        return failInitialization(
+            QStringLiteral("EGL cannot enumerate DMA-BUF modifiers"));
+    }
+    QVector<md_format_cap_t> eglFormats;
+    const std::array<uint32_t, 4U> fourccs {
+        DrmFormatXrgb8888,
+        DrmFormatArgb8888,
+        DrmFormatXbgr8888,
+        DrmFormatAbgr8888,
+    };
+    for (const uint32_t fourccValue : fourccs) {
+        EGLint modifierCount = 0;
+        if (queryDmaBufModifiers(eglDisplay, static_cast<EGLint>(fourccValue), 0,
+                                nullptr, nullptr, &modifierCount) != EGL_TRUE ||
+            modifierCount < 0) {
+            return failInitialization(
+                QStringLiteral("EGL DMA-BUF modifier enumeration failed"));
+        }
+        if (modifierCount == 0) continue;
+        QVector<EGLuint64KHR> modifiers(static_cast<qsizetype>(modifierCount));
+        QVector<EGLBoolean> externalOnly(static_cast<qsizetype>(modifierCount));
+        EGLint writtenCount = 0;
+        if (queryDmaBufModifiers(eglDisplay, static_cast<EGLint>(fourccValue),
+                                modifierCount, modifiers.data(), externalOnly.data(),
+                                &writtenCount) != EGL_TRUE ||
+            writtenCount < 0 || writtenCount > modifierCount) {
+            return failInitialization(
+                QStringLiteral("EGL DMA-BUF modifier enumeration failed"));
+        }
+        for (EGLint index = 0; index < writtenCount; ++index) {
+            const qsizetype vectorIndex = static_cast<qsizetype>(index);
+            if (externalOnly[vectorIndex] == EGL_FALSE) {
+                eglFormats.append({fourccValue, 1U, modifiers[vectorIndex]});
+            }
+        }
+    }
+    if (eglFormats.isEmpty()) {
+        return failInitialization(
+            QStringLiteral("EGL exposes no texture-compatible RGB DMA-BUF modifiers"));
+    }
+    m_eglFormats = std::move(eglFormats);
+    if (m_glDiagnostics) {
+        qInfo() << "[KDE wallpaper] EGL DMA-BUF import candidates="
+                << m_eglFormats.size();
+        for (const md_format_cap_t& format : m_eglFormats) {
+            qInfo() << "[KDE wallpaper] EGL candidate fourcc=" << format.fourcc
+                    << "modifier=" << Qt::hex << format.modifier << Qt::dec;
+        }
+    }
+
     md_egl_context_t importerContext {
         .display = eglDisplay,
     };
@@ -776,6 +836,7 @@ void MirageDisplayItem::invalidateRenderer() {
     md_egl_importer_free(m_importer);
     m_importer = nullptr;
     m_imageTargetTexture = nullptr;
+    m_eglFormats.clear();
     if (m_glxEglDisplay != EGL_NO_DISPLAY) {
         if (eglTerminate(m_glxEglDisplay) != EGL_TRUE) {
             qWarning() << "[KDE wallpaper] Cannot terminate GLX EGL display";
@@ -1119,27 +1180,16 @@ void MirageDisplayItem::startConnection() {
     ++m_reconnectAttempts;
     emit connectionDiagnosticsChanged();
 
-    const md_format_cap_t eglFormats[] {
-        {.fourcc = DrmFormatXrgb8888, .plane_count = 1, .modifier = 0},
-        {.fourcc = DrmFormatArgb8888, .plane_count = 1, .modifier = 0},
-        {.fourcc = DrmFormatXbgr8888, .plane_count = 1, .modifier = 0},
-        {.fourcc = DrmFormatAbgr8888, .plane_count = 1, .modifier = 0},
-    };
-#ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
-    const md_format_cap_t* formats = eglFormats;
-    uint32_t formatCount = static_cast<uint32_t>(std::size(eglFormats));
+    const md_format_cap_t* formats = m_eglFormats.constData();
+    uint32_t formatCount = static_cast<uint32_t>(m_eglFormats.size());
     uint64_t featureBits = MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_POINTER_AXIS |
-                           MD_FEATURE_WINDOW_STATE | MD_FEATURE_TARGET_GPU_BINDING;
+                           MD_FEATURE_WINDOW_STATE | MD_FEATURE_TARGET_GPU_BINDING |
+                           MD_FEATURE_DRM_MODIFIERS;
+#ifdef MIRAGE_DISPLAY_QML_WITH_VULKAN
     if (m_rendererBackend.load() == BackendVulkan && !m_vkFormats.isEmpty()) {
         formats = m_vkFormats.constData();
         formatCount = static_cast<uint32_t>(m_vkFormats.size());
-        featureBits |= MD_FEATURE_DRM_MODIFIERS;
     }
-#else
-    const md_format_cap_t* formats = eglFormats;
-    const uint32_t formatCount = static_cast<uint32_t>(std::size(eglFormats));
-    const uint64_t featureBits = MD_FEATURE_EXPLICIT_SYNC | MD_FEATURE_POINTER_AXIS |
-                                 MD_FEATURE_WINDOW_STATE | MD_FEATURE_TARGET_GPU_BINDING;
 #endif
     md_consumer_caps_t capabilities {
         .features = featureBits,

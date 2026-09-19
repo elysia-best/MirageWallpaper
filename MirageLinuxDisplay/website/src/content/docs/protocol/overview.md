@@ -1,9 +1,9 @@
 ---
 title: 协议概览
-description: mirage-display-v1.2 的传输、报文头、基本编码、角色与特性位。
+description: mirage-display-v1.3 的传输、报文头、基本编码、角色与特性位。
 ---
 
-状态：v1.2 已冻结。`protocol/mirage_display_v1.xml` 是权威定义，本文档是它的可读形式。broker 与适配器必须精确使用 v1.2；v1.1 端点会被拒绝。
+状态：v1.3 已冻结。`protocol/mirage_display_v1.xml` 是权威定义，本文档是它的可读形式。broker 与适配器必须精确使用 v1.3；旧次版本端点会被拒绝。
 
 ## 传输
 
@@ -71,8 +71,8 @@ broker 是这两种角色的服务端。
 | 5 | color metadata | 保留给后续次版本 |
 | 6 | target GPU binding | broker 在 `OUTPUT_CONFIG` 中下发 consumer 的目标 GPU |
 
-`explicit sync` 是版本 1 的必选特性；其余特性按交集协商。v1.2 端点必须在
-`HELLO` 中把 `min_minor` 与 `max_minor` 都设为 `2`。当前实现不提供 v1.1
+`explicit sync` 是版本 1 的必选特性；其余特性按交集协商。v1.3 端点必须在
+`HELLO` 中把 `min_minor` 与 `max_minor` 都设为 `3`。当前实现不提供旧次版本
 降级连接。
 
 ## 相关

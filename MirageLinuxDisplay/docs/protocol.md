@@ -316,7 +316,7 @@ broker 按 route 缓存最近一次 `WINDOW_STATE`，转发为 producer 侧
 种类、DRM 渲染节点、设备与驱动 UUID，以及其支持的 `(fourcc, plane_count,
 modifier)` 元组。
 
-`PRODUCER_ACCEPTED` 之后，broker 发送 `OUTPUT_CONFIG`（选定范围、格式以及
+`PRODUCER_ACCEPTED` 之后，broker 发送 `OUTPUT_CONFIG`（物理与逻辑尺寸、选定格式以及
 consumer 的 DRM render node；若 consumer 提供则还包括设备/驱动 UUID）。生产者
 必须先按该身份创建 Vulkan/EGL/VA-API 资源，再发送 `PRODUCER_GPU_BOUND` 确认
 实际选中的节点与 UUID。broker 仅在确认相符后接受 `OFFER_BUFFERS` 和帧，故不会
