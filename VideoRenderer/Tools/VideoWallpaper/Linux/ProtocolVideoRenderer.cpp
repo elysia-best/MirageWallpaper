@@ -59,6 +59,13 @@ constexpr std::uint32_t kDrmArgb8888 = DrmFourcc('A', 'R', '2', '4');
 
 constexpr std::uint32_t kExportBufferCount = 3;
 
+// Vulkan reports the PCI vendor of the render node that mirage-display selected.
+// Keep libmpv's decoder and GL interop on that same, already-validated GPU instead
+// of letting its independent "auto" selection initialize unrelated drivers.
+constexpr std::uint32_t kAmdVendorId = 0x1002U;
+constexpr std::uint32_t kNvidiaVendorId = 0x10deU;
+constexpr std::uint32_t kIntelVendorId = 0x8086U;
+
 const char* FillModeName(VRVideoFillMode mode) {
     switch (mode) {
     case VRVideoFillModeContain: return "contain";
@@ -643,6 +650,7 @@ private:
             if (graphics_family == UINT32_MAX) continue;
             m_physical_device = device;
             m_queue_family = graphics_family;
+            m_gpu_vendor_id = properties.properties.vendorID;
             m_drm_major = static_cast<std::uint32_t>(drm.renderMajor);
             m_drm_minor = static_cast<std::uint32_t>(drm.renderMinor);
             std::memcpy(m_device_uuid, id_props.deviceUUID, sizeof(m_device_uuid));
@@ -949,9 +957,38 @@ private:
             m_last_error = "cannot create libmpv handle";
             return false;
         }
+        if (m_diagnostics) {
+            // libmpv does not forward its terminal diagnostics to a client by
+            // default. Request debug messages so VA-API initialization,
+            // hardware-frame negotiation, and EGL interop failures reach the
+            // renderer stderr stream consumed by MirageLogService.
+            const int log_result = mpv_request_log_messages(m_mpv, "debug");
+            if (log_result < 0) {
+                m_last_error = "cannot enable libmpv debug logging";
+                return false;
+            }
+        }
         // 行为可预测：不读用户 mpv.conf、不加载脚本；必须显式 vo=libmpv，
-        // 否则 mpv 会打开默认 VO 窗口。hwdec=auto：GL render 后端下允许 GPU
-        // 解码帧直接作为 GL 纹理（免 CPU 回拷），mpv 内建三卡决策。
+        // 否则 mpv 会打开默认 VO 窗口。解码器与 GL interop 必须按 Vulkan 已
+        // 验证的目标 GPU 明确选择；mpv 的 auto 会在 Intel 上加载 CUDA interop，
+        // 随后可能静默回退软解，破坏同一 render node 上的零拷贝路径。
+        const char* hardware_decoder;
+        const char* hardware_interop;
+        switch (m_gpu_vendor_id) {
+        case kIntelVendorId:
+        case kAmdVendorId:
+            hardware_decoder = "vaapi";
+            hardware_interop = "vaapi";
+            break;
+        case kNvidiaVendorId:
+            hardware_decoder = "nvdec";
+            hardware_interop = "cuda";
+            break;
+        default:
+            m_last_error = "target GPU vendor has no configured hardware decoder";
+            return false;
+        }
+        m_expected_hwdec = hardware_decoder;
         const std::string vaapi_device = "/dev/dri/renderD" + std::to_string(m_drm_minor);
         const struct {
             const char* name;
@@ -960,7 +997,11 @@ private:
             {"config", "no"},
             {"load-scripts", "no"},
             {"vo", "libmpv"},
-            {"hwdec", "auto"},
+            {"hwdec", hardware_decoder},
+            {"gpu-hwdec-interop", hardware_interop},
+            // Wallpaper rendering requires GPU decode. A decoder failure must be
+            // reported by mpv instead of silently shifting sustained work to the CPU.
+            {"hwdec-software-fallback", "no"},
             {"vaapi-device", vaapi_device.c_str()},
             // The presentation FBO is already the output's physical pixel size. Bilinear
             // scaling needs one GPU pass, while mpv's higher-quality defaults add passes
@@ -1000,9 +1041,22 @@ private:
             .get_proc_address = getGlProcAddress,
             .get_proc_address_ctx = nullptr,
         };
+        // The libmpv OpenGL API cannot derive a VA display from a surfaceless
+        // EGL device context. Pass the already-opened target render node via
+        // the documented DRM display parameter so VA-API interop initializes
+        // on the same GPU as Vulkan, GBM, and EGL. fd/crtc/connector use the
+        // API-defined invalid sentinel because mpv does not own scanout here.
+        mpv_opengl_drm_params_v2 drm_params = {
+            .fd = -1,
+            .crtc_id = -1,
+            .connector_id = -1,
+            .atomic_request_ptr = nullptr,
+            .render_fd = m_drm_fd,
+        };
         mpv_render_param render_params[] = {
             {MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(api)},
             {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_params},
+            {MPV_RENDER_PARAM_DRM_DISPLAY_V2, &drm_params},
             {MPV_RENDER_PARAM_INVALID, nullptr},
         };
         if (mpv_render_context_create(&m_render, m_mpv, render_params) < 0) {
@@ -1035,6 +1089,13 @@ private:
                 return false;
             }
             mpv_event* event = mpv_wait_event(m_mpv, 0.05);
+            // Hardware decoder and GL interop initialization happens before
+            // FILE_LOADED. Forward those diagnostics here; otherwise this
+            // wait loop consumes and discards the only useful VA-API error.
+            if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
+                handleMpvEvent(event);
+                continue;
+            }
             if (event->event_id == MPV_EVENT_FILE_LOADED) return true;
             if (event->event_id == MPV_EVENT_END_FILE) {
                 const auto* end = static_cast<const mpv_event_end_file*>(event->data);
@@ -1052,6 +1113,16 @@ private:
 
     void handleMpvEvent(const mpv_event* event) {
         switch (event->event_id) {
+        case MPV_EVENT_LOG_MESSAGE: {
+            const auto* message = static_cast<const mpv_event_log_message*>(event->data);
+            if (message != nullptr) {
+                std::fprintf(stderr, "VideoWallpaper mpv[%s][%s]: %s",
+                             message->prefix != nullptr ? message->prefix : "?",
+                             message->level != nullptr ? message->level : "?",
+                             message->text != nullptr ? message->text : "\n");
+            }
+            break;
+        }
         case MPV_EVENT_END_FILE: {
             // loop-file=inf 下 EOF 永不出现（无缝循环，不产生 END_FILE）；
             // 此处仅处理加载错误。
@@ -1470,6 +1541,30 @@ private:
             m_video_src_h = static_cast<int>(src_h);
         }
 
+        if (!m_hwdec_validated) {
+            // MPV_RENDER_UPDATE_FRAME also covers an initial blank redraw, so
+            // hwdec-current is only authoritative after video-params confirms
+            // that mpv has loaded the video decoder. Rejecting "no" at that
+            // point prevents a real initialization failure from silently
+            // becoming a CPU decoding session.
+            char* current_hwdec = mpv_get_property_string(m_mpv, "hwdec-current");
+            if (current_hwdec == nullptr ||
+                std::strcmp(current_hwdec, m_expected_hwdec) != 0) {
+                const QString actual = current_hwdec != nullptr
+                    ? QString::fromUtf8(current_hwdec)
+                    : QStringLiteral("unavailable");
+                mpv_free(current_hwdec);
+                fail(QStringLiteral("hardware decoder %1 was required, but libmpv selected %2")
+                         .arg(QString::fromUtf8(m_expected_hwdec), actual));
+                return;
+            }
+            std::fprintf(stderr,
+                         "VideoWallpaper: hardware decoder active: %s on renderD%u\n",
+                         current_hwdec, m_drm_minor);
+            mpv_free(current_hwdec);
+            m_hwdec_validated = true;
+        }
+
         const VRVideoFillMode fill_mode = m_fill_mode.load();
         if (!m_fill_mode_applied || m_applied_fill_mode != fill_mode) {
             int keep_aspect = fill_mode == VRVideoFillModeStretch ? 0 : 1;
@@ -1660,14 +1755,21 @@ private:
             if (now - last_report >= std::chrono::seconds(2)) {
                 last_report = now;
                 char* hwdec = mpv_get_property_string(m_mpv, "hwdec-current");
+                char* video_codec = mpv_get_property_string(m_mpv, "video-codec");
+                char* video_format = mpv_get_property_string(m_mpv, "video-format");
+                char* video_params = mpv_get_property_string(m_mpv, "video-dec-params");
                 if (m_diagnostics) {
                     std::fprintf(stderr,
-                                 "VideoWallpaper diagnostics: hwdec-current=%s pool=%s "
+                                 "VideoWallpaper diagnostics: hwdec-current=%s "
+                                 "video-codec=%s video-format=%s video-dec-params=%s pool=%s "
                                  "fill=%s "
                                  "updates=%llu frame_updates=%llu presents=%llu "
                                  "no_pool=%llu no_params=%llu slot_drops=%llu "
                                  "render_errors=%llu submit_errors=%llu direct_frames=%llu\n",
                                  hwdec != nullptr ? hwdec : "?",
+                                 video_codec != nullptr ? video_codec : "?",
+                                 video_format != nullptr ? video_format : "?",
+                                 video_params != nullptr ? video_params : "?",
                                  m_direct_pool_active ? "active" : "inactive",
                                  m_fill_mode_applied ? FillModeName(m_applied_fill_mode) : "pending",
                                  static_cast<unsigned long long>(m_update_polls),
@@ -1681,6 +1783,9 @@ private:
                                  static_cast<unsigned long long>(m_direct_frames));
                 }
                 mpv_free(hwdec);
+                mpv_free(video_codec);
+                mpv_free(video_format);
+                mpv_free(video_params);
             }
         }
         cleanupMpv();
@@ -1706,6 +1811,9 @@ private:
     VkDevice m_device { VK_NULL_HANDLE };
     VkQueue m_queue { VK_NULL_HANDLE };
     std::uint32_t m_queue_family { 0 };
+    // PCI vendor for the exact Vulkan/render-node device selected in createVulkan().
+    // The render thread uses it to bind libmpv to that device's native decode API.
+    std::uint32_t m_gpu_vendor_id;
     std::uint32_t m_drm_major { 0 };
     std::uint32_t m_drm_minor { 0 };
     std::uint8_t m_device_uuid[16] { 0 };
@@ -1770,6 +1878,10 @@ private:
     mpv_handle* m_mpv { nullptr };
     mpv_render_context* m_render { nullptr };
     std::deque<std::function<void()>> m_mpv_commands;
+    // Set from the selected Vulkan GPU before mpv initialization and checked
+    // against hwdec-current before any decoded frame reaches the desktop.
+    const char* m_expected_hwdec;
+    bool m_hwdec_validated { false };
 
     // 解码器输出尺寸（video-params/w,h 实测为源尺寸，不受渲染路径影响），
     // 用于计算 fit 目标尺寸。
