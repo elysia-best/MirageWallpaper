@@ -31,6 +31,12 @@ static void test_fourcc_mapping(void) {
     assert(format == VK_FORMAT_R8G8B8A8_UNORM);
     assert(mapping.a == VK_COMPONENT_SWIZZLE_IDENTITY);
 
+    // Qt's native Vulkan texture wrapper receives no VkFormat, so the display
+    // consumer advertises this opaque RGBA layout rather than the BGR layouts.
+    assert(md_vk_fourcc_to_format(DRM_FORMAT('X', 'B', '2', '4'), &format, &mapping) == MD_OK);
+    assert(format == VK_FORMAT_R8G8B8A8_UNORM);
+    assert(mapping.a == VK_COMPONENT_SWIZZLE_ONE);
+
     assert(md_vk_fourcc_to_format(DRM_FORMAT('N', 'V', '1', '2'), &format, &mapping) == MD_OK);
     assert(format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM);
     assert(mapping.r == VK_COMPONENT_SWIZZLE_IDENTITY);
@@ -160,19 +166,20 @@ static void test_real_device_format_queries(void) {
         DRM_FORMAT('X', 'R', '2', '4'),
         DRM_FORMAT('N', 'V', '1', '2'),
     };
-    for (uint32_t device = 0; device < device_count; ++device) {
+    for (uint32_t physical_device_index = 0; physical_device_index < device_count;
+         ++physical_device_index) {
         for (size_t format_index = 0; format_index < sizeof(formats) / sizeof(formats[0]);
              ++format_index) {
             uint32_t count = 0;
-            assert(md_vk_query_format_caps(devices[device], formats[format_index],
-                                           VK_FORMAT_FEATURE_TRANSFER_SRC_BIT,
-                                           NULL, 0, &count) == MD_OK);
+            assert(md_vk_query_format_caps(devices[physical_device_index], formats[format_index],
+                                            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT,
+                                            NULL, 0, &count) == MD_OK);
             if (count == 0) continue;
             std::vector<md_format_cap_t> caps(count);
             uint32_t written = count;
-            assert(md_vk_query_format_caps(devices[device], formats[format_index],
-                                           VK_FORMAT_FEATURE_TRANSFER_SRC_BIT,
-                                           caps.data(), count, &written) == MD_OK);
+            assert(md_vk_query_format_caps(devices[physical_device_index], formats[format_index],
+                                            VK_FORMAT_FEATURE_TRANSFER_SRC_BIT,
+                                            caps.data(), count, &written) == MD_OK);
             assert(written == count);
             for (uint32_t i = 0; i < written; ++i) {
                 assert(caps[i].fourcc == formats[format_index]);
@@ -206,18 +213,21 @@ static void test_real_device_format_queries(void) {
             .ppEnabledExtensionNames = NULL,
             .pEnabledFeatures = NULL,
         };
-        VkDevice device = VK_NULL_HANDLE;
-        if (vkCreateDevice(devices[device], &device_info, NULL, &device) != VK_SUCCESS) {
+        // The import probe needs both the selected physical handle and its logical device.
+        VkDevice logical_device;
+        if (vkCreateDevice(devices[physical_device_index], &device_info, NULL,
+                           &logical_device) != VK_SUCCESS) {
             continue;
         }
         md_vk_dma_buf_import_state_t probe_state = MD_VK_DMA_BUF_IMPORT_UNAVAILABLE;
         char missing_extensions[256] = {};
-        assert(md_vk_query_dma_buf_import_support(devices[device], device, &probe_state,
+        assert(md_vk_query_dma_buf_import_support(devices[physical_device_index], logical_device,
+                                                  &probe_state,
                                                   missing_extensions,
                                                   sizeof(missing_extensions)) == MD_OK);
         assert(missing_extensions[0] == '\0' ||
                probe_state == MD_VK_DMA_BUF_IMPORT_DRIVER_UNSUPPORTED);
-        vkDestroyDevice(device, NULL);
+        vkDestroyDevice(logical_device, NULL);
     }
 
     vkDestroyInstance(instance, NULL);

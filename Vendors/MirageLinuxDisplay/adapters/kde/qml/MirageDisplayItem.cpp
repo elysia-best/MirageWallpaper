@@ -715,9 +715,15 @@ bool MirageDisplayItem::initializeVulkanRenderer() {
         m_drmRenderMinor = static_cast<uint32_t>(drmProperties.renderMinor);
     }
     m_vkFormats.clear();
+    /* QSGVulkanTexture::fromNative() accepts an image and layout but no VkFormat.
+     * Qt's native-texture contract therefore requires the protocol image to use
+     * RGBA component order. XBGR/ABGR map to VK_FORMAT_R8G8B8A8_UNORM, whereas
+     * XRGB/ARGB map to B8G8R8A8 and would make red and blue appear exchanged.
+     * Advertising only the two representable wire formats lets the broker make
+     * an exact format choice without a shader swizzle or CPU conversion pass. */
     const uint32_t fourccs[] = {
-        DrmFormatXrgb8888, DrmFormatArgb8888,
-        DrmFormatXbgr8888, DrmFormatAbgr8888,
+        DrmFormatXbgr8888,
+        DrmFormatAbgr8888,
     };
     for (uint32_t fourccValue : fourccs) {
         uint32_t count = 0;

@@ -962,6 +962,16 @@ private:
             {"vo", "libmpv"},
             {"hwdec", "auto"},
             {"vaapi-device", vaapi_device.c_str()},
+            // The presentation FBO is already the output's physical pixel size. Bilinear
+            // scaling needs one GPU pass, while mpv's higher-quality defaults add passes
+            // without creating desktop-visible detail. These renderer options preserve the
+            // direct hardware-decoded texture path and deliberately avoid CPU readback.
+            {"scale", "bilinear"},
+            {"cscale", "bilinear"},
+            {"dscale", "bilinear"},
+            {"correct-downscaling", "no"},
+            {"linear-downscaling", "no"},
+            {"sigmoid-upscaling", "no"},
             {"ao", "pipewire,pulseaudio,alsa"},
             // 自动循环交由 mpv 内建 loop-file=inf（与 macOS AVPlayerLooper 的无缝
             // 循环对齐）：每圈循环产生 MPV_EVENT_PLAYBACK_RESTART，由 handleMpvEvent
