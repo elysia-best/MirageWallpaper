@@ -103,8 +103,8 @@ enum class DownloadPurpose {
 };
 
 // 下载状态（对齐 SteamService/WorkshopDownloader 的状态机）。
-// connecting/downloading → SteamService 正在下载；resolving/validating →
-// 已下载完成、正在校验展开；completed 时 outputPath 指向项目目录。
+// connecting/downloading → SteamService 正在下载；resolving → 已下载完成、
+// 正在校验展开；completed 时 outputPath 指向项目目录。
 enum class DownloadStateKind {
     Queued,
     Starting,

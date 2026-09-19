@@ -72,7 +72,10 @@ int main(int argc, char** argv) {
     QQmlApplicationEngine engine;
     FluentUI::registerTypes(&engine);
     engine.rootContext()->setContextProperty(QStringLiteral("mirage"), &controller);
-    const QUrl url(QStringLiteral("qrc:/MirageQt/Main.qml"));
+    // QTP0001 places the MirageQt module under Qt's canonical resource import
+    // prefix.  Loading this exact URL keeps the executable entry point aligned
+    // with the module resource layout instead of relying on a legacy prefix.
+    const QUrl url(QStringLiteral("qrc:/qt/qml/MirageQt/Main.qml"));
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated, &app,
                      [url](QObject* object, const QUrl& objectUrl) {
                          if (!object && objectUrl == url) QCoreApplication::exit(-1);

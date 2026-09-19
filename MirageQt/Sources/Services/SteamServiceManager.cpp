@@ -354,7 +354,7 @@ void SteamServiceManager::handleDownloadEvent(const QJsonObject& event) {
         result.kind = DownloadStateKind::Connecting;
     } else if (state == QLatin1String("downloading")) {
         result.kind = DownloadStateKind::Downloading;
-    } else if (state == QLatin1String("resolving") || state == QLatin1String("validating")) {
+    } else if (state == QLatin1String("resolving")) {
         result.kind = DownloadStateKind::Resolving;
     } else if (state == QLatin1String("completed")) {
         result.kind = DownloadStateKind::Completed;

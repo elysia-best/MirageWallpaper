@@ -2,27 +2,18 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
-import "../../MirageBridge.js" as MirageBridge
 
 ColumnLayout {
     id: root
     property string username: ""
     property string password: ""
     property string guardCode: ""
-    property string loginState: String(value("steamLoginState", "idle"))
-    property string loginMessage: String(value("steamLoginMessage", ""))
-    property string guardType: String(value("steamGuardType", ""))
-    property string qrChallengeUrl: String(value("steamQRCodeUrl", ""))
-    property bool sessionReusable: Boolean(value("steamSessionReusable", false))
+    property string loginState: mirage.steamLoginState
+    property string loginMessage: mirage.steamLoginMessage
+    property string guardType: mirage.steamGuardType
+    property string qrChallengeUrl: mirage.steamQRCodeUrl
+    property bool sessionReusable: mirage.steamSessionReusable
     spacing: 12
-
-    function value(name, fallback) {
-        return MirageBridge.value(mirage, name, fallback);
-    }
-
-    function invoke(name) {
-        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
-    }
 
     FluText {
         Layout.alignment: Qt.AlignHCenter
@@ -87,7 +78,7 @@ ColumnLayout {
             }
             FluFilledButton {
                 text: qsTr("使用已保存会话")
-                onClicked: root.invoke("useSavedSteamSession")
+                onClicked: mirage.useSavedSteamSession()
             }
         }
     }
@@ -103,7 +94,7 @@ ColumnLayout {
         FluFilledButton {
             Layout.fillWidth: true
             text: qsTr("使用 Steam 手机应用扫码登录")
-            onClicked: root.invoke("loginSteamQR")
+            onClicked: mirage.loginSteamQR()
         }
         FluText {
             Layout.alignment: Qt.AlignHCenter
@@ -128,7 +119,7 @@ ColumnLayout {
             Layout.fillWidth: true
             text: qsTr("登录")
             enabled: root.username.trim().length > 0 && root.password.length > 0
-            onClicked: root.invoke("loginSteam", root.username, root.password)
+            onClicked: mirage.loginSteam(root.username, root.password)
         }
     }
 
@@ -163,19 +154,19 @@ ColumnLayout {
             spacing: 8
             FluButton {
                 text: qsTr("刷新二维码")
-                onClicked: root.invoke("loginSteamQR")
+                onClicked: mirage.loginSteamQR()
             }
             FluButton {
                 text: qsTr("复制链接")
                 enabled: root.qrChallengeUrl.length > 0
                 onClicked: {
                     // 链接即挑战授权，复制后可在手机浏览器打开完成确认。
-                    root.invoke("copyTextToClipboard", root.qrChallengeUrl)
+                    mirage.copyTextToClipboard(root.qrChallengeUrl)
                 }
             }
             FluButton {
                 text: qsTr("取消")
-                onClicked: root.invoke("cancelSteamLogin")
+                onClicked: mirage.cancelSteamLogin()
             }
         }
     }
@@ -194,7 +185,7 @@ ColumnLayout {
         FluButton {
             Layout.alignment: Qt.AlignHCenter
             text: qsTr("取消登录")
-            onClicked: root.invoke("cancelSteamLogin")
+            onClicked: mirage.cancelSteamLogin()
         }
     }
 
@@ -226,12 +217,12 @@ ColumnLayout {
             Layout.fillWidth: true
             text: qsTr("验证")
             enabled: root.guardCode.trim().length > 0
-            onClicked: root.invoke("submitSteamGuardCode", root.guardCode)
+            onClicked: mirage.submitSteamGuardCode(root.guardCode)
         }
         FluButton {
             Layout.alignment: Qt.AlignHCenter
             text: qsTr("取消登录")
-            onClicked: root.invoke("cancelSteamLogin")
+            onClicked: mirage.cancelSteamLogin()
         }
     }
 
@@ -262,7 +253,7 @@ ColumnLayout {
         FluButton {
             Layout.alignment: Qt.AlignHCenter
             text: qsTr("取消登录")
-            onClicked: root.invoke("cancelSteamLogin")
+            onClicked: mirage.cancelSteamLogin()
         }
     }
 
@@ -294,7 +285,7 @@ ColumnLayout {
             }
             FluButton {
                 text: qsTr("退出登录")
-                onClicked: root.invoke("logoutSteam")
+                onClicked: mirage.logoutSteam()
             }
         }
     }

@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import FluentUI
 import "../../../GlobalComponents"
-import "../../../MirageBridge.js" as MirageBridge
 
 // 创意工坊卡片：标题、统计、类别和下载状态全部叠在正方形封面上。共享
 // WallpaperItemCard 负责裁剪与渐变，避免此处的领域信息破坏 macOS 卡片比例。
@@ -11,12 +10,14 @@ WallpaperItemCard {
 
     // 紧凑模式用于发现区的横向条，仍保持相同的正方形卡片协议。
     property bool compact: false
-    property string state: String(field("downloadState", ""))
-    property bool downloaded: Boolean(field("downloaded", false))
-    property bool active: Boolean(field("downloadActive", false))
-    property double progress: Number(field("downloadProgress", -1))
+    // itemData is a workshopItemMap() record, whose download fields use a
+    // fixed 0–100 percent protocol supplied by MirageController.
+    property string state: itemData.downloadState
+    property bool downloaded: itemData.downloaded
+    property bool active: itemData.downloadActive
+    property double progress: itemData.downloadProgress
     property var selectedItem: mirage.selectedWorkshopItem
-    property bool selected: String(field("id", "")) === String(root.selectedItem.id || "")
+    property bool selected: itemData.id === root.selectedItem.id
     implicitWidth: compact ? 164 : 194
     implicitHeight: implicitWidth
     width: implicitWidth
@@ -67,7 +68,7 @@ WallpaperItemCard {
     // 明亮和深色封面。统计字段来自 workshopItemMap 的既定协议。
     FluText {
         Layout.fillWidth: true
-        text: String(root.field("title", qsTr("未命名作品")))
+        text: root.itemData.title
         elide: Text.ElideRight
         font: FluTextStyle.BodyStrong
         color: "white"
@@ -88,7 +89,7 @@ WallpaperItemCard {
                 iconColor: Qt.rgba(1, 1, 1, 0.84)
             }
             FluText {
-                text: String(root.field("subscriptions", ""))
+                text: root.itemData.subscriptions
                 elide: Text.ElideRight
                 color: Qt.rgba(1, 1, 1, 0.92)
                 font.pixelSize: 10
@@ -99,7 +100,7 @@ WallpaperItemCard {
                 iconColor: Qt.rgba(1, 1, 1, 0.84)
             }
             FluText {
-                text: String(root.field("views", ""))
+                text: root.itemData.views
                 elide: Text.ElideRight
                 color: Qt.rgba(1, 1, 1, 0.92)
                 font.pixelSize: 10
@@ -117,7 +118,7 @@ WallpaperItemCard {
                 id: typeText
                 anchors.centerIn: parent
                 width: parent.width - 10
-                text: String(root.field("typeLabel", ""))
+                text: root.itemData.typeLabel
                 elide: Text.ElideRight
                 horizontalAlignment: Text.AlignHCenter
                 color: "white"
@@ -132,32 +133,29 @@ WallpaperItemCard {
         indeterminate: root.progress < 0
         from: 0
         to: 1
-        value: root.progressValue()
+        value: root.progress / 100
     }
 
     // 左键选中、双击下载；右键没有创意工坊菜单，因此保持无副作用。
     onClicked: function(mouse) {
         if (mouse.button !== Qt.LeftButton)
             return;
-        root.invoke("selectWorkshopItem", String(root.field("id", "")));
+        mirage.selectWorkshopItem(root.itemData.id);
     }
     onDoubleClicked: function(mouse) {
         if (mouse.button !== Qt.LeftButton)
             return;
-        root.invoke("downloadWorkshopItem", String(root.field("id", "")));
-    }
-
-    function progressValue() {
-        return MirageBridge.progressValue(root.progress);
+        mirage.downloadWorkshopItem(root.itemData.id);
     }
 
     function statusLabel() {
         if (root.state === "queued") return qsTr("排队中");
         if (root.state === "starting") return qsTr("启动中");
         if (root.state === "downloading") {
-            return root.progress < 0 ? qsTr("连接中") : Math.round(root.progressValue() * 100) + "%";
+            return root.progress < 0 ? qsTr("连接中") : Math.round(root.progress) + "%";
         }
-        if (root.state === "validating") return qsTr("验证中");
+        if (root.state === "connecting") return qsTr("连接中");
+        if (root.state === "resolving") return qsTr("处理中");
         if (root.state === "completed" || root.downloaded) return qsTr("已下载");
         if (root.state === "failed") return qsTr("失败");
         if (root.state === "cancelled") return qsTr("已取消");

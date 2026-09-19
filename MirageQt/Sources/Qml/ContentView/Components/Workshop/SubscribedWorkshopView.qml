@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import FluentUI
 import "../../../GlobalComponents"
-import "../../../MirageBridge.js" as MirageBridge
 
 // 已订阅壁纸独立视图：对齐 macOS Components/Workshop/SubscribedWorkshopView.swift。
 // 工具栏（筛选/标题/计数/搜索/下载全部/刷新/Steam 状态）与内容状态机
@@ -18,30 +17,26 @@ Item {
     // 经 mirage.setSubscription*/loadSubscriptions 写回（对齐上游
     // workshopViewModel.subscription* 属性）。
     property var subscriptions: mirage.subscriptions
-    property bool subscriptionsLoading: Boolean(mirage.subscriptionsLoading)
-    property int subscriptionTotal: Number(mirage.subscriptionTotal)
-    property int subscriptionPage: Number(mirage.subscriptionPage)
-    property int subscriptionPageCount: Number(mirage.subscriptionPageCount)
+    property bool subscriptionsLoading: mirage.subscriptionsLoading
+    property int subscriptionTotal: mirage.subscriptionTotal
+    property int subscriptionPage: mirage.subscriptionPage
+    property int subscriptionPageCount: mirage.subscriptionPageCount
     property var subscriptionFilters: mirage.subscriptionFilters
-    property bool steamReady: Boolean(mirage.steamReady)
-    property bool steamLoggedIn: Boolean(mirage.steamLoggedIn)
-    property string steamUsername: String(mirage.steamUsername)
-    property bool downloadPreparing: Boolean(mirage.subscriptionDownloadPreparing)
+    property bool steamReady: mirage.steamReady
+    property bool steamLoggedIn: mirage.steamLoggedIn
+    property string steamUsername: mirage.steamUsername
+    property bool downloadPreparing: mirage.subscriptionDownloadPreparing
     property var downloadPlan: mirage.subscriptionDownloadPlan
-
-    function invoke(name) {
-        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
-    }
 
     // 首次进入（订阅 tab 打开）且已登录但无缓存内容时加载（对齐 onAppear 分支）。
     Component.onCompleted: {
         if (mirage.steamLoggedIn && subscriptions.length === 0 && !subscriptionsLoading)
-            invoke("loadSubscriptions");
+            mirage.loadSubscriptions();
     }
     // 登录状态变化时刷新（对齐 onChange(of: steamService.isLoggedIn)）。
     onSteamLoggedInChanged: {
         if (mirage.steamLoggedIn)
-            invoke("loadSubscriptions");
+            mirage.loadSubscriptions();
     }
 
     ColumnLayout {
@@ -73,8 +68,8 @@ Item {
                 Layout.maximumWidth: 240
                 placeholderText: qsTr("搜索已订阅壁纸...")
                 iconSource: FluentIcons.Search
-                text: String(MirageBridge.field(root.subscriptionFilters, "searchText", ""))
-                onTextChanged: root.invoke("setSubscriptionSearchText", text)
+                text: root.subscriptionFilters.searchText
+                onTextChanged: mirage.setSubscriptionSearchText(text)
             }
             Item {
                 Layout.fillWidth: true
@@ -84,14 +79,14 @@ Item {
             FluFilledButton {
                 text: root.downloadPreparing ? qsTr("正在准备下载…") : qsTr("下载全部")
                 disabled: !root.steamLoggedIn || root.downloadPreparing || root.subscriptions.length === 0
-                onClicked: root.invoke("downloadAllSubscriptions")
+                onClicked: mirage.downloadAllSubscriptions()
             }
             FluIconButton {
                 iconSource: FluentIcons.Refresh
                 text: qsTr("刷新已订阅壁纸")
                 contentDescription: qsTr("刷新已订阅壁纸")
                 disabled: !root.steamLoggedIn || root.subscriptionsLoading
-                onClicked: root.invoke("loadSubscriptions")
+                onClicked: mirage.loadSubscriptions()
             }
             // 视图菜单（图标尺寸/每页数量），对齐 macOS SubscribedWorkshopView
             // toolbar 的 WallpaperGridViewMenu(showsPageSize: true)；
@@ -103,7 +98,7 @@ Item {
                 onIconSizeChanged: size => root.host.explorerIconSize = size
                 onPageSizeChanged: count => {
                     root.host.wallpapersPerPage = count;
-                    root.invoke("setSubscriptionPerPage", count);
+                    mirage.setSubscriptionPerPage(count);
                 }
             }
             RowLayout {
@@ -125,7 +120,7 @@ Item {
                     iconSource: FluentIcons.SignOut
                     text: qsTr("退出 Steam")
                     contentDescription: qsTr("退出 Steam")
-                    onClicked: root.invoke("logoutSteam")
+                    onClicked: mirage.logoutSteam()
                 }
             }
             FluFilledButton {
@@ -239,7 +234,7 @@ Item {
                         text: qsTr("上一页")
                         contentDescription: qsTr("上一页")
                         disabled: root.subscriptionPage <= 1
-                        onClicked: root.invoke("goToSubscriptionPage", root.subscriptionPage - 1)
+                        onClicked: mirage.goToSubscriptionPage(root.subscriptionPage - 1)
                     }
                     FluText {
                         text: root.subscriptionPage + " / " + root.subscriptionPageCount
@@ -249,7 +244,7 @@ Item {
                         text: qsTr("下一页")
                         contentDescription: qsTr("下一页")
                         disabled: root.subscriptionPage >= root.subscriptionPageCount
-                        onClicked: root.invoke("goToSubscriptionPage", root.subscriptionPage + 1)
+                        onClicked: mirage.goToSubscriptionPage(root.subscriptionPage + 1)
                     }
                 }
             }
@@ -276,17 +271,17 @@ Item {
     }
     // 后端生成/更新计划时弹出确认框。
     onDownloadPlanChanged: {
-        if (downloadPlan && downloadPlan.subscriptionCount !== undefined)
+        if (downloadPlan.subscriptionCount > 0)
             downloadPlanDialog.open();
     }
 
     function downloadCount() {
-        return Number(MirageBridge.field(root.downloadPlan, "downloadCount", 0));
+        return root.downloadPlan.downloadCount;
     }
 
     function downloadPlanMessage() {
         var plan = root.downloadPlan;
-        if (!plan || plan.subscriptionCount === undefined)
+        if (!(plan.subscriptionCount > 0))
             return "";
         var subscriptionCount = Number(plan.subscriptionCount);
         var remainingCount = Number(plan.remainingCount);

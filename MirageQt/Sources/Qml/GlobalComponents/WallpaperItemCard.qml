@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Qt5Compat.GraphicalEffects
 import FluentUI
-import "../MirageBridge.js" as MirageBridge
 
 // 壁纸卡片公共基类：已安装与创意工坊使用同一张正方形封面卡。
 // macOS 版本将作品信息叠在封面下沿，而非把图片和文字拆成两块；这里由
@@ -22,14 +21,6 @@ Item {
 
     signal clicked(var mouse)
     signal doubleClicked(var mouse)
-
-    function field(name, fallback) {
-        return MirageBridge.field(root.itemData, name, fallback);
-    }
-
-    function invoke(name) {
-        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
-    }
 
     // 悬停时只放大封面容器内的内容，外层卡片尺寸和矩形裁剪保持固定。
     // 若放大根对象，绘制范围会越过矩形边界，阴影或相邻 delegate 会覆盖角落。
@@ -68,7 +59,10 @@ Item {
 
             WorkshopImage {
                 anchors.fill: parent
-                imageUrl: root.field("preview", "")
+                // Both installed and workshop item maps define preview; direct
+                // access preserves that documented protocol without a dynamic
+                // field-name bridge.
+                imageUrl: root.itemData.preview
                 contentMode: Image.PreserveAspectCrop
                 // 列表缩略图只显示 GIF 首帧；真实播放仍在详情预览页完成。
                 isAnimating: false

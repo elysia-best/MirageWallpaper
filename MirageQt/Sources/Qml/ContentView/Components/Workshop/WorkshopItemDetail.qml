@@ -3,45 +3,30 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
 import "../../../GlobalComponents"
-import "../../../MirageBridge.js" as MirageBridge
 
 ColumnLayout {
     id: root
 
     required property var host
     property var item: mirage.selectedWorkshopItem
-    property string itemId: String(field("id", ""))
-    property string state: String(field("downloadState", ""))
-    property bool installed: Boolean(field("downloaded", false))
-    property bool needsDependency: Boolean(field("needsDependency", false))
-    property bool active: Boolean(field("downloadActive", false))
-        || ["queued", "starting", "downloading", "validating"].indexOf(root.state) >= 0
-    property double progress: Number(field("downloadProgress", -1))
+    // selectedWorkshopItem uses the fixed workshopItemMap() field protocol.
+    // An empty map represents no selection and keeps the existing empty state.
+    property string itemId: item.id
+    property string state: item.downloadState
+    property bool installed: item.downloaded
+    property bool needsDependency: item.needsDependency
+    property bool active: item.downloadActive
+        || ["queued", "starting", "connecting", "downloading", "resolving"].indexOf(root.state) >= 0
+    property double progress: item.downloadProgress
 
     spacing: 12
-
-    function value(name, fallback) {
-        return MirageBridge.value(mirage, name, fallback);
-    }
-
-    function field(name, fallback) {
-        return MirageBridge.field(root.item, name, fallback);
-    }
-
-    function invoke(name) {
-        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
-    }
-
-    function progressValue() {
-        return MirageBridge.progressValue(root.progress);
-    }
 
     function workshopUrl() {
         return "https://steamcommunity.com/sharedfiles/filedetails/?id=" + root.itemId;
     }
 
     function openDownloadDirectory() {
-        root.invoke("revealWorkshopDownload", root.itemId);
+        mirage.revealWorkshopDownload(root.itemId);
     }
 
     // 内容直接在详情层 FluScrollablePage 中展开滚动，
@@ -55,7 +40,7 @@ ColumnLayout {
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: Math.min(280, Math.max(180, root.width - 30))
             Layout.preferredHeight: Layout.preferredWidth
-            imageUrl: String(root.field("preview", ""))
+            imageUrl: root.item.preview
             contentMode: Image.PreserveAspectCrop
             // 规则 2：GIF 只在真实选中（selectedWorkshopItem 非空）时播放；
             // 未选中时 itemId 为空串，isAnimating: false 显示静态首帧。
@@ -64,7 +49,7 @@ ColumnLayout {
 
         FluText {
             Layout.fillWidth: true
-            text: String(root.field("title", qsTr("创意工坊作品")))
+            text: root.item.title
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
             font: FluTextStyle.Subtitle
@@ -72,20 +57,18 @@ ColumnLayout {
 
         FluButton {
             Layout.fillWidth: true
-            visible: String(root.field("creatorSteamId", "")).length > 0
+            visible: root.itemId.length > 0 && root.item.creatorSteamId.length > 0
             text: qsTr("查看作者的其他创意工坊作品")
             onClicked: {
-                var id = String(root.field("creatorSteamId", ""));
-                if (!root.invoke("openCreatorWorkshop", id))
-                    Qt.openUrlExternally("https://steamcommunity.com/profiles/" + id + "/myworkshopfiles/");
+                Qt.openUrlExternally("https://steamcommunity.com/profiles/"
+                                     + root.item.creatorSteamId + "/myworkshopfiles/");
             }
         }
 
         FluFrame {
             Layout.fillWidth: true
             Layout.preferredHeight: presetNoticeContent.implicitHeight + 18
-            visible: String(root.field("type", "")) === "preset"
-                || Boolean(root.field("preset", false))
+            visible: root.item.type === "preset"
             RowLayout {
                 id: presetNoticeContent
                 anchors.fill: parent
@@ -110,9 +93,9 @@ ColumnLayout {
             spacing: 8
             Repeater {
                 model: [
-                    [FluentIcons.Download, String(root.field("subscriptions", "")), qsTr("订阅")],
-                    [FluentIcons.HeartFill, String(root.field("favorited", "")), qsTr("收藏")],
-                    [FluentIcons.RedEye, String(root.field("views", "")), qsTr("浏览")]
+                    [FluentIcons.Download, root.item.subscriptions, qsTr("订阅")],
+                    [FluentIcons.HeartFill, root.item.favorited, qsTr("收藏")],
+                    [FluentIcons.RedEye, root.item.views, qsTr("浏览")]
                 ]
                 delegate: FluFrame {
                     required property var modelData
@@ -144,18 +127,18 @@ ColumnLayout {
             Layout.fillWidth: true
             spacing: 10
             FluText {
-                text: String(root.field("typeLabel", root.field("type", "")))
+                text: root.item.typeLabel
                 color: FluTheme.fontSecondaryColor
             }
             FluText {
                 Layout.fillWidth: true
-                text: String(root.field("sizeLabel", root.field("size", "")))
+                text: root.item.sizeLabel
                 color: FluTheme.fontSecondaryColor
             }
             FluText {
-                visible: String(root.field("rating", "")).length > 0
-                text: String(root.field("rating", ""))
-                color: String(root.field("rating", "")) === "Mature"
+                visible: root.itemId.length > 0 && root.item.rating.length > 0
+                text: root.item.rating
+                color: root.item.rating === "Mature"
                     ? Qt.rgba(196 / 255, 43 / 255, 28 / 255, 1)
                     : Qt.rgba(196 / 255, 121 / 255, 0, 1)
             }
@@ -166,9 +149,9 @@ ColumnLayout {
         Flow {
             Layout.fillWidth: true
             spacing: 5
-            visible: root.field("tags", []).length > 0
+            visible: root.itemId.length > 0 && root.item.tags.length > 0
             Repeater {
-                model: root.field("tags", [])
+                model: root.item.tags
                 delegate: FluFrame {
                     required property var modelData
                     implicitWidth: tagText.implicitWidth + 14
@@ -187,7 +170,7 @@ ColumnLayout {
 
         FluText {
             Layout.fillWidth: true
-            visible: root.field("tags", []).length === 0
+            visible: root.itemId.length > 0 && root.item.tags.length === 0
             text: qsTr("无标签")
             color: FluTheme.fontTertiaryColor
         }
@@ -196,8 +179,8 @@ ColumnLayout {
         FluText { text: qsTr("描述"); font: FluTextStyle.BodyStrong }
         FluText {
             Layout.fillWidth: true
-            text: String(root.field("description", "")).length > 0
-                ? String(root.field("description", "")) : qsTr("无描述")
+            text: root.itemId.length > 0 && root.item.description.length > 0
+                ? root.item.description : qsTr("无描述")
             wrapMode: Text.WordWrap
             maximumLineCount: 8
             elide: Text.ElideRight
@@ -230,7 +213,7 @@ ColumnLayout {
                 FluButton {
                     text: qsTr("下载基础壁纸")
                     onClicked: {
-                        root.invoke("requestWorkshopPresetDependency", root.itemId);
+                        mirage.requestWorkshopPresetDependency(root.itemId);
                     }
                 }
             }
@@ -241,40 +224,42 @@ ColumnLayout {
             visible: root.active
             text: {
                 if (root.state === "queued") return qsTr("等待 Steam 服务按顺序下载…");
-                if (root.state === "starting") return qsTr("正在连接 Steam 服务…");
-                if (root.state === "validating") return qsTr("正在验证下载...");
+                if (root.state === "starting" || root.state === "connecting")
+                    return qsTr("正在连接 Steam 服务…");
+                if (root.state === "resolving") return qsTr("正在处理下载...");
                 if (root.state === "downloading") return root.progress < 0
                     ? qsTr("正在连接 Steam...")
-                    : qsTr("正在下载 (%1%)").arg(Math.round(root.progressValue() * 100));
-                return String(root.field("downloadMessage", qsTr("正在处理下载...")));
+                    : qsTr("正在下载 (%1%)").arg(Math.round(root.progress));
+                return root.item.downloadMessage;
             }
             color: FluTheme.fontSecondaryColor
         }
         FluProgressBar {
             Layout.fillWidth: true
             visible: root.active
-            indeterminate: root.progress < 0 || root.state === "starting" || root.state === "validating"
+            indeterminate: root.progress < 0 || root.state === "starting"
+                || root.state === "connecting" || root.state === "resolving"
             from: 0
             to: 1
-            value: root.progressValue()
+            value: root.progress / 100
         }
         FluButton {
             Layout.fillWidth: true
             visible: root.state === "failed"
             text: qsTr("重试下载")
-            onClicked: root.invoke("retryWorkshopDownload", root.itemId)
+            onClicked: mirage.retryWorkshopDownload(root.itemId)
         }
         FluFilledButton {
             Layout.fillWidth: true
             visible: !root.installed && !root.active && root.state !== "failed"
-                && root.itemId.length > 0 && Boolean(root.value("steamReady", false))
+                && root.itemId.length > 0 && mirage.steamReady
             text: root.needsDependency ? qsTr("下载基础壁纸") : qsTr("下载壁纸")
-            onClicked: root.invoke("downloadWorkshopItem", root.itemId)
+            onClicked: mirage.downloadWorkshopItem(root.itemId)
         }
         FluButton {
             Layout.fillWidth: true
             visible: !root.installed && !root.active && root.state !== "failed"
-                && root.itemId.length > 0 && !Boolean(root.value("steamReady", false))
+                && root.itemId.length > 0 && !mirage.steamReady
             text: qsTr("设置 Steam 后下载")
             onClicked: root.host.openSteamSetup()
         }
@@ -282,7 +267,7 @@ ColumnLayout {
             Layout.fillWidth: true
             visible: root.active
             text: qsTr("取消下载")
-            onClicked: root.invoke("cancelWorkshopDownload", root.itemId)
+            onClicked: mirage.cancelWorkshopDownload(root.itemId)
         }
         FluButton {
             Layout.fillWidth: true
@@ -298,17 +283,17 @@ ColumnLayout {
         }
         RowLayout {
             Layout.fillWidth: true
-            visible: root.itemId.length > 0 && Boolean(root.value("steamLoggedIn", false))
+            visible: root.itemId.length > 0 && mirage.steamLoggedIn
             spacing: 8
             FluFilledButton {
                 Layout.fillWidth: true
                 text: qsTr("订阅")
-                onClicked: root.invoke("subscribeWorkshopItem", root.itemId)
+                onClicked: mirage.subscribeWorkshopItem(root.itemId)
             }
             FluButton {
                 Layout.fillWidth: true
                 text: qsTr("取消订阅")
-                onClicked: root.invoke("unsubscribeWorkshopItem", root.itemId)
+                onClicked: mirage.unsubscribeWorkshopItem(root.itemId)
             }
         }
 
@@ -322,8 +307,8 @@ ColumnLayout {
         }
         FluText {
             Layout.fillWidth: true
-            visible: String(root.field("updatedAt", "")).length > 0
-            text: qsTr("更新于：%1").arg(String(root.field("updatedAt", "")))
+            visible: root.itemId.length > 0 && root.item.updatedAt.length > 0
+            text: qsTr("更新于：%1").arg(root.item.updatedAt)
             color: FluTheme.fontTertiaryColor
             font: FluTextStyle.Caption
         }

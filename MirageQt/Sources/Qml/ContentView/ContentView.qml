@@ -16,7 +16,6 @@ import "ViewModels"
 import "../SettingsView"
 import "../SteamSetup"
 import "../GlobalComponents"
-import "../MenuBars"
 
 FluWindow {
     id: window

@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
-import "../../../MirageBridge.js" as MirageBridge
 
 // 创意工坊浏览视图：对齐 macOS Components/Workshop/WorkshopView.swift 的
 // 浏览模式（订阅已提升为独立 tab，见 SubscribedWorkshopView.qml）。
@@ -18,18 +17,10 @@ Item {
     property int pageCount: mirage.workshopPageCount
     property bool steamReady: mirage.steamReady
     property string steamSummary: mirage.steamSetupSummary
-    property int activeDownloads: Number(value("activeDownloadCount", 0))
-    property var downloadQueue: value("downloadQueue", [])
-    property bool steamLoggedIn: Boolean(value("steamLoggedIn", false))
-    property string steamUsername: String(value("steamUsername", ""))
-
-    function value(name, fallback) {
-        return MirageBridge.value(mirage, name, fallback);
-    }
-
-    function invoke(name) {
-        return MirageBridge.invoke(mirage, name, Array.prototype.slice.call(arguments, 1));
-    }
+    property int activeDownloads: mirage.activeDownloadCount
+    property var downloadQueue: mirage.downloadQueue
+    property bool steamLoggedIn: mirage.steamLoggedIn
+    property string steamUsername: mirage.steamUsername
 
     ColumnLayout {
         anchors.fill: parent
@@ -52,9 +43,9 @@ Item {
                 text: root.host.workshopSearchText
                 onTextChanged: {
                     root.host.workshopSearchText = text;
-                    root.invoke("setWorkshopSearchText", text);
+                    mirage.setWorkshopSearchText(text);
                 }
-                onCommit: root.invoke("submitWorkshopSearch")
+                onCommit: mirage.submitWorkshopSearch()
             }
             Item { Layout.fillWidth: true }
             FluIconButton {
@@ -62,7 +53,7 @@ Item {
                 text: qsTr("刷新创意工坊")
                 contentDescription: qsTr("刷新创意工坊")
                 disabled: root.loading
-                onClicked: root.invoke("submitWorkshopSearch")
+                onClicked: mirage.submitWorkshopSearch()
             }
             FluComboBox {
                 Layout.preferredWidth: 130
@@ -71,7 +62,7 @@ Item {
                 currentIndex: root.host.workshopSortIndex()
                 onActivated: {
                     root.host.workshopSortKey = root.host.workshopSortOptions[currentIndex].key;
-                    root.invoke("setWorkshopSortOrder", root.host.workshopSortKey);
+                    mirage.setWorkshopSortOrder(root.host.workshopSortKey);
                 }
             }
             FluIconButton {
@@ -111,7 +102,7 @@ Item {
                     iconSource: FluentIcons.SignOut
                     text: qsTr("退出 Steam")
                     contentDescription: qsTr("退出 Steam")
-                    onClicked: root.invoke("logoutSteam")
+                    onClicked: mirage.logoutSteam()
                 }
             }
             FluFilledButton {
@@ -200,7 +191,7 @@ Item {
                     Layout.alignment: Qt.AlignHCenter
                     visible: root.errorText.length > 0
                     text: qsTr("重试")
-                    onClicked: root.invoke("submitWorkshopSearch")
+                    onClicked: mirage.submitWorkshopSearch()
                 }
             }
         }
@@ -219,7 +210,7 @@ Item {
                 text: qsTr("上一页")
                 contentDescription: qsTr("上一页")
                 disabled: root.page <= 1
-                onClicked: root.invoke("loadPreviousWorkshopPage")
+                onClicked: mirage.loadPreviousWorkshopPage()
             }
             FluText {
                 text: root.page + " / " + root.pageCount
@@ -229,7 +220,7 @@ Item {
                 text: qsTr("下一页")
                 contentDescription: qsTr("下一页")
                 disabled: root.page >= root.pageCount
-                onClicked: root.invoke("loadNextWorkshopPage")
+                onClicked: mirage.loadNextWorkshopPage()
             }
         }
         }
@@ -238,6 +229,5 @@ Item {
     DownloadPopover {
         id: downloadPopover
         tasks: root.downloadQueue
-        fallbackTasks: []
     }
 }

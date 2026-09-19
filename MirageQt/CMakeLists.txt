@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.24)
 
+# FluentUI passes an intentionally empty PLUGIN_TARGET to its Qt 6.8 module.
+# CMake 3.31 made empty single-value arguments observable; define the policy
+# default before any nested project calls cmake_minimum_required(), so a clean
+# configure uses the older parsing semantics without changing Vendor/FluentUI.
+set(CMAKE_POLICY_DEFAULT_CMP0174 OLD CACHE STRING
+    "Keep vendored FluentUI on its pre-CMake-3.31 argument parsing")
+if(POLICY CMP0174)
+    cmake_policy(SET CMP0174 OLD)
+endif()
+
 project(MirageQt VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -22,6 +32,12 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS
     WebEngineQuick
     DBus)
 find_package(X11 REQUIRED)
+
+# Fix the QML module resource/import policies before adding bundled QML
+# subprojects.  This also keeps the vendored module configuration deterministic
+# without modifying files under Vendor/FluentUI.
+qt_policy(SET QTP0001 NEW)
+qt_policy(SET QTP0004 NEW)
 
 set(FLUENTUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FLUENTUI_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
@@ -99,8 +115,6 @@ add_library(MirageQtCore STATIC
     Sources/Services/WallpaperLibrary.h
     Sources/Services/WallpaperRuntimeStore.cpp
     Sources/Services/WallpaperRuntimeStore.h
-    Sources/Services/WEConditionEvaluator.cpp
-    Sources/Services/WEConditionEvaluator.h
     Sources/Services/WEProject.cpp
     Sources/Services/WEProject.h
     Sources/Services/WorkshopModels.cpp
@@ -141,6 +155,13 @@ qt_add_executable(MirageQt
 
 set_source_files_properties(Sources/Qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
 set_source_files_properties(Sources/Qml/PropertyLocalization.js PROPERTIES QT_RESOURCE_ALIAS PropertyLocalization.js)
+# These scripts are imported by explicit relative paths.  They are not QML
+# component types, so keeping them out of the generated qmldir prevents Qt
+# from treating each as an implicitly imported JavaScript singleton.
+set_source_files_properties(
+    Sources/Qml/ContentView/ContentViewLogic.js
+    Sources/Qml/ContentView/OptionData.js
+    PROPERTIES QT_QML_SKIP_QMLDIR_ENTRY TRUE)
 file(GLOB_RECURSE MIRAGE_QML_FILES CONFIGURE_DEPENDS
     Sources/Qml/*.qml
     Sources/Qml/*.js)
