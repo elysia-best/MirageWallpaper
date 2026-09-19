@@ -15,7 +15,9 @@ QtObject {
     property bool playlistExpanded: false
     property string searchText: ""
     property int explorerIconSize: 170
-    property int wallpapersPerPage: 25
+    // 已安装、创意工坊和已订阅共用每页 50 项的协议；该值只读，
+    // 窗口尺寸和图标尺寸只能改变列数，不能改变分页边界。
+    readonly property int wallpaperItemsPerPage: 50
 
     // --- 筛选状态（仅显示开关） ---
     property bool approvedOnly: false
@@ -79,8 +81,8 @@ QtObject {
         sortDescending: sortDescending
     })
     property int wallpaperCurrentPage: 1
-    property int wallpaperPageCount: Math.max(1, Math.ceil(filteredWallpapers.length / wallpapersPerPage))
-    property var pagedWallpapers: filteredWallpapers.slice((wallpaperCurrentPage - 1) * wallpapersPerPage, wallpaperCurrentPage * wallpapersPerPage)
+    property int wallpaperPageCount: Math.max(1, Math.ceil(filteredWallpapers.length / wallpaperItemsPerPage))
+    property var pagedWallpapers: filteredWallpapers.slice((wallpaperCurrentPage - 1) * wallpaperItemsPerPage, wallpaperCurrentPage * wallpaperItemsPerPage)
 
     // --- 创意工坊筛选状态 ---
     property string workshopSearchText: ""

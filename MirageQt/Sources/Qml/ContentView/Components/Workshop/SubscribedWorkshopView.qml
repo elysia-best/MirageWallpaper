@@ -88,18 +88,11 @@ Item {
                 disabled: !root.steamLoggedIn || root.subscriptionsLoading
                 onClicked: mirage.loadSubscriptions()
             }
-            // 视图菜单（图标尺寸/每页数量），对齐 macOS SubscribedWorkshopView
-            // toolbar 的 WallpaperGridViewMenu(showsPageSize: true)；
-            // 每页数量变化同时更新 host 偏好与后端订阅分页。
+            // 已订阅与已安装、创意工坊共用图标尺寸偏好；固定 50 项
+            // 分页属于数据协议，不由视图菜单或当前窗口尺寸改变。
             WallpaperGridViewMenu {
                 explorerIconSize: root.host.explorerIconSize
-                wallpapersPerPage: root.host.wallpapersPerPage
-                showsPageSize: true
                 onIconSizeChanged: size => root.host.explorerIconSize = size
-                onPageSizeChanged: count => {
-                    root.host.wallpapersPerPage = count;
-                    mirage.setSubscriptionPerPage(count);
-                }
             }
             RowLayout {
                 visible: root.steamLoggedIn
@@ -130,18 +123,18 @@ Item {
             }
         }
 
-        FluScrollablePage {
+        // 独立叠放容器使分页器固定悬浮在内容区底部，不随订阅
+        // 网格滚动；滚动内容末尾的 58px 留白避免遮挡最后一行。
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            // 空态（无网格内容）时内容区铺满视口，使空态提示垂直+水平居中
-            // （对齐 macOS 的 centered() frame(maxHeight: .infinity)）；
-            // 有内容时恢复自然高度（滚动模型）。
-            columnHeight: root.subscriptions.length === 0 ? height : undefined
 
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                spacing: 8
+            FluScrollablePage {
+                id: subscriptionScrollPage
+                anchors.fill: parent
+                // 空态铺满视口并保持居中；有数据时恢复由网格
+                // contentHeight 驱动的外层滚动模型。
+                columnHeight: root.subscriptions.length === 0 ? height : undefined
 
                 // 首次加载（无缓存内容）时显示进度（居中）。
                 Item {
@@ -225,31 +218,31 @@ Item {
                     host: root.host
                     items: root.subscriptions
                 }
-                // 客户端过滤后的分页（对齐 PageNavigator）。
-                RowLayout {
-                    Layout.alignment: Qt.AlignHCenter
+
+                Item {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 58
                     visible: root.subscriptionPageCount > 1
-                    FluIconButton {
-                        iconSource: FluentIcons.ChevronLeft
-                        text: qsTr("上一页")
-                        contentDescription: qsTr("上一页")
-                        disabled: root.subscriptionPage <= 1
-                        onClicked: mirage.goToSubscriptionPage(root.subscriptionPage - 1)
-                    }
-                    FluText {
-                        text: root.subscriptionPage + " / " + root.subscriptionPageCount
-                    }
-                    FluIconButton {
-                        iconSource: FluentIcons.ChevronRight
-                        text: qsTr("下一页")
-                        contentDescription: qsTr("下一页")
-                        disabled: root.subscriptionPage >= root.subscriptionPageCount
-                        onClicked: mirage.goToSubscriptionPage(root.subscriptionPage + 1)
-                    }
                 }
+            }
+
+            SharedBrowseControls {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 12
+                z: 1
+                currentPage: root.subscriptionPage
+                pageCount: root.subscriptionPageCount
+                onSelected: page => mirage.goToSubscriptionPage(page)
+                enabled: !root.subscriptionsLoading
+                visible: root.subscriptionPageCount > 1
             }
         }
     }
+
+    // 订阅页在本地过滤后按 50 项切片；页码边界变化时重置外层
+    // Flickable，使页码按钮、前后翻页和页码输入都从顶部开始。
+    onSubscriptionPageChanged: subscriptionScrollPage.resetScroll()
 
     // 下载全部确认弹窗（对齐 macOS 的 alert：plan.downloadCount 决定按钮文案）。
     FluContentDialog {

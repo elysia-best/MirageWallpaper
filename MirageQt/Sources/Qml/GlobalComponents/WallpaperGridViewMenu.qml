@@ -1,18 +1,13 @@
 import QtQuick
-import QtQuick.Controls
 import FluentUI
 
-// 视图菜单（对齐 macOS SharedBrowseControls.swift 的 WallpaperGridViewMenu）：
-// 图标尺寸（小 140 / 中 170 / 大 200）与每页壁纸数（showsPageSize 时显示
-// 每页 10/25/50）；ExplorerTopBar 与订阅视图 toolbar 共用。
+// 三个方形网格共用的图标尺寸菜单。分页协议固定为每页 50 项，
+// 因此菜单只修改卡片最小宽度，不得通过视图偏好改变服务端或本地分页容量。
 FluDropDownButton {
     id: menu
 
     property int explorerIconSize: 170
-    property int wallpapersPerPage: 25
-    property bool showsPageSize: false
     signal iconSizeChanged(int size)
-    signal pageSizeChanged(int count)
 
     text: "视图"
 
@@ -33,31 +28,5 @@ FluDropDownButton {
         checkable: true
         checked: menu.explorerIconSize === 200
         onTriggered: menu.iconSizeChanged(200)
-    }
-
-    FluMenuSeparator {
-        visible: menu.showsPageSize
-    }
-
-    FluMenuItem {
-        text: qsTr("每页 10 个")
-        visible: menu.showsPageSize
-        checkable: true
-        checked: menu.wallpapersPerPage === 10
-        onTriggered: menu.pageSizeChanged(10)
-    }
-    FluMenuItem {
-        text: qsTr("每页 25 个")
-        visible: menu.showsPageSize
-        checkable: true
-        checked: menu.wallpapersPerPage === 25
-        onTriggered: menu.pageSizeChanged(25)
-    }
-    FluMenuItem {
-        text: qsTr("每页 50 个")
-        visible: menu.showsPageSize
-        checkable: true
-        checked: menu.wallpapersPerPage === 50
-        onTriggered: menu.pageSizeChanged(50)
     }
 }

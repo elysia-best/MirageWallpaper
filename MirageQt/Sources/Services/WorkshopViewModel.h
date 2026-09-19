@@ -115,8 +115,10 @@ public slots:
     void selectAllTags();
     void clearTags();
     void clearFilters();
-    void loadPreviousPage();
-    void loadNextPage();
+    // 将创意工坊浏览切换到指定页。page 会按当前总页数限制在
+    // 有效范围内；目标页与当前页相同时不发起网络请求。本对象及
+    // SteamWebAPI 均属于 GUI 线程，调用方必须在 GUI 线程调用。
+    void goToPage(int page);
     void search();
     void loadDiscover();
     void refreshDiscover();
@@ -146,9 +148,6 @@ public slots:
     void downloadAllSubscriptions();
     void confirmSubscriptionDownloads();
     void dismissSubscriptionDownloadPlan();
-    // 订阅每页数量（对齐 macOS subscriptionPageSizeDidChange：跟随
-    // wallpapersPerPage 的 10/25/50 选项）。
-    void setSubscriptionPerPage(int perPage);
 
     void selectWorkshopItem(const Mirage::WorkshopItem& item);
     void downloadItem(const Mirage::WorkshopItem& item,
@@ -263,8 +262,6 @@ private:
     int m_subscriptionPortrait = 0x1F;
     int m_subscriptionMisc = 0x03;
     QSet<QString> m_subscriptionSelectedTags;
-    // 订阅每页数量（默认 25，对齐 wallpapersPerPage 的默认值）。
-    int m_subscriptionPerPage = 25;
 
     // "下载全部已订阅壁纸"：准备中标志 + 待确认计划 + 目录为空时
     // 等待 loadSubscriptions 完成后再生成计划的延续标志。

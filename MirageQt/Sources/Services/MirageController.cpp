@@ -659,12 +659,8 @@ void MirageController::clearWorkshopFilters() {
     m_workshop.clearFilters();
 }
 
-void MirageController::loadPreviousWorkshopPage() {
-    m_workshop.loadPreviousPage();
-}
-
-void MirageController::loadNextWorkshopPage() {
-    m_workshop.loadNextPage();
+void MirageController::goToWorkshopPage(int page) {
+    m_workshop.goToPage(page);
 }
 
 void MirageController::selectWorkshopItem(const QString& id) {
@@ -788,10 +784,6 @@ void MirageController::confirmSubscriptionDownloads() {
 
 void MirageController::dismissSubscriptionDownloadPlan() {
     m_workshop.dismissSubscriptionDownloadPlan();
-}
-
-void MirageController::setSubscriptionPerPage(int perPage) {
-    m_workshop.setSubscriptionPerPage(perPage);
 }
 
 void MirageController::subscribeWorkshopItem(const QString& id) {

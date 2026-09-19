@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import FluentUI
+import "../../../GlobalComponents"
 
 // 创意工坊浏览视图：对齐 macOS Components/Workshop/WorkshopView.swift 的
 // 浏览模式（订阅已提升为独立 tab，见 SubscribedWorkshopView.qml）。
@@ -54,6 +55,12 @@ Item {
                 contentDescription: qsTr("刷新创意工坊")
                 disabled: root.loading
                 onClicked: mirage.submitWorkshopSearch()
+            }
+            // 创意工坊与已安装、已订阅共用同一图标尺寸偏好；
+            // 该偏好只影响自适应列宽，不改变服务端固定 50 项的页容量。
+            WallpaperGridViewMenu {
+                explorerIconSize: root.host.explorerIconSize
+                onIconSizeChanged: size => root.host.explorerIconSize = size
             }
             FluComboBox {
                 Layout.preferredWidth: 130
@@ -155,76 +162,84 @@ Item {
             }
         }
 
-        FluScrollablePage {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            // 空态（无网格内容）时内容区铺满视口，使空态提示垂直+水平居中
-            // （对齐 macOS WorkshopView 的空态居中）；有内容时恢复自然高度。
-            columnHeight: root.items.length === 0 ? height : undefined
-
-        // 首次加载：进度环居中显示。
+        // 内容滚动区和分页器使用同一叠放容器：分页器固定在底部，
+        // 网格末尾预留 58px 保证最后一行可完整滚动到其上方。
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: root.loading && root.items.length === 0
-            FluProgressRing {
-                anchors.centerIn: parent
-                indeterminate: true
+
+            FluScrollablePage {
+                id: workshopScrollPage
+                anchors.fill: parent
+                // 空态铺满视口以保持居中；有数据时由网格 contentHeight
+                // 决定滚动内容高度，不让内层 GridView 自行滚动。
+                columnHeight: root.items.length === 0 ? height : undefined
+
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: root.loading && root.items.length === 0
+                    FluProgressRing {
+                        anchors.centerIn: parent
+                        indeterminate: true
+                    }
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: !root.loading && root.items.length === 0
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 8
+                        FluText {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: root.errorText.length > 0
+                                ? root.errorText : qsTr("没有找到壁纸")
+                            color: root.errorText.length > 0
+                                ? Qt.rgba(196 / 255, 43 / 255, 28 / 255, 1)
+                                : FluTheme.fontSecondaryColor
+                        }
+                        FluButton {
+                            Layout.alignment: Qt.AlignHCenter
+                            visible: root.errorText.length > 0
+                            text: qsTr("重试")
+                            onClicked: mirage.submitWorkshopSearch()
+                        }
+                    }
+                }
+
+                WorkshopItemGrid {
+                    visible: root.items.length > 0
+                    host: root.host
+                    items: root.items
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 58
+                    visible: root.pageCount > 1
+                }
             }
-        }
-        // 空态/错误提示：居中显示。
-        Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            visible: !root.loading && root.items.length === 0
-            ColumnLayout {
-                anchors.centerIn: parent
-                spacing: 8
-                FluText {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: root.errorText.length > 0 ? root.errorText : qsTr("没有找到壁纸")
-                    color: root.errorText.length > 0
-                        ? Qt.rgba(196 / 255, 43 / 255, 28 / 255, 1)
-                        : FluTheme.fontSecondaryColor
-                }
-                FluButton {
-                    Layout.alignment: Qt.AlignHCenter
-                    visible: root.errorText.length > 0
-                    text: qsTr("重试")
-                    onClicked: mirage.submitWorkshopSearch()
-                }
+
+            SharedBrowseControls {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 12
+                z: 1
+                currentPage: root.page
+                pageCount: root.pageCount
+                onSelected: page => mirage.goToWorkshopPage(page)
+                enabled: !root.loading
+                visible: root.pageCount > 1
             }
         }
 
-        WorkshopItemGrid {
-            visible: root.items.length > 0
-            host: root.host
-            items: root.items
-        }
-
-        RowLayout {
-            Layout.alignment: Qt.AlignHCenter
-            visible: root.pageCount > 1
-            FluIconButton {
-                iconSource: FluentIcons.ChevronLeft
-                text: qsTr("上一页")
-                contentDescription: qsTr("上一页")
-                disabled: root.page <= 1
-                onClicked: mirage.loadPreviousWorkshopPage()
-            }
-            FluText {
-                text: root.page + " / " + root.pageCount
-            }
-            FluIconButton {
-                iconSource: FluentIcons.ChevronRight
-                text: qsTr("下一页")
-                contentDescription: qsTr("下一页")
-                disabled: root.page >= root.pageCount
-                onClicked: mirage.loadNextWorkshopPage()
-            }
-        }
-        }
     }
+
+    // 服务端页码改变后回到外层滚动区顶部，使页码按钮、前后翻页
+    // 和页码输入保持相同交互。
+    onPageChanged: workshopScrollPage.resetScroll()
 
     DownloadPopover {
         id: downloadPopover

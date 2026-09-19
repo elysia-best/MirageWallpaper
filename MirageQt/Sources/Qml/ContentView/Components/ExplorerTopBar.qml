@@ -8,7 +8,6 @@ RowLayout {
     property int currentTab: 0
     property string searchText: ""
     property int explorerIconSize: 170
-    property int wallpapersPerPage: 25
     property string sortMode: "name"
     property bool sortDescending: false
     property var host
@@ -16,7 +15,6 @@ RowLayout {
     signal filterRequested
     signal refreshRequested
     signal sortChanged(string key)
-    signal pageSizeChanged(int count)
     signal iconSizeChanged(int size)
     Layout.fillWidth: true
     spacing: 8
@@ -41,14 +39,13 @@ RowLayout {
         iconSource: FluentIcons.Refresh
         onClicked: topBar.refreshRequested()
     }
-    // 视图菜单（图标尺寸/每页数量）：与订阅视图共用 WallpaperGridViewMenu
+    // 已安装、创意工坊和已订阅共用该图标尺寸偏好；每页数量
+    // 由固定 50 项的数据协议决定，不在视图菜单中暴露。
     // （对齐 macOS 的共享视图菜单）。
     WallpaperGridViewMenu {
         visible: topBar.currentTab === 0
         explorerIconSize: topBar.explorerIconSize
-        wallpapersPerPage: topBar.wallpapersPerPage
         onIconSizeChanged: size => topBar.iconSizeChanged(size)
-        onPageSizeChanged: count => topBar.pageSizeChanged(count)
     }
     Item {
         Layout.fillWidth: true

@@ -16,6 +16,8 @@
 namespace Mirage {
 namespace {
 
+// 三个方形网格的固定分页协议。Steam QueryFiles 也必须使用
+// 同一容量，保证服务端页码、总页数与本地订阅切片边界一致。
 constexpr int kItemsPerPage = 50;
 
 bool isActive(const DownloadState& state) {
@@ -273,16 +275,12 @@ void WorkshopViewModel::clearFilters() {
     search();
 }
 
-void WorkshopViewModel::loadPreviousPage() {
-    if (m_currentPage <= 1) return;
-    --m_currentPage;
-    emit filtersChanged();
-    search();
-}
-
-void WorkshopViewModel::loadNextPage() {
-    if (m_currentPage >= totalPages()) return;
-    ++m_currentPage;
+void WorkshopViewModel::goToPage(int page) {
+    // 所有页码按钮和可编辑页码框都经过此唯一入口，使边界约束
+    // 与搜索请求时机保持一致，不需要为前后翻页维护平行接口。
+    const int target = qBound(1, page, totalPages());
+    if (target == m_currentPage) return;
+    m_currentPage = target;
     emit filtersChanged();
     search();
 }
@@ -572,10 +570,10 @@ const QVector<WorkshopItem>& WorkshopViewModel::subscriptions() const { return m
 int WorkshopViewModel::subscriptionTotal() const { return m_subscriptionTotal; }
 int WorkshopViewModel::subscriptionCurrentPage() const {
     const int pageCount = subscriptionPageCount();
-    return qMin(pageCount, m_subscriptionStartIndex / m_subscriptionPerPage + 1);
+    return qMin(pageCount, m_subscriptionStartIndex / kItemsPerPage + 1);
 }
 int WorkshopViewModel::subscriptionPageCount() const {
-    return qMax(1, (m_subscriptionTotal + m_subscriptionPerPage - 1) / m_subscriptionPerPage);
+    return qMax(1, (m_subscriptionTotal + kItemsPerPage - 1) / kItemsPerPage);
 }
 bool WorkshopViewModel::isSubscriptionsLoading() const { return m_subscriptionsLoading; }
 
@@ -708,11 +706,11 @@ void WorkshopViewModel::rebuildSubscriptionPage(int startIndex) {
     for (const WorkshopItem& item : m_subscriptionCatalogItems) {
         if (matchesSubscriptionFilters(item)) filtered.append(item);
     }
-    const int maximumStart = filtered.isEmpty() ? 0 : (filtered.size() - 1) / m_subscriptionPerPage * m_subscriptionPerPage;
+    const int maximumStart = filtered.isEmpty() ? 0 : (filtered.size() - 1) / kItemsPerPage * kItemsPerPage;
     const int clampedStart = qBound(0, startIndex, maximumStart);
     m_subscriptionTotal = filtered.size();
     m_subscriptionStartIndex = clampedStart;
-    m_subscriptionItems = filtered.mid(clampedStart, m_subscriptionPerPage);
+    m_subscriptionItems = filtered.mid(clampedStart, kItemsPerPage);
     emit subscriptionsChanged();
 }
 
@@ -766,15 +764,7 @@ bool WorkshopViewModel::matchesSubscriptionFilters(const WorkshopItem& item) con
 void WorkshopViewModel::goToSubscriptionPage(int page) {
     const int target = qBound(1, page, subscriptionPageCount());
     if (m_subscriptionsLoading || target == subscriptionCurrentPage()) return;
-    rebuildSubscriptionPage((target - 1) * m_subscriptionPerPage);
-}
-
-void WorkshopViewModel::setSubscriptionPerPage(int perPage) {
-    // 对齐 macOS subscriptionPageSizeDidChange：每页数量变化后重算当前页。
-    const int clamped = qBound(1, perPage, 200);
-    if (clamped == m_subscriptionPerPage) return;
-    m_subscriptionPerPage = clamped;
-    rebuildSubscriptionPage(0);
+    rebuildSubscriptionPage((target - 1) * kItemsPerPage);
 }
 
 void WorkshopViewModel::setSubscriptionSearchText(const QString& text) {

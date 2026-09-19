@@ -3,102 +3,75 @@ import QtQuick.Layouts
 import FluentUI
 import "../ContentViewLogic.js" as ContentViewLogic
 
-FluScrollablePage {
+// 已安装壁纸保留自身的强业务卡片，仅与两个工坊页共享自适应
+// 列宽和分页器协议。滚动区与底部分页器分离，保证分页器不随内容滚动。
+Item {
     id: root
     required property var host
 
-    GridView {
-        id: wallpaperGrid
-        Layout.fillWidth: true
-        Layout.preferredHeight: contentHeight
-        interactive: false
-        clip: true
-        model: root.host.pagedWallpapers
-        // 自适应列宽（对齐 macOS GridItem(.adaptive(minimum:explorerIconSize,
-        // maximum:2×explorerIconSize), spacing:14)）：列宽随 explorerIconSize
-        // 变化（140/170/200 三档在宽窗口下均有差异），间隔统一 14。
-        cellWidth: ContentViewLogic.adaptiveGridCellWidth(width, root.host.explorerIconSize, 14)
-        cellHeight: cellWidth
+    FluScrollablePage {
+        id: wallpaperScrollPage
+        anchors.fill: parent
 
-        // 页码变化时把网格滚回顶部。原实现放在 ContentView.setWallpaperPage
-        // 里直接引用本组件内 id（wallpaperGrid），跨文件作用域不可见，每次
-        // 点击分页都抛 ReferenceError；滚动逻辑移到 grid 自身职责内，
-        // 由页码属性变化信号驱动。
-        Connections {
-            target: root.host
-            function onWallpaperCurrentPageChanged() {
-                wallpaperGrid.positionViewAtBeginning();
+        GridView {
+            id: wallpaperGrid
+            Layout.fillWidth: true
+            Layout.preferredHeight: contentHeight
+            interactive: false
+            clip: true
+            model: root.host.pagedWallpapers
+            // 自适应列宽对齐 macOS GridItem(.adaptive)；图标尺寸只改变
+            // 列数与卡片尺寸，不参与固定 50 项的分页计算。
+            cellWidth: ContentViewLogic.adaptiveGridCellWidth(
+                width, root.host.explorerIconSize, 14)
+            cellHeight: cellWidth
+
+            // 已安装卡片需要壁纸选中、播放与右键业务，不与
+            // WorkshopItemCard 合并为接收任意模型的通用 delegate。
+            delegate: InstalledWallpaperCard {
+                required property var modelData
+                host: root.host
+                itemData: modelData
+                width: wallpaperGrid.cellWidth - 14
+                height: wallpaperGrid.cellHeight - 14
             }
         }
 
-        // 已安装卡片：继承公共卡片基类（悬停放大/选中态/列表不播 GIF），
-        // 点击/双击/右键回调见 InstalledWallpaperCard.qml。
-        // 卡片四周留 7px（cell - 14），与创意工坊/订阅网格的 14px 间隔一致
-        // （对齐 macOS GridItem spacing 14）。
-        delegate: InstalledWallpaperCard {
-            required property var modelData
-            host: root.host
-            itemData: modelData
-            width: wallpaperGrid.cellWidth - 14
-            height: wallpaperGrid.cellHeight - 14
-        }
-    }
-
-    FluText {
-        Layout.fillWidth: true
-        Layout.topMargin: 24
-        visible: wallpaperGrid.count === 0
-        text: "没有找到匹配的壁纸。"
-        horizontalAlignment: Text.AlignHCenter
-        color: FluTheme.fontSecondaryColor
-    }
-
-    RowLayout {
-        Layout.alignment: Qt.AlignHCenter
-        Layout.topMargin: 6
-        visible: root.host.wallpaperPageCount > 1
-        spacing: 6
-        FluIconButton {
-            text: "上一页"
-            iconSource: FluentIcons.ChevronLeft
-            enabled: root.host.wallpaperCurrentPage > 1
-            onClicked: root.host.setWallpaperPage(root.host.wallpaperCurrentPage - 1)
-        }
-        Repeater {
-            model: root.host.wallpaperPageItems()
-            delegate: Item {
-                required property int modelData
-                Layout.preferredWidth: modelData === 0 ? 20 : pageButton.implicitWidth
-                Layout.preferredHeight: Math.max(pageButton.implicitHeight, pageEllipsis.implicitHeight)
-                FluText {
-                    id: pageEllipsis
-                    anchors.centerIn: parent
-                    visible: parent.modelData === 0
-                    text: "…"
-                }
-                FluButton {
-                    id: pageButton
-                    anchors.centerIn: parent
-                    visible: parent.modelData !== 0
-                    text: parent.modelData
-                    enabled: parent.modelData !== root.host.wallpaperCurrentPage
-                    onClicked: root.host.setWallpaperPage(parent.modelData)
-                }
-            }
-        }
-        FluIconButton {
-            text: "下一页"
-            iconSource: FluentIcons.ChevronRight
-            enabled: root.host.wallpaperCurrentPage < root.host.wallpaperPageCount
-            onClicked: root.host.setWallpaperPage(root.host.wallpaperCurrentPage + 1)
-        }
-        FluTextBox {
-            Layout.preferredWidth: 54
-            text: String(root.host.wallpaperCurrentPage)
-            placeholderText: "页码"
+        FluText {
+            Layout.fillWidth: true
+            Layout.topMargin: 24
+            visible: wallpaperGrid.count === 0
+            text: qsTr("没有找到匹配的壁纸。")
             horizontalAlignment: Text.AlignHCenter
-            onCommit: root.host.setWallpaperPage(text)
+            color: FluTheme.fontSecondaryColor
         }
-        FluText { text: "/ " + root.host.wallpaperPageCount }
+
+        // 多页时在滚动内容末尾保留分页器高度，避免最后一行
+        // 卡片被底部悬浮层遮挡；单页不产生额外留白。
+        Item {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 58
+            visible: root.host.wallpaperPageCount > 1
+        }
+    }
+
+    SharedBrowseControls {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 12
+        z: 1
+        visible: root.host.wallpaperPageCount > 1
+        currentPage: root.host.wallpaperCurrentPage
+        pageCount: root.host.wallpaperPageCount
+        onSelected: page => root.host.setWallpaperPage(page)
+    }
+
+    // 页码变化时由外层 Flickable 回到顶部；GridView 本身禁止交互，
+    // 因此不能仅调整 GridView 的内部位置。
+    Connections {
+        target: root.host
+        function onWallpaperCurrentPageChanged() {
+            wallpaperScrollPage.resetScroll();
+        }
     }
 }

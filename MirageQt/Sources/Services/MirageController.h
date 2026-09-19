@@ -206,8 +206,10 @@ public:
     Q_INVOKABLE void setWorkshopAgeRatingEnabled(const QString& key, bool enabled);
     Q_INVOKABLE void toggleWorkshopTag(const QString& tag);
     Q_INVOKABLE void clearWorkshopFilters();
-    Q_INVOKABLE void loadPreviousWorkshopPage();
-    Q_INVOKABLE void loadNextWorkshopPage();
+    // QML 在 GUI 线程传入目标页码；WorkshopViewModel 将其限制到
+    // [1, workshopPageCount] 并加载该页。返回 void，同页调用不会发起
+    // 网络请求，加载失败通过 workshopError/workshopStateChanged 向 QML 报告。
+    Q_INVOKABLE void goToWorkshopPage(int page);
     Q_INVOKABLE void selectWorkshopItem(const QString& id);
     Q_INVOKABLE void downloadWorkshopItem(const QString& id);
     Q_INVOKABLE void downloadWorkshopItemById(const QString& id);
@@ -240,7 +242,6 @@ public:
     Q_INVOKABLE void downloadAllSubscriptions();
     Q_INVOKABLE void confirmSubscriptionDownloads();
     Q_INVOKABLE void dismissSubscriptionDownloadPlan();
-    Q_INVOKABLE void setSubscriptionPerPage(int perPage);
     Q_INVOKABLE void revealWorkshopDownload(const QString& id);
     Q_INVOKABLE void pauseWallpapers();
     Q_INVOKABLE void resumeWallpapers();

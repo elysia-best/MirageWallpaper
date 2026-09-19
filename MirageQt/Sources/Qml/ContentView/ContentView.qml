@@ -109,7 +109,6 @@ FluWindow {
     property alias rawWallpapers: contentViewModel.rawWallpapers
     property alias filteredWallpapers: contentViewModel.filteredWallpapers
     property alias explorerIconSize: contentViewModel.explorerIconSize
-    property alias wallpapersPerPage: contentViewModel.wallpapersPerPage
     property alias wallpaperCurrentPage: contentViewModel.wallpaperCurrentPage
     property alias wallpaperPageCount: contentViewModel.wallpaperPageCount
     property alias pagedWallpapers: contentViewModel.pagedWallpapers
@@ -424,28 +423,13 @@ FluWindow {
         mirage.playlistScreen = previousScreen;
     }
 
+    // SharedBrowseControls 传入经 IntValidator 约束的数字页码；此处
+    // 仍按当前页数限制边界，以覆盖筛选使总页数同步缩小的情况。
     function setWallpaperPage(page) {
-        wallpaperCurrentPage = Math.max(1, Math.min(wallpaperPageCount, Math.floor(Number(page) || 1)));
-    }
-
-    function wallpaperPageItems() {
-        var page = wallpaperCurrentPage;
-        var count = wallpaperPageCount;
-        if (count <= 7) {
-            var all = [];
-            for (var index = 1; index <= count; ++index)
-                all.push(index);
-            return all;
-        }
-        if (page <= 4)
-            return [1, 2, 3, 4, 5, 0, count];
-        if (page >= count - 3)
-            return [1, 0, count - 4, count - 3, count - 2, count - 1, count];
-        return [1, 0, page - 1, page, page + 1, 0, count];
+        wallpaperCurrentPage = Math.max(1, Math.min(wallpaperPageCount, Math.floor(Number(page))));
     }
 
     onFilteredWallpapersChanged: wallpaperCurrentPage = 1
-    onWallpapersPerPageChanged: wallpaperCurrentPage = 1
     onWallpaperPageCountChanged: {
         if (wallpaperCurrentPage > wallpaperPageCount)
             wallpaperCurrentPage = wallpaperPageCount;
@@ -520,7 +504,6 @@ FluWindow {
                     currentTab: window.currentTab
                     searchText: window.currentTab === 0 ? window.searchText : window.workshopSearchText
                     explorerIconSize: window.explorerIconSize
-                    wallpapersPerPage: window.wallpapersPerPage
                     sortMode: window.sortMode
                     sortDescending: window.sortDescending
                     onFilterRequested: window.filtersVisible = !window.filtersVisible
@@ -531,7 +514,6 @@ FluWindow {
                             mirage.submitWorkshopSearch();
                     }
                     onIconSizeChanged: size => window.explorerIconSize = size
-                    onPageSizeChanged: count => window.wallpapersPerPage = count
                     onSortChanged: key => {
                         if (key === "direction") {
                             window.sortDescending = !window.sortDescending;
