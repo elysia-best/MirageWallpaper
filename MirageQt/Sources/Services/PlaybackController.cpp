@@ -112,6 +112,21 @@ RenderOptions PlaybackController::renderOptionsFor(const Wallpaper& item) const 
     return options;
 }
 
+QVector<int> PlaybackController::enabledDisplayScreens() const {
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    QVector<int> result;
+    result.reserve(m_owner->m_displayModel.rowCount());
+    for (int row = 0; row < m_owner->m_displayModel.rowCount(); ++row) {
+        const QString stableId = m_owner->m_displayModel.stableIdAt(row);
+        for (int screen = 0; screen < screens.size(); ++screen) {
+            if (RendererController::stableOutputId(screens.at(screen)) != stableId) continue;
+            result.append(screen);
+            break;
+        }
+    }
+    return result;
+}
+
 QVariantList PlaybackController::displays() const {
     QVariantList result;
     const QList<QScreen*> screens = QGuiApplication::screens();
@@ -174,8 +189,18 @@ void PlaybackController::apply(const Wallpaper& item, bool allScreens) {
     bool applied = false;
     QString error;
     const RenderOptions options = renderOptionsFor(item);
-    const int count = allScreens ? qMax(1, QGuiApplication::screens().size()) : 1;
-    for (int screen = 0; screen < count; ++screen) {
+    const QVector<int> enabledScreens = enabledDisplayScreens();
+    QVector<int> targets;
+    if (allScreens) {
+        targets = enabledScreens;
+    } else if (!enabledScreens.isEmpty()) {
+        const QList<QScreen*> screens = QGuiApplication::screens();
+        const int primaryIndex = screens.indexOf(QGuiApplication::primaryScreen());
+        targets.append(enabledScreens.contains(primaryIndex) ? primaryIndex : enabledScreens.first());
+    } else {
+        error = QStringLiteral("没有启用 Mirage 壁纸的显示器");
+    }
+    for (const int screen : targets) {
         QString screenError;
         if (m_renderer->render(item, screen, options, &screenError)) {
             applied = true;
@@ -201,6 +226,11 @@ void PlaybackController::applySelectedToScreen(int screen) {
     const Wallpaper item = m_owner->wallpaper(m_owner->m_selectedWallpaperId);
     if (!item.isValid()) return;
 
+    if (!enabledDisplayScreens().contains(screen)) {
+        m_owner->setStatusMessage(QStringLiteral("该显示器未启用 Mirage 壁纸"));
+        return;
+    }
+
     const int target = qBound(0, screen, m_owner->screenCount() - 1);
     QString error;
     if (m_renderer->render(item, target, renderOptionsFor(item), &error)) {
@@ -219,6 +249,10 @@ void PlaybackController::applySelectedToScreen(int screen) {
 
 void PlaybackController::playPlaylistItem(const Wallpaper& item) {
     if (!item.isValid()) return;
+    if (!enabledDisplayScreens().contains(m_owner->m_playlistScreen)) {
+        m_owner->setStatusMessage(QStringLiteral("当前显示器未启用 Mirage 壁纸"));
+        return;
+    }
     QString error;
     if (m_renderer->render(item, m_owner->m_playlistScreen, renderOptionsFor(item), &error)) {
         if (m_paused) {
@@ -459,10 +493,11 @@ bool PlaybackController::applySettings(const QVariantMap& values) {
 
 void PlaybackController::restoreStartupPlayback() {
     const QList<QScreen*> screens = QGuiApplication::screens();
+    const QVector<int> enabledScreens = enabledDisplayScreens();
     const QHash<QString, QString> lastApplied = m_playlist->lastAppliedIDs();
     for (auto it = lastApplied.constBegin(); it != lastApplied.constEnd(); ++it) {
         int screen = -1;
-        for (int index = 0; index < screens.size(); ++index) {
+        for (const int index : enabledScreens) {
             if (RendererController::stableOutputId(screens.at(index)) == it.key()) {
                 screen = index;
                 break;

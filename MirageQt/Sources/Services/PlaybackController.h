@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QSet>
 #include <QTimer>
+#include <QVector>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -71,6 +72,10 @@ private:
     enum class PlaybackAction { KeepRunning, Mute, Pause, Stop };
 
     RenderOptions renderOptionsFor(const Wallpaper& item) const;
+    /* Returns QGuiApplication screen indexes that have a registered
+     * mirage-display consumer. Renderer producers are meaningful only for
+     * these outputs; the full Qt screen list also contains disabled outputs. */
+    QVector<int> enabledDisplayScreens() const;
     // 把待发属性命令批量下发给渲染进程（合并窗口到期时由定时器调用）。
     void flushPropertyCommands();
     PlaybackAction actionForRule(const QString& rule, PlaybackAction current) const;
