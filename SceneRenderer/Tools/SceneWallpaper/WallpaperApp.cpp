@@ -564,6 +564,7 @@ constexpr std::uint32_t MirageDrmXrgb8888 = MirageDrmFormat('X', 'R', '2', '4');
 constexpr std::uint32_t MirageDrmArgb8888 = MirageDrmFormat('A', 'R', '2', '4');
 constexpr std::uint32_t MirageDrmXbgr8888 = MirageDrmFormat('X', 'B', '2', '4');
 constexpr std::uint32_t MirageDrmAbgr8888 = MirageDrmFormat('A', 'B', '2', '4');
+constexpr std::uint32_t MirageIntelVendorId = 0x8086U;
 
 class MirageProtocolHost {
 public:
@@ -642,6 +643,12 @@ public:
 
     int offerPool(const md_buffer_pool_t* pool) {
         if (pool == nullptr) return MD_ERR_INVALID;
+        md_producer_config_t output_config {};
+        {
+            std::lock_guard state_lock(m_state_mutex);
+            if (m_config_version == 0U) return MD_ERR_STATE;
+            output_config = m_config;
+        }
         std::lock_guard lock(m_producer_mutex);
         if (m_producer == nullptr ||
             md_producer_connection_state(m_producer) != MD_CONNECTION_READY) {
@@ -653,8 +660,14 @@ public:
             .generation = pool->generation,
             .source = {0.0f, 0.0f, static_cast<float>(pool->width),
                        static_cast<float>(pool->height)},
-            .destination = {0.0f, 0.0f, static_cast<float>(pool->width),
-                            static_cast<float>(pool->height)},
+            /* Source coordinates address the producer pool, but destination
+             * coordinates address output physical pixels.  Intel uses a
+             * logical-size pool below to avoid rendering Plasma's enlarged
+             * fractional-scale backing extent; the display adapter performs
+             * the one required final scale over the complete output. */
+            .destination = {0.0f, 0.0f,
+                            static_cast<float>(output_config.physical_width),
+                            static_cast<float>(output_config.physical_height)},
             .transform = MD_TRANSFORM_NORMAL,
             .clear_color = {0.0f, 0.0f, 0.0f, 1.0f},
         };
@@ -664,7 +677,41 @@ public:
     // Confirms the Vulkan device selected from OUTPUT_CONFIG before any pool
     // is offered. The producer library and broker both reject frames until
     // this succeeds, preventing a mixed-GPU DMA-BUF route.
-    int bindGpu(const md_producer_gpu_info_t& gpu) {
+    int bindGpu(const md_producer_gpu_info_t& gpu,
+                const std::vector<md_format_cap_t>& formats) {
+        if (!formats.empty()) {
+            std::uint64_t previous_epoch = 0U;
+            std::uint64_t previous_version = 0U;
+            {
+                std::lock_guard lock(m_state_mutex);
+                previous_epoch = m_connection_epoch;
+                previous_version = m_config_version;
+            }
+            const bool was_running = m_running.exchange(false);
+            m_state_cv.notify_all();
+            if (was_running && m_io_thread.joinable()) m_io_thread.join();
+            {
+                std::lock_guard lock(m_producer_mutex);
+                m_formats = formats;
+                if (m_producer != nullptr) {
+                    md_producer_free(m_producer);
+                    m_producer = nullptr;
+                }
+                if (!connectProducerLocked()) return MD_ERR_DISCONNECTED;
+            }
+            if (was_running) {
+                m_running.store(true);
+                m_io_thread = std::thread([this] { ioLoop(); });
+            }
+            std::unique_lock lock(m_state_mutex);
+            if (!m_state_cv.wait_for(lock, std::chrono::seconds(15),
+                                     [this, previous_epoch, previous_version] {
+                    return m_connection_epoch > previous_epoch &&
+                           m_config_version > previous_version;
+                })) {
+                return MD_ERR_IO;
+            }
+        }
         std::lock_guard lock(m_producer_mutex);
         if (m_producer == nullptr ||
             md_producer_connection_state(m_producer) != MD_CONNECTION_READY) {
@@ -806,10 +853,15 @@ private:
          * Vulkan consumer's QSGVulkanTexture::fromNative assumes RGBA8 for
          * external images, so a B8G8R8A8 slot (XRGB/ARGB) would render with
          * swapped R/B channels. */
-        const md_format_cap_t formats[] = {
+        const md_format_cap_t default_formats[] = {
             {.fourcc = MirageDrmXbgr8888, .plane_count = 1, .modifier = 0},
             {.fourcc = MirageDrmAbgr8888, .plane_count = 1, .modifier = 0},
         };
+        const md_format_cap_t* formats =
+            m_formats.empty() ? default_formats : m_formats.data();
+        const std::uint32_t format_count =
+            m_formats.empty() ? static_cast<std::uint32_t>(std::size(default_formats))
+                              : static_cast<std::uint32_t>(m_formats.size());
         md_producer_info_t info {
             .stable_output_id = m_output_id.c_str(),
             .kind = "scene",
@@ -818,7 +870,7 @@ private:
             .device_uuid = {},
             .driver_uuid = {},
             .formats = formats,
-            .format_count = static_cast<std::uint32_t>(std::size(formats)),
+            .format_count = format_count,
         };
         const int result = md_producer_connect(m_producer, m_socket_path.c_str(),
                                                "SceneWallpaper", "0.1.0", &info, 3000);
@@ -896,6 +948,7 @@ private:
     std::thread m_io_thread;
     std::mutex m_run_mutex;
     std::condition_variable m_run_cv;
+    std::vector<md_format_cap_t> m_formats;
 };
 
 class MirageProtocolSwapchain final : public sr::ExSwapchain {
@@ -914,16 +967,74 @@ public:
         id.pNext = &drm;
         properties.pNext = &id;
         vkGetPhysicalDeviceProperties2(physical_device, &properties);
+        /* Intel integrated GPUs share memory bandwidth with the CPU.  A
+         * fractionally scaled Plasma output can expose a physical backing
+         * extent far larger than the wallpaper's logical geometry, so render
+         * the scene at logical size and let the consumer do the final scale.
+         * Other vendors retain their established physical-size path. */
+        m_use_logical_pool = properties.properties.vendorID == MirageIntelVendorId;
         if (drm.hasRender != VK_TRUE || drm.renderMajor < 0 || drm.renderMinor < 0) {
             std::fprintf(stderr, "SceneWallpaper: selected Vulkan device has no valid DRM render node\n");
             return;
+        }
+        if (m_use_logical_pool) {
+            md_producer_config_t bootstrap_config {};
+            std::uint64_t bootstrap_version = 0U;
+            std::uint64_t bootstrap_epoch = 0U;
+            if (!m_host.currentConfig(bootstrap_config, bootstrap_version,
+                                      bootstrap_epoch) ||
+                bootstrap_config.logical_width == 0U ||
+                bootstrap_config.logical_height == 0U) {
+                std::fprintf(stderr,
+                             "SceneWallpaper: invalid Intel logical output extent\n");
+                return;
+            }
+            std::vector<md_format_cap_t> formats;
+            const std::array<std::uint32_t, 2U> fourccs {
+                MirageDrmXbgr8888,
+                MirageDrmAbgr8888,
+            };
+            for (const std::uint32_t fourcc : fourccs) {
+                std::uint32_t count = 0U;
+                if (md_vk_query_export_format_caps(
+                        physical_device, fourcc, bootstrap_config.logical_width,
+                        bootstrap_config.logical_height, nullptr, 0U, &count) != MD_OK ||
+                    count == 0U) {
+                    continue;
+                }
+                const std::size_t offset = formats.size();
+                formats.resize(offset + count);
+                std::uint32_t written = count;
+                if (md_vk_query_export_format_caps(
+                        physical_device, fourcc, bootstrap_config.logical_width,
+                        bootstrap_config.logical_height, formats.data() + offset,
+                        count, &written) != MD_OK) {
+                    std::fprintf(stderr,
+                                 "SceneWallpaper: cannot query Intel export modifiers\n");
+                    return;
+                }
+                formats.resize(offset + written);
+            }
+            /* Prefer tiled layouts on Intel because rendering every frame into
+             * an explicit linear image saturates shared memory bandwidth.
+             * Linear remains an exact, negotiated last candidate. */
+            std::stable_partition(formats.begin(), formats.end(),
+                                  [](const md_format_cap_t& format) {
+                return format.modifier != 0U;
+            });
+            m_intel_export_formats = formats;
+            if (m_intel_export_formats.empty()) {
+                std::fprintf(stderr,
+                             "SceneWallpaper: Intel Vulkan exporter has no supported modifiers\n");
+                return;
+            }
         }
         md_producer_gpu_info_t gpu {};
         gpu.drm_render_major = static_cast<std::uint32_t>(drm.renderMajor);
         gpu.drm_render_minor = static_cast<std::uint32_t>(drm.renderMinor);
         std::memcpy(gpu.device_uuid, id.deviceUUID, sizeof(gpu.device_uuid));
         std::memcpy(gpu.driver_uuid, id.driverUUID, sizeof(gpu.driver_uuid));
-        if (m_host.bindGpu(gpu) != MD_OK) {
+        if (m_host.bindGpu(gpu, m_intel_export_formats) != MD_OK) {
             std::fprintf(stderr,
                          "SceneWallpaper: mirage-display rejected GPU binding for renderD%u\n",
                          gpu.drm_render_minor);
@@ -1021,15 +1132,18 @@ public:
 
 private:
     void rebuild(const md_producer_config_t& config) {
-        if (m_exporter == nullptr || config.physical_width == 0 ||
-            config.physical_height == 0) return;
+        const std::uint32_t pool_width =
+            m_use_logical_pool ? config.logical_width : config.physical_width;
+        const std::uint32_t pool_height =
+            m_use_logical_pool ? config.logical_height : config.physical_height;
+        if (m_exporter == nullptr || pool_width == 0U || pool_height == 0U) return;
         setReady(false);
         const std::uint64_t generation = m_host.nextGeneration();
         md_vk_export_pool_info_t pool_info {
             .generation = generation,
             .buffer_count = 3,
-            .width = config.physical_width,
-            .height = config.physical_height,
+            .width = pool_width,
+            .height = pool_height,
             .fourcc = config.fourcc,
             .plane_count = config.plane_count,
             .modifier = config.modifier,
@@ -1041,8 +1155,8 @@ private:
             return;
         }
         m_generation = generation;
-        m_width = config.physical_width;
-        m_height = config.physical_height;
+        m_width = pool_width;
+        m_height = pool_height;
         m_format = md_vk_exporter_format(m_exporter);
         setReady(true);
     }
@@ -1075,6 +1189,8 @@ private:
     std::uint64_t m_sequence { 1 };
     std::uint64_t m_config_version { 0 };
     std::uint64_t m_connection_epoch { 0 };
+    bool m_use_logical_pool { false };
+    std::vector<md_format_cap_t> m_intel_export_formats;
     bool m_ready { false };
 };
 

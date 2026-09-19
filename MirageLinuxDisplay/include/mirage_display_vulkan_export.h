@@ -49,6 +49,20 @@ typedef struct md_vk_export_pool_info {
 md_vk_exporter_t* md_vk_exporter_new(const md_vk_export_context_t* context);
 void md_vk_exporter_free(md_vk_exporter_t* exporter);
 
+/*
+ * Enumerates exact DMA-BUF modifiers that the exporter can allocate for the
+ * requested extent with its transfer source/destination usage. Passing
+ * caps=NULL and capacity=0 queries the count. The caller owns the output array;
+ * no returned data is retained, and this read-only query is thread-safe with
+ * respect to unrelated Vulkan objects owned by the caller.
+ */
+md_result_t md_vk_query_export_format_caps(VkPhysicalDevice physical_device,
+                                           uint32_t fourcc, uint32_t width,
+                                           uint32_t height,
+                                           md_format_cap_t* caps,
+                                           uint32_t capacity,
+                                           uint32_t* out_count);
+
 /* Replaces the current pool after waiting for caller-owned device work to finish. */
 md_result_t md_vk_exporter_create_pool(md_vk_exporter_t* exporter,
                                        const md_vk_export_pool_info_t* info);

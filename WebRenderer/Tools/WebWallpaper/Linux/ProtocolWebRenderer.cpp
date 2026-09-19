@@ -35,6 +35,7 @@ constexpr std::uint32_t Fourcc(char a, char b, char c, char d) {
 }
 constexpr std::uint32_t kXrgb8888 = Fourcc('X', 'B', '2', '4');
 constexpr std::uint32_t kWebExportBufferCount = 3U;
+constexpr std::uint32_t kIntelVendorId = 0x8086U;
 // mirage-display transports Linux input-event button codes. Mapping them at
 // this boundary mirrors SceneWallpaper and keeps the renderer Qt-typed.
 constexpr std::uint32_t kButtonLeft = 0x110u;
@@ -130,6 +131,37 @@ public:
         if (!createVulkan(error)) {
             stop();
             return false;
+        }
+        if (m_useLogicalPool) {
+            std::uint32_t count = 0U;
+            md_producer_config_t config {};
+            { std::lock_guard lock(m_stateMutex); config = m_outputConfig; }
+            if (md_vk_query_export_format_caps(
+                    m_physicalDevice, kXrgb8888, config.logical_width,
+                    config.logical_height, nullptr, 0U, &count) != MD_OK ||
+                count == 0U) {
+                if (error != nullptr) *error = QStringLiteral("Intel Vulkan exporter has no supported modifiers");
+                stop();
+                return false;
+            }
+            m_formats.resize(count);
+            std::uint32_t written = count;
+            if (md_vk_query_export_format_caps(
+                    m_physicalDevice, kXrgb8888, config.logical_width,
+                    config.logical_height, m_formats.data(), count, &written) != MD_OK) {
+                if (error != nullptr) *error = QStringLiteral("cannot query Intel Vulkan export modifiers");
+                stop();
+                return false;
+            }
+            m_formats.resize(written);
+            std::stable_partition(m_formats.begin(), m_formats.end(),
+                                  [](const md_format_cap_t& format) {
+                return format.modifier != 0U;
+            });
+            if (!reconnectProducer(error)) {
+                stop();
+                return false;
+            }
         }
         md_producer_gpu_info_t gpu {};
         gpu.drm_render_major = m_drmMajor;
@@ -283,17 +315,40 @@ private:
         };
         m_producer = md_producer_new(&callbacks);
         if (m_producer == nullptr) return false;
-        const md_format_cap_t formats[] = {{kXrgb8888, 1, 0}};
+        const md_format_cap_t defaultFormats[] = {{kXrgb8888, 1, 0}};
+        const md_format_cap_t* formats = m_formats.empty() ? defaultFormats : m_formats.data();
+        const std::uint32_t formatCount = m_formats.empty() ? 1U : static_cast<std::uint32_t>(m_formats.size());
         const QByteArray outputId = m_config.outputId.toUtf8();
         md_producer_info_t info {
             .stable_output_id = outputId.constData(), .kind = "web",
             .drm_render_major = m_drmMajor, .drm_render_minor = m_drmMinor, .device_uuid = {}, .driver_uuid = {},
-            .formats = formats, .format_count = 1,
+            .formats = formats, .format_count = formatCount,
         };
         std::memcpy(info.device_uuid, m_deviceUuid, sizeof(info.device_uuid));
         std::memcpy(info.driver_uuid, m_driverUuid, sizeof(info.driver_uuid));
         const QByteArray socket = m_config.socketPath.toUtf8();
         return md_producer_connect(m_producer, socket.constData(), "WebWallpaper", "0.1.0", &info, 3000) == MD_OK;
+    }
+
+    bool reconnectProducer(QString* error) {
+        std::uint64_t previousVersion = 0U;
+        { std::lock_guard lock(m_stateMutex); previousVersion = m_configVersion; }
+        const bool wasRunning = m_running.exchange(false);
+        m_stateCv.notify_all();
+        if (wasRunning && m_ioThread.joinable()) m_ioThread.join();
+        {
+            std::lock_guard lock(m_producerMutex);
+            if (m_producer != nullptr) { md_producer_free(m_producer); m_producer = nullptr; }
+            if (!connectProducer()) {
+                if (error != nullptr) *error = QStringLiteral("cannot reconnect display producer with Intel modifiers");
+                return false;
+            }
+        }
+        if (wasRunning) { m_running.store(true); m_ioThread = std::thread([this] { ioLoop(); }); }
+        std::unique_lock lock(m_stateMutex);
+        return m_stateCv.wait_for(lock, std::chrono::seconds(15), [this, previousVersion] {
+            return m_configVersion > previousVersion;
+        });
     }
 
     bool createVulkan(QString* error) {
@@ -380,6 +435,8 @@ private:
                 if ((props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
                     m_physicalDevice = device;
                     m_queueFamily = i;
+                    m_useLogicalPool =
+                        properties.properties.vendorID == kIntelVendorId;
                     m_drmMajor = static_cast<std::uint32_t>(drm.renderMajor);
                     m_drmMinor = static_cast<std::uint32_t>(drm.renderMinor);
                     std::memcpy(m_deviceUuid, id.deviceUUID, sizeof(m_deviceUuid));
@@ -420,18 +477,29 @@ private:
     bool rebuildPool(QString* error) {
         md_producer_config_t config {};
         { std::lock_guard lock(m_stateMutex); config = m_outputConfig; }
-        if (config.physical_width == 0 || config.physical_height == 0) {
+        /* QWebEngine capture and the host-visible Vulkan upload both scale
+         * directly with pixel count.  On Intel, render at the wallpaper's
+         * logical geometry instead of Plasma's enlarged fractional-scale
+         * backing extent; the display adapter performs one final GPU scale.
+         * Other vendors retain the existing physical-size capture path. */
+        const std::uint32_t poolWidth =
+            m_useLogicalPool ? config.logical_width : config.physical_width;
+        const std::uint32_t poolHeight =
+            m_useLogicalPool ? config.logical_height : config.physical_height;
+        if (poolWidth == 0U || poolHeight == 0U ||
+            config.physical_width == 0U || config.physical_height == 0U) {
             if (error != nullptr) *error = QStringLiteral("invalid output configuration");
             return false;
         }
         const md_vk_export_pool_info_t info {m_nextGeneration++, kWebExportBufferCount,
-                                             config.physical_width,
-                                             config.physical_height, config.fourcc != 0 ? config.fourcc : kXrgb8888,
+                                             poolWidth, poolHeight,
+                                             config.fourcc != 0 ? config.fourcc : kXrgb8888,
                                              config.plane_count != 0 ? config.plane_count : 1, config.modifier};
         if (md_vk_exporter_create_pool(m_exporter, &info) != MD_OK) return false;
         const md_buffer_pool_t* pool = md_vk_exporter_pool(m_exporter);
         md_display_config_t display {info.generation, {0, 0, static_cast<float>(info.width), static_cast<float>(info.height)},
-                                     {0, 0, static_cast<float>(info.width), static_cast<float>(info.height)},
+                                     {0, 0, static_cast<float>(config.physical_width),
+                                      static_cast<float>(config.physical_height)},
                                      MD_TRANSFORM_NORMAL, {0, 0, 0, 1}};
         std::lock_guard lock(m_producerMutex);
         if (md_producer_offer_buffers(m_producer, pool) != MD_OK || md_producer_set_config(m_producer, &display) != MD_OK) return false;
@@ -604,6 +672,8 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VkQueue m_queue = VK_NULL_HANDLE;
     std::uint32_t m_queueFamily = 0;
+    bool m_useLogicalPool { false };
+    std::vector<md_format_cap_t> m_formats;
     md_vk_exporter_t* m_exporter = nullptr;
     std::array<UploadSlot, MIRAGE_DISPLAY_MAX_BUFFERS> m_stagingSlots {};
     std::uint32_t m_uploadWidth = 0;

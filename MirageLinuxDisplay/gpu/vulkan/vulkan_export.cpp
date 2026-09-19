@@ -13,6 +13,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <vector>
 
 #include <fcntl.h>
 
@@ -485,6 +486,92 @@ md_result_t allocate_slot(md_vk_exporter_t* const exporter,
 }
 
 }  // namespace
+
+/*
+ * Producer capability query paired with allocate_slot().  Consumer import
+ * capabilities are insufficient here: an import-only modifier must never be
+ * advertised by a producer that later needs to export its allocation.
+ */
+extern "C" md_result_t md_vk_query_export_format_caps(
+    const VkPhysicalDevice physical_device, const uint32_t fourcc,
+    const uint32_t width, const uint32_t height, md_format_cap_t* const caps,
+    const uint32_t capacity, uint32_t* const out_count) {
+    if (physical_device == VK_NULL_HANDLE || width == 0U || height == 0U ||
+        out_count == nullptr || (capacity > 0U && caps == nullptr)) {
+        return MD_ERR_INVALID;
+    }
+
+    VkFormat format{};
+    VkComponentMapping mapping{};
+    const md_result_t format_result = md_vk_fourcc_to_format(fourcc, &format, &mapping);
+    if (format_result != MD_OK) return format_result;
+
+    VkDrmFormatModifierPropertiesListEXT modifier_list{};
+    modifier_list.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT;
+    VkFormatProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+    properties.pNext = &modifier_list;
+    vkGetPhysicalDeviceFormatProperties2(physical_device, format, &properties);
+    std::vector<VkDrmFormatModifierPropertiesEXT> modifiers(
+        modifier_list.drmFormatModifierCount);
+    modifier_list.pDrmFormatModifierProperties = modifiers.data();
+    vkGetPhysicalDeviceFormatProperties2(physical_device, format, &properties);
+
+    constexpr VkFormatFeatureFlags required_features =
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    constexpr VkImageUsageFlags required_usage =
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    uint32_t available = 0U;
+    uint32_t written = 0U;
+    for (const VkDrmFormatModifierPropertiesEXT& modifier : modifiers) {
+        if ((modifier.drmFormatModifierTilingFeatures & required_features) !=
+                required_features ||
+            modifier.drmFormatModifierPlaneCount == 0U ||
+            modifier.drmFormatModifierPlaneCount > MIRAGE_DISPLAY_MAX_PLANES) {
+            continue;
+        }
+
+        VkPhysicalDeviceImageDrmFormatModifierInfoEXT modifier_info{};
+        modifier_info.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT;
+        modifier_info.drmFormatModifier = modifier.drmFormatModifier;
+        modifier_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkPhysicalDeviceExternalImageFormatInfo external_info{};
+        external_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO;
+        external_info.pNext = &modifier_info;
+        external_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        VkPhysicalDeviceImageFormatInfo2 image_info{};
+        image_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+        image_info.pNext = &external_info;
+        image_info.format = format;
+        image_info.type = VK_IMAGE_TYPE_2D;
+        image_info.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+        image_info.usage = required_usage;
+
+        VkExternalImageFormatProperties external_properties{};
+        external_properties.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES;
+        VkImageFormatProperties2 image_properties{};
+        image_properties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+        image_properties.pNext = &external_properties;
+        if (vkGetPhysicalDeviceImageFormatProperties2(
+                physical_device, &image_info, &image_properties) != VK_SUCCESS ||
+            width > image_properties.imageFormatProperties.maxExtent.width ||
+            height > image_properties.imageFormatProperties.maxExtent.height ||
+            (external_properties.externalMemoryProperties.externalMemoryFeatures &
+             VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) == 0U) {
+            continue;
+        }
+
+        if (caps != nullptr && written < capacity) {
+            caps[written] = {fourcc, modifier.drmFormatModifierPlaneCount,
+                             modifier.drmFormatModifier};
+            ++written;
+        }
+        ++available;
+    }
+    *out_count = available;
+    return caps != nullptr && capacity < available ? MD_ERR_NOMEM : MD_OK;
+}
 
 
 /*
