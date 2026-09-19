@@ -27,8 +27,8 @@ set(FLUENTUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FLUENTUI_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
 add_subdirectory(Vendor/FluentUI/src)
 
-# MirageLinuxDisplay is vendored in-tree (see Vendors/MirageLinuxDisplay/README.md).
-set(MIRAGE_DISPLAY_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../Vendors/MirageLinuxDisplay")
+# MirageLinuxDisplay is maintained as a top-level repository component.
+set(MIRAGE_DISPLAY_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../MirageLinuxDisplay")
 set(MIRAGE_DISPLAY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(MIRAGE_DISPLAY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(MIRAGE_DISPLAY_PLUGIN_QML OFF CACHE BOOL "" FORCE)

@@ -11,7 +11,7 @@ The source tree mirrors the macOS app:
 - `Sources/SteamSetup` contains SteamCMD setup and login UI.
 
 Dynamic desktop wallpapers are applied through the mirage-display protocol
-(the vendored `MirageLinuxDisplay` library): MirageQt hosts the display broker,
+(the repository-maintained `MirageLinuxDisplay` library): MirageQt hosts the display broker,
 and the `SceneWallpaper` / `VideoWallpaper` / `WebWallpaper` renderer processes export frames to
 the desktop environment's display adapter. The consumer adapter is the KDE
 Plasma wallpaper plugin, so applying a live wallpaper requires a Plasma session
@@ -24,9 +24,8 @@ mirage-display/Plasma environment as scene wallpapers.
 
 Build:
 
-The mirage-display integration library is vendored in-tree under
-`Vendors/MirageLinuxDisplay/` (pinned snapshot, see its README for the upstream
-commit); no external `MirageLinuxDisplay` checkout is required.
+The mirage-display integration library is maintained in this repository at
+`MirageLinuxDisplay/`; no external `MirageLinuxDisplay` checkout is required.
 
 ```sh
 cmake -S VideoRenderer -B VideoRenderer/build/release -G Ninja -DCMAKE_BUILD_TYPE=Release

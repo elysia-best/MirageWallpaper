@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # WebRenderer build helper. macOS uses Apple frameworks; Linux uses QtWebEngine
-# and the vendored MirageLinuxDisplay Vulkan producer.
+# and the repository-maintained MirageLinuxDisplay Vulkan producer.
 #
 # Usage:
 #   scripts/build.sh             release build (default): configure + build + report

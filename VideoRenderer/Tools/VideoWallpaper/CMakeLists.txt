@@ -30,7 +30,7 @@ elseif(UNIX AND NOT APPLE)
         Linux/ProtocolVideoRenderer.cpp)
     target_compile_definitions(VideoWallpaper PRIVATE
         VIDEORENDERER_MIRAGE_DISPLAY=1)
-    # Public headers of the vendored MirageLinuxDisplay library (see Vendors/README).
+    # Public headers of the repository-maintained MirageLinuxDisplay library.
     target_include_directories(VideoWallpaper PRIVATE "${MIRAGE_DISPLAY_SOURCE_DIR}/include")
     target_link_libraries(VideoWallpaper PRIVATE
         mirage_display_static
