@@ -30,6 +30,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #if defined(__APPLE__)
 #include <sys/event.h>
 #endif
@@ -162,12 +163,15 @@ struct Options {
     std::string               user_properties;
     std::string               display_output_id;
     std::string               display_socket;
+    std::string               runtime_settings;
     std::optional<Resolution> resolution;
     std::optional<std::array<double, 2>> mouse_position;
     std::uint32_t             fps { 30 };
     std::uint32_t             input_hz { 60 };
     std::uint32_t             msaa { 1 };
     double                    render_scale { 1.0 };
+    sr::WallpaperPosition     position;
+    sr::FillMode              fill_mode { sr::FillMode::ASPECTCROP };
     std::uint32_t             screen { 0 };
     std::uint32_t             display_id { 0 };
     int                       run_seconds { 0 };
@@ -179,6 +183,7 @@ struct Options {
     bool                      spectrum_enabled { true };
     bool                      external_spectrum { false };
     bool                      load_from_memory { false };
+    bool                      metalfx { false };
 };
 
 struct AppState {
@@ -207,6 +212,33 @@ void EmitAudioDemand(bool needed) {
     std::lock_guard lock(LifecycleOutputMutex());
     std::cout << "{\"event\":\"audio-demand\",\"needed\":"
               << (needed ? "true" : "false") << "}\n" << std::flush;
+}
+
+std::string JsonEscaped(std::string_view text) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string           out;
+    out.reserve(text.size() + 8);
+    for (const char c : text) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
+            out.push_back(c);
+        } else if (byte < 0x20) {
+            out += "\\u00";
+            out.push_back(kHex[(byte >> 4) & 0xF]);
+            out.push_back(kHex[byte & 0xF]);
+        } else {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+void EmitUserShortcut(std::string_view name, std::string_view target) {
+    if (target.empty()) return;
+    std::lock_guard lock(LifecycleOutputMutex());
+    std::cout << "{\"event\":\"open-shortcut\",\"name\":\"" << JsonEscaped(name)
+              << "\",\"value\":\"" << JsonEscaped(target) << "\"}\n" << std::flush;
 }
 
 /// Answers a {"cmd":"snapshot"} request. The token is echoed verbatim so the app
@@ -300,9 +332,15 @@ void PrintUsage(const char* argv0) {
         << "Options:\n"
         << "  -f, --fps N                 Render FPS (default 30)\n"
         << "  -R, --resolution WxH        Override render resolution\n"
+        << "      --render-scale S        Render scale 0.25..1.0 (default 1.0)\n"
+        << "      --fill MODE             cover, contain or stretch\n"
+        << "      --position-x N          Horizontal crop position 0..1 (default 0.5)\n"
+        << "      --position-y N          Vertical crop position 0..1 (default 0.5)\n"
+        << "      --metalfx               Enable MetalFX Spatial scaling\n"
         << "  -C, --cache-path DIR        Cache directory\n"
         << "  -M, --msaa N                MSAA samples for screen RT\n"
         << "  -P, --user-properties FILE  JSON object of WE user properties\n"
+        << "      --runtime FILE          Runtime speed and script-storage snapshot\n"
         << "  -V, --valid-layer           Enable Vulkan validation layer\n"
         << "  -G, --graphviz              Emit graph.dot for the render graph\n"
         << "      --mouse-position X,Y    Initial normalized mouse position\n"
@@ -316,6 +354,7 @@ void PrintUsage(const char* argv0) {
         << "      --deferred-show         Keep the window transparent until activated\n"
         << "      --no-spectrum           Disable audio response\n"
         << "      --external-spectrum     Receive spectrum from stdin\n"
+        << "      --load-from-memory      Keep source assets resident in memory\n"
         << "      --run-seconds N         Exit after N seconds (test helper)\n";
 }
 
@@ -411,6 +450,8 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             out.external_spectrum = true;
         } else if (arg == "--load-from-memory") {
             out.load_from_memory = true;
+        } else if (arg == "--metalfx") {
+            out.metalfx = true;
         } else if (arg == "--screen") {
             const char* value = require_value(i, arg);
             if (value == nullptr || ! ParseUInt(value, out.screen)) return false;
@@ -437,6 +478,19 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             const char* value = require_value(i, arg);
             if (value == nullptr || ! ParseDouble(value, out.render_scale)) return false;
             out.render_scale = std::clamp(out.render_scale, 0.25, 1.0);
+        } else if (arg == "--position-x" || arg == "--position-y") {
+            const char* value = require_value(i, arg);
+            double coordinate = 0.5;
+            if (value == nullptr || !ParseDouble(value, coordinate)) return false;
+            (arg == "--position-x" ? out.position.x : out.position.y) = std::clamp(coordinate, 0.0, 1.0);
+        } else if (arg == "--fill") {
+            const char* value = require_value(i, arg);
+            if (value == nullptr) return false;
+            const std::string_view mode(value);
+            if (mode == "cover") out.fill_mode = sr::FillMode::ASPECTCROP;
+            else if (mode == "contain") out.fill_mode = sr::FillMode::ASPECTFIT;
+            else if (mode == "stretch") out.fill_mode = sr::FillMode::STRETCH;
+            else return false;
         } else if (arg == "-C" || arg == "--cache-path") {
             const char* value = require_value(i, arg);
             if (value == nullptr) return false;
@@ -448,6 +502,10 @@ bool ParseArgs(int argc, char** argv, Options& out) {
             const char* value = require_value(i, arg);
             if (value == nullptr) return false;
             out.user_properties = value;
+        } else if (arg == "--runtime") {
+            const char* value = require_value(i, arg);
+            if (value == nullptr) return false;
+            out.runtime_settings = value;
         } else if (arg == "--mouse-position") {
             const char* value = require_value(i, arg);
             if (value == nullptr) return false;
@@ -506,23 +564,6 @@ bool LoadUserProperties(const std::string& path, sr::SceneWallpaperConfig& confi
     return true;
 }
 
-#if defined(__APPLE__)
-extern "C" void SceneRendererSetLiveMetalFrameCallback(
-    void (*cb)(void*, std::uint32_t, std::uint32_t, void*), void* userdata);
-
-void LiveMetalFrameCallback(void* texture, std::uint32_t width, std::uint32_t height,
-                            void* userdata) {
-    auto* state = static_cast<AppState*>(userdata);
-    if (state == nullptr || state->desktop == nullptr) return;
-    sr::host::DesktopPresent(state->desktop, texture, width, height);
-}
-
-class LiveMetalFrameCallbackGuard {
-public:
-    ~LiveMetalFrameCallbackGuard() { SceneRendererSetLiveMetalFrameCallback(nullptr, nullptr); }
-};
-#endif
-
 void MouseMoveCallback(double x, double y, void* userdata) {
     auto* state = static_cast<AppState*>(userdata);
     if (state == nullptr || state->wallpaper == nullptr) return;
@@ -549,6 +590,16 @@ void FirstFramePresentedCallback(void* userdata) {
 void ActivatedCallback(void* userdata) {
     auto* state = static_cast<AppState*>(userdata);
     EmitLifecycleEvent(state, "activated");
+}
+
+void ActivationFailedCallback(void* userdata) {
+    auto* state = static_cast<AppState*>(userdata);
+    EmitLifecycleEvent(state, "activation-failed");
+}
+
+void DeactivatedCallback(void* userdata) {
+    auto* state = static_cast<AppState*>(userdata);
+    EmitLifecycleEvent(state, "deactivated");
 }
 
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
@@ -1227,12 +1278,9 @@ int main(int argc, char** argv) {
 
 #if defined(__APPLE__)
     setenv("MVK_CONFIG_PRESENT_WITH_COMMAND_BUFFER", "1", /*overwrite=*/0);
-    // MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS is deliberately NOT set: it makes
-    // every vkQueueSubmit block the calling thread until the Metal command
-    // buffer completes, which stalls the host on top of the frame's own fence
-    // wait and defeats any CPU/GPU overlap. The renderer's synchronisation is
-    // explicit (fences + semaphores), so the asynchronous default is correct.
-    // Still overrideable from the shell for debugging.
+    // Keep MoltenVK's submission-thread policy at the driver default. In 1.4.2,
+    // SYNCHRONOUS_QUEUE_SUBMITS defaults to 1 and encodes on the caller thread;
+    // it does not wait for GPU completion. Fences govern resource reuse below.
 #endif
 
     AppState      state;
@@ -1251,8 +1299,16 @@ int main(int argc, char** argv) {
         .mouse_button          = MouseButtonCallback,
         .mouse_enter           = MouseEnterCallback,
         .closed                = nullptr,
+        .redraw_requested      = [](void* userdata) {
+            auto* app_state = static_cast<AppState*>(userdata);
+            if (app_state != nullptr && app_state->wallpaper != nullptr) {
+                app_state->wallpaper->requestFrame();
+            }
+        },
         .first_frame_presented = FirstFramePresentedCallback,
         .activated             = ActivatedCallback,
+        .activation_failed     = ActivationFailedCallback,
+        .deactivated           = DeactivatedCallback,
         .userdata              = &state,
     };
     std::uint32_t render_width = 0;
@@ -1264,7 +1320,6 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to connect to the mirage-display broker or receive output configuration\n";
         return 1;
     }
-#if defined(SCENERENDERER_MIRAGE_DISPLAY)
     md_producer_config_t producer_config {};
     std::uint64_t config_version = 0;
     std::uint64_t connection_epoch = 0;
@@ -1306,7 +1361,6 @@ int main(int argc, char** argv) {
     StartParentDeathWatchdog();
 #endif
 #endif
-#endif
     if (options.resolution) {
         render_width  = options.resolution->width;
         render_height = options.resolution->height;
@@ -1323,35 +1377,57 @@ int main(int argc, char** argv) {
     }
 
     sr::SceneWallpaperConfig config;
-    config.assets_dir        = options.assets_dir;
-    config.source_pkg_path   = options.scene_pkg;
-    config.graphviz          = options.graphviz;
-    config.fps               = options.fps;
-    config.muted             = options.muted;
+    config.assets_dir          = options.assets_dir;
+    config.source_pkg_path     = options.scene_pkg;
+    config.graphviz            = options.graphviz;
+    config.fps                 = options.fps;
+    config.position            = options.position;
+    config.fill_mode           = options.fill_mode;
+    config.muted               = options.muted;
     config.spectrum_enabled = options.spectrum_enabled;
     config.external_spectrum = options.external_spectrum;
     config.load_from_memory = options.load_from_memory;
+    config.script_storage_callback = [](std::string snapshot) {
+        std::lock_guard lock(LifecycleOutputMutex());
+        std::cout << "{\"event\":\"script-storage\",\"values\":" << snapshot << "}\n" << std::flush;
+    };
     if (options.cache_dir.empty()) {
         config.cache_dir = sr::platform::GetCachePath("SceneRenderer");
     } else {
         config.cache_dir = options.cache_dir;
     }
 
+    if (!options.runtime_settings.empty()) {
+        std::ifstream file(options.runtime_settings);
+        std::string source(std::istreambuf_iterator<char>(file), {});
+        auto parsed = sr::ParseJson(source, { .allow_comments = false });
+        if (!file || parsed.is_err()) {
+            state.wallpaper = nullptr;
+            return 1;
+        }
+        auto runtime = parsed.unwrap();
+        if (!runtime.is_object()) {
+            state.wallpaper = nullptr;
+            return 1;
+        }
+        if (auto speed = runtime.get("speed"); speed.is_some())
+            config.speed = static_cast<float>((*speed)->as_f64().unwrap());
+        config.script_storage_snapshot = "{}";
+        config.script_storage_callback = {};
+        if (auto storage = runtime.get("scriptStorage"); storage.is_some() && (*storage)->is_object())
+            config.script_storage_snapshot = sr::Dump(**storage);
+    }
+
     if (! LoadUserProperties(options.user_properties, config)) {
         return 1;
     }
 
-#if defined(__APPLE__)
-    SceneRendererSetLiveMetalFrameCallback(LiveMetalFrameCallback, &state);
-    LiveMetalFrameCallbackGuard live_metal_guard;
-#endif
-
     sr::RenderInitInfo info;
     info.enable_valid_layer = options.valid_layer;
-    // Both the macOS desktop host and the Linux mirage-display producer render
-    // offscreen; only macOS presents through the live Metal frame callback.
-    info.offscreen = true;
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
+    // Linux publishes rendered images through the explicitly configured
+    // mirage-display DMA-BUF swapchain owned by the protocol host.
+    info.offscreen = true;
     info.target_drm_render_major = producer_config.target_drm_render_major;
     info.target_drm_render_minor = producer_config.target_drm_render_minor;
     info.target_gpu_flags = producer_config.target_gpu_flags;
@@ -1368,8 +1444,23 @@ int main(int argc, char** argv) {
                 width, height);
         };
 #else
-    info.redraw_callback = [desktop = desktop.get()]() {
-        sr::host::DesktopWake(desktop);
+    const bool use_metalfx = options.metalfx &&
+                             sr::host::DesktopPrepareMetalFX(state.desktop);
+    info.offscreen          = use_metalfx;
+    if (const char* directory = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR")) {
+        std::ofstream mode(std::string(directory) + "/presentation.json");
+        mode << "{\"metalfx_requested\":" << (options.metalfx ? "true" : "false")
+             << ",\"metalfx_presenter\":" << (use_metalfx ? "true" : "false") << "}\n";
+    }
+    info.width              = ClampRenderExtent(render_width, 1920);
+    info.height             = ClampRenderExtent(render_height, 1080);
+    info.msaa_samples       = options.msaa;
+    info.allow_on_demand         = true;
+    info.frame_activity_callback = [&state](bool running) {
+        sr::host::DesktopSetPaused(state.desktop, ! running);
+    };
+    info.redraw_callback    = [&state]() {
+        sr::host::DesktopWake(state.desktop);
     };
 #endif
 
@@ -1377,14 +1468,9 @@ int main(int argc, char** argv) {
     info.height          = ClampRenderExtent(render_height, 1080);
     info.msaa_samples    = options.msaa;
 #if defined(__APPLE__)
-    if (!protocol_mode) {
-        info.redraw_callback = [desktop = desktop.get()]() {
-            sr::host::DesktopWake(desktop);
-        };
-    }
     info.failure_callback = [&state](VkResult) {
         EmitLifecycleEvent(&state, "renderer-error");
-        SceneRendererMacDesktopStop(state.desktop);
+        sr::host::DesktopStop(state.desktop);
     };
     if (use_metalfx) {
         info.metal_frame_callback = [&state](void* texture, void* command_queue,
@@ -1418,6 +1504,12 @@ int main(int argc, char** argv) {
 #endif
 
     wallpaper.setOnAudioDemand(EmitAudioDemand);
+    wallpaper.setOnPositionAvailability([](bool x, bool y) {
+        std::lock_guard lock(LifecycleOutputMutex());
+        std::cout << "{\"event\":\"position-availability\",\"x\":" << (x ? "true" : "false")
+                  << ",\"y\":" << (y ? "true" : "false") << "}\n" << std::flush;
+    });
+    wallpaper.setOnUserShortcut(EmitUserShortcut);
     wallpaper.configure(std::move(config));
     wallpaper.initVulkan(std::move(info));
 
@@ -1478,14 +1570,23 @@ int main(int argc, char** argv) {
         control.emplace(
             wallpaper,
             [desktop_handle]() { sr::host::DesktopStop(desktop_handle); },
-            [desktop_handle]() { sr::host::DesktopActivate(desktop_handle); }
+            [desktop_handle]() { sr::host::DesktopActivate(desktop_handle); },
+            [desktop_handle]() { sr::host::DesktopDeactivate(desktop_handle); }
 #if defined(__APPLE__)
             ,
-            nullptr,
-            nullptr,
-            [](const std::string& path, const std::string& token) {
-                const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(path);
+            [&wallpaper](const std::string& path, const std::string& token) {
+                const bool ok = ! path.empty() && mirage::WriteSceneSnapshot(path, 4.0, [&wallpaper] {
+                    wallpaper.requestFrame();
+                });
                 EmitSnapshotDone(token, ok);
+            },
+            [&wallpaper](const std::string& token) {
+                wallpaper.exportScriptStorage([token](std::string snapshot) {
+                    std::lock_guard lock(LifecycleOutputMutex());
+                    std::cout << "{\"event\":\"script-storage\",\"token\":\""
+                              << JsonEscaped(token) << "\",\"values\":" << snapshot
+                              << "}\n" << std::flush;
+                });
             }
 #endif
             );

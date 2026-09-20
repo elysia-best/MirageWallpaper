@@ -10,6 +10,7 @@ module;
 #include <atomic>
 #include <chrono>
 #include <ctime>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 
@@ -50,8 +51,18 @@ struct RenderSetScene {
 struct RenderSetFillMode {
     FillMode mode;
 };
+struct RenderSetPosition {
+    WallpaperPosition position;
+};
 struct RenderSetSpeed {
     float speed;
+};
+struct RenderSetFps {
+    uint32_t fps;
+};
+struct RenderSetAudioCapture {
+    bool enabled;
+    bool external;
 };
 struct RenderSetUserProperty {
     std::string key;
@@ -64,6 +75,7 @@ struct RenderStop {
     bool stop;
 };
 struct RenderDraw {};
+struct RenderRequestFrame {};
 struct RenderSwapchainReady {
     bool     ready;
     uint32_t width;
@@ -72,14 +84,20 @@ struct RenderSwapchainReady {
 struct RenderRequestPreparedPassDiagnostics {
     RenderPassDiagnosticCallback cb;
 };
+struct RenderResetScriptStorage {};
+struct RenderExportScriptStorage {
+    std::function<void(std::string)> callback;
+};
 
 // Wrapped in a non-std struct so the rstd channel's internal `addressof`
 // calls don't fall into ADL ambiguity with std::addressof when the element
 // type sits in namespace std.
 struct RenderMsg {
-    std::variant<RenderInit, RenderSetScene, RenderSetFillMode, RenderSetSpeed,
-                 RenderSetUserProperty, RenderSetMediaStatus, RenderStop, RenderDraw,
-                 RenderSwapchainReady, RenderRequestPreparedPassDiagnostics>
+    std::variant<RenderInit, RenderSetScene, RenderSetFillMode, RenderSetPosition, RenderSetSpeed,
+                 RenderSetFps, RenderSetAudioCapture, RenderSetUserProperty, RenderSetMediaStatus,
+                 RenderStop, RenderDraw, RenderRequestFrame, RenderSwapchainReady,
+                 RenderRequestPreparedPassDiagnostics, RenderResetScriptStorage,
+                 RenderExportScriptStorage>
         v;
 };
 
@@ -114,6 +132,12 @@ struct MainSetMuted {
 struct MainSetFillMode {
     FillMode mode { FillMode::ASPECTCROP };
 };
+struct MainSetPosition {
+    WallpaperPosition position;
+};
+struct MainPositionAvailability {
+    std::array<bool, 2> axes;
+};
 struct MainSetSpeed {
     float speed { 1.0f };
 };
@@ -142,7 +166,8 @@ struct MainPreparedPassDiagnostics {
 
 struct MainMsg {
     std::variant<MainLoadScene, MainConfigure, MainSetFps, MainSetVolume, MainSetVolumeScale,
-                 MainSetMuted, MainSetFillMode, MainSetSpeed, MainSetUserProperty,
+                 MainSetMuted, MainSetFillMode, MainSetPosition, MainPositionAvailability,
+                 MainSetSpeed, MainSetUserProperty,
                  MainSetFirstFrameCallback, MainSetUserPropertyDiagnosticCallback,
                  MainUserPropertyDiagnostics, MainSceneClearColorChanged,
                  MainPreparedPassDiagnostics, MainStop, MainPauseAudio, MainFirstFrame>
@@ -381,6 +406,14 @@ std::optional<std::string> ResolveRuntimeSceneTextureProperty(const Json& prop) 
                             : std::nullopt;
 }
 
+std::string ResolveRuntimeUserShortcutTextureProperty(const Json& prop) {
+    if (! prop.is_object()) return {};
+    auto icon = prop.get("icon");
+    if (icon.is_none()) return {};
+    auto string = (*icon)->as_str();
+    return string.is_some() ? rstd::cppstd::to_string(*string) : std::string {};
+}
+
 bool SameSceneMaterialId(SceneMaterialId lhs, SceneMaterialId rhs) {
     return lhs.index == rhs.index && lhs.generation == rhs.generation;
 }
@@ -404,21 +437,32 @@ vulkan::PassInvalidationFlags MaterialDirtyToPassInvalidationFlags(SceneMaterial
     return out;
 }
 
+void ApplySolidColorNeutralization(Scene&                                         scene,
+                                   const Scene::MaterialSolidColorNeutralization& neutralization,
+                                   SceneMaterial& material, bool texture_bound);
+
 std::vector<SceneMaterialId>
 ApplyUserPropertyToMaterialTextures(Scene& scene, const std::string& key, const Json& prop) {
     std::vector<SceneMaterialId> changed_materials;
     auto                         it = scene.material_texture_user_index.find(key);
     if (it == scene.material_texture_user_index.end()) return changed_materials;
 
-    auto texture_value = ResolveRuntimeSceneTextureProperty(prop);
-    if (! texture_value.has_value()) return changed_materials;
-
     for (const auto& binding : it->second) {
         if (! binding.material) continue;
+        std::optional<std::string> texture_value;
+        if (binding.kind == Scene::MaterialTextureUserBinding::Kind::UserShortcut)
+            texture_value = ResolveRuntimeUserShortcutTextureProperty(prop);
+        else
+            texture_value = ResolveRuntimeSceneTextureProperty(prop);
+        if (! texture_value.has_value()) continue;
         std::string next     = texture_value->empty() ? binding.fallback : *texture_value;
         auto        mutation = scene.SetMaterialTextureSlot(*binding.material, binding.slot, next);
         if (mutation.changed && mutation.material.has_value()) {
             PushUniqueMaterialId(changed_materials, *mutation.material);
+        }
+        if (binding.solid_color.has_value()) {
+            ApplySolidColorNeutralization(
+                scene, *binding.solid_color, *binding.material, next != binding.fallback);
         }
     }
 
@@ -439,8 +483,15 @@ sr::script::MediaStatus ToScriptMediaStatus(const MediaStatus& status) {
                                       .artist           = status.artist,
                                       .album            = status.album,
                                       .album_artist     = status.album_artist,
+                                      .position         = status.position,
+                                      .duration         = status.duration,
                                       .art_url          = status.art_url,
-                                      .previous_art_url = status.previous_art_url };
+                                      .previous_art_url = status.previous_art_url,
+                                      .primary_color    = status.primary_color,
+                                      .secondary_color  = status.secondary_color,
+                                      .tertiary_color   = status.tertiary_color,
+                                      .text_color       = status.text_color,
+                                      .high_contrast_color = status.high_contrast_color };
 }
 
 std::vector<SceneUserPropertyDiagnostic> CollectUserPropertyDiagnostics(const Scene&     scene,
@@ -594,6 +645,25 @@ bool MaterialHasShaderUniform(const SceneMaterial& material, std::string_view un
         material.customShader.variant->default_uniforms.contains(name))
         return true;
     return false;
+}
+
+void ApplySolidColorNeutralization(Scene&                                         scene,
+                                   const Scene::MaterialSolidColorNeutralization& neutralization,
+                                   SceneMaterial& material, bool texture_bound) {
+    auto&                 node = *neutralization.node;
+    const Eigen::Vector3f color =
+        texture_bound ? Eigen::Vector3f(1.0f, 1.0f, 1.0f) : neutralization.authored_color;
+    node.SetBaseColor(color, node.BaseAlpha());
+    const bool  has_user_alpha = MaterialHasShaderUniform(material, G_USERALPHA);
+    const float alpha = has_user_alpha ? node.BaseAlpha() : CurrentImagePropertyAlpha(node);
+    if (MaterialHasShaderUniform(material, G_COLOR4)) {
+        scene.SetMaterialShaderValue(
+            material, G_COLOR4, std::array<float, 4> { color.x(), color.y(), color.z(), alpha });
+    }
+    if (MaterialHasShaderUniform(material, G_COLOR)) {
+        scene.SetMaterialShaderValue(
+            material, G_COLOR, std::array<float, 3> { color.x(), color.y(), color.z() });
+    }
 }
 
 void ApplyUserPropertyToImageColor(Scene& scene, const std::string& key, const Json& prop) {
@@ -842,6 +912,66 @@ bool ApplyUserPropertyToNodeVisibility(Scene& scene, const std::string& key, con
     return scene.ApplyUserNodeVisibilityBindings(key, prop);
 }
 
+bool ApplyUserPropertyToNodeScale(Scene& scene, const std::string& key, const Json& prop) {
+    auto it = scene.node_scale_user_index.find(key);
+    if (it == scene.node_scale_user_index.end()) return false;
+
+    auto coerced = CoerceUserPropertyValue(prop);
+    if (! coerced.ok) return false;
+    const auto components = coerced.value.size();
+    if (components == 0) return false;
+
+    bool changed = false;
+    for (const auto& binding : it->second) {
+        Eigen::Vector3f next = binding.authored;
+        if (components >= 3) {
+            next = Eigen::Vector3f(coerced.value[0], coerced.value[1], coerced.value[2]);
+        } else {
+            const float factor = coerced.value[0];
+            if (! std::isfinite(factor)) continue;
+            next = Eigen::Vector3f(factor, factor, factor);
+        }
+        if (! next.allFinite()) continue;
+        binding.node->SetScale(next);
+        if (binding.on_changed) binding.on_changed();
+        changed = true;
+    }
+    return changed;
+}
+
+void ApplyUserPropertyToTextMaxWidth(Scene& scene, const std::string& key, const Json& prop) {
+    auto it = scene.text_maxwidth_user_index.find(key);
+    if (it == scene.text_maxwidth_user_index.end()) return;
+
+    auto coerced = CoerceUserPropertyValue(prop);
+    if (! coerced.ok || coerced.value.size() < 1) return;
+    const float max_width = coerced.value[0];
+    if (! std::isfinite(max_width) || max_width < 0.0f) return;
+    for (const auto& setter : it->second) {
+        if (setter) setter(max_width);
+    }
+}
+
+bool ApplyUserPropertyToPostProcessEnable(Scene& scene, const std::string& key, const Json& prop) {
+    auto it = scene.post_process_enable_user_index.find(key);
+    if (it == scene.post_process_enable_user_index.end()) return false;
+
+    auto coerced = CoerceUserPropertyValue(prop);
+    if (! coerced.ok || coerced.value.size() == 0) return false;
+    const bool enabled = coerced.value[0] != 0.0f;
+
+    bool changed = false;
+    for (auto& weak_pp : it->second) {
+        if (auto pp = weak_pp.lock()) {
+            if (pp->enabled != enabled) {
+                pp->enabled = enabled;
+                changed     = true;
+            }
+        }
+    }
+    return changed;
+}
+
 void ApplyUserPropertyBeforeFirstGraph(Scene& scene, const std::string& key, const Json& prop) {
     sr::script::SetSceneUserProperty(scene, key, prop);
     ApplyUserPropertyToClear(scene, key, prop);
@@ -854,6 +984,8 @@ void ApplyUserPropertyBeforeFirstGraph(Scene& scene, const std::string& key, con
     ApplyUserPropertyToPointSize(scene, key, prop);
     ApplyUserPropertyToTextColor(scene, key, prop);
     ApplyUserPropertyToTextAlpha(scene, key, prop);
+    ApplyUserPropertyToTextMaxWidth(scene, key, prop);
+    (void)ApplyUserPropertyToNodeScale(scene, key, prop);
     ApplyUserPropertyToParticles(scene, key, prop);
     ApplyUserPropertyToSoundVolume(scene, key, prop);
     ApplyUserPropertyToCameraParallax(scene, key, prop);
@@ -861,6 +993,7 @@ void ApplyUserPropertyBeforeFirstGraph(Scene& scene, const std::string& key, con
     ApplyUserPropertyToCameraPath(scene, key, prop);
     (void)ApplyUserPropertyToNodeVisibility(scene, key, prop);
     (void)scene.ApplyUserImageEffectVisibilityBindings(key, prop);
+    (void)ApplyUserPropertyToPostProcessEnable(scene, key, prop);
 }
 
 void MergeProjectUserProperties(const std::filesystem::path& project_dir, rstd::json::Map& out) {
@@ -915,6 +1048,27 @@ rstd::json::Map NormalizeUserProperties(const rstd::json::Map& input) {
 using MainSender   = msgloop::MessageLoop<MainMsg>::Sender;
 using RenderSender = msgloop::MessageLoop<RenderMsg>::Sender;
 
+bool SceneCanRenderOnDemand(const Scene& scene) {
+    // Deliberately exclude effect/history targets and arbitrary scripts. A
+    // steady image must be proven from the prepared scene, never guessed from
+    // consecutive identical pixels.
+    if (scene.script_scene || scene.uses_audio_spectrum || ! scene.shaderValueUpdater ||
+        scene.shaderValueUpdater->RequiresContinuousFrames() ||
+        (scene.paritileSys && ! scene.paritileSys->subsystems.empty()) ||
+        ! scene.camera_paths.empty() || ! scene.transform_updaters.empty() ||
+        ! scene.post_processes.empty() || scene.HasViewportScaleAnimation())
+        return false;
+    for (const auto& [name, target] : scene.renderTargets)
+        if (name != SpecTex_Default && name != WE_MIP_MAPPED_FRAME_BUFFER) return false;
+    for (const auto& [name, texture] : scene.textures)
+        if (texture.isVideo || texture.isSprite) return false;
+    for (const auto* node : scene.ResourceIndex().Nodes())
+        if (node && node->HasFieldAnimations()) return false;
+    for (const auto* material : scene.ResourceIndex().Materials())
+        if (material && ! material->customShader.valueAnimations.empty()) return false;
+    return true;
+}
+
 class SceneRenderController;
 
 class SceneRuntimeController {
@@ -936,6 +1090,8 @@ public:
     void on(MainSetVolumeScale&&);
     void on(MainSetMuted&&);
     void on(MainSetFillMode&&);
+    void on(MainSetPosition&&);
+    void on(MainPositionAvailability&&);
     void on(MainSetSpeed&&);
     void on(MainSetUserProperty&&);
     void on(MainSetFirstFrameCallback&&);
@@ -951,6 +1107,8 @@ public:
 
     void setOnClearColor(ClearColorCallback cb) { m_clear_color_cb = std::move(cb); }
     void setOnAudioDemand(AudioDemandCallback cb) { m_audio_demand_cb = std::move(cb); }
+    void setOnPositionAvailability(PositionAvailabilityCallback cb) { m_position_cb = std::move(cb); }
+    void setOnUserShortcut(UserShortcutCallback cb) { m_user_shortcut_cb = std::move(cb); }
 
 private:
     void loadScene();
@@ -969,7 +1127,10 @@ private:
     UserPropertyDiagnosticCallback               m_user_property_diagnostic_cb;
     ClearColorCallback                           m_clear_color_cb;
     AudioDemandCallback                          m_audio_demand_cb;
+    PositionAvailabilityCallback                 m_position_cb;
+    UserShortcutCallback                         m_user_shortcut_cb;
     uint64_t                                     m_audio_pause_generation { 0 };
+    bool                                         m_playback_paused { false };
     uint64_t                                     m_config_generation { 0 };
     uint64_t                                     m_prepared_scene_generation { 0 };
     uint64_t                                     m_submitted_scene_generation { 0 };
@@ -992,13 +1153,36 @@ public:
     void on(RenderInit&&);
     void on(RenderSetScene&&);
     void on(RenderSetFillMode&&);
+    void on(RenderSetPosition&&);
+    void updatePosition();
+    void redrawStoppedFrame();
     void on(RenderSetSpeed&&);
+    void on(RenderSetAudioCapture&& m) { configureAudioCapture(m.enabled, m.external); }
+    void on(RenderSetFps&& m) {
+        frame_timer.SetRequiredFps(static_cast<uint16_t>(std::clamp(m.fps, 5u, 240u)));
+    }
     void on(RenderSetUserProperty&&);
     void on(RenderSetMediaStatus&&);
     void on(RenderStop&&);
     void on(RenderDraw&&);
+    void on(RenderRequestFrame&&) {
+        if (m_stopped) {
+            redrawStoppedFrame();
+            return;
+        }
+        m_idle = false;
+        on(RenderDraw {});
+    }
+    void wakeIdleFrame() {
+        if (! m_idle || m_stopped) return;
+        m_idle = false;
+        if (m_frame_activity_cb) m_frame_activity_cb(true);
+        frame_timer.Run();
+    }
     void on(RenderSwapchainReady&&);
     void on(RenderRequestPreparedPassDiagnostics&&);
+    void on(RenderResetScriptStorage&&);
+    void on(RenderExportScriptStorage&&);
 
     ExSwapchain* exSwapchain() const { return m_render->exSwapchain(); }
     vulkan::VulkanRender* render() const { return m_render.get(); }
@@ -1032,7 +1216,8 @@ public:
     void configureAudioCapture(bool enabled, bool external) {
         m_audio_enabled.store(enabled, std::memory_order_release);
         m_external_audio.store(enabled && external, std::memory_order_release);
-        if (enabled) (void)m_audio_capture.init(! external);
+        m_audio_capture.uninit();
+        if (enabled && ! m_stopped) (void)m_audio_capture.init(! external);
     }
 
     void setExternalAudioSpectrum(std::array<float, 64> left,
@@ -1066,9 +1251,11 @@ public:
 
 private:
     void rebuildRenderGraph(vulkan::RenderGraphResourceRetention retention, bool evict_meshes);
+    void applyMediaStatus(const MediaStatus& status);
     void consumeDirtyEventsCoveredByGraphRebuild();
     void refreshPreparedMeshDirtyEvents();
     void refreshPreparedMaterialDirtyEvents();
+    void refreshPendingTextAtlasSwaps();
 
     bool snapshotExternalAudio(wavsen::audio::AudioSpectrum& out) {
         if (! m_external_audio.load(std::memory_order_acquire)) return false;
@@ -1089,12 +1276,19 @@ private:
 
     std::unique_ptr<vulkan::VulkanRender> m_render { std::make_unique<vulkan::VulkanRender>() };
     std::shared_ptr<Scene>                m_scene { nullptr };
+    std::optional<MediaStatus>            m_media_status;
     std::atomic<bool>                     m_scene_ready { false };
     RenderSceneSnapshot                   m_render_scene;
     std::unique_ptr<rg::RenderGraph>      m_rg { nullptr };
     float                                 m_speed { 1.0f };
     FillMode                              m_fillmode { FillMode::ASPECTCROP };
+    WallpaperPosition                     m_position;
+    std::optional<std::array<bool, 2>>      m_position_axes;
+    std::optional<double>                  m_last_render_time;
     bool                                  m_stopped { false };
+    bool                                    m_idle { false };
+    bool                                    m_allow_on_demand { false };
+    std::function<void(bool)>               m_frame_activity_cb;
 
     std::atomic<std::array<float, 2>> m_mouse_pos { std::array { 0.5f, 0.5f } };
     std::atomic<uint32_t>             m_buttons_down { 0 };
@@ -1123,24 +1317,31 @@ private:
 
 void SceneRenderController::on(RenderStop&& m) {
     m_stopped = m.stop;
+    m_idle    = false;
+    if (m_frame_activity_cb) m_frame_activity_cb(! m.stop);
     if (m.stop) {
         frame_timer.Stop();
+        m_audio_capture.uninit();
         m_render->flushPendingFrame();
     } else {
+        if (m_audio_enabled.load()) (void)m_audio_capture.init(! m_external_audio.load());
         frame_timer.Run();
     }
 }
 
 void SceneRenderController::on(RenderDraw&&) {
-    if (m_stopped) {
+    if (m_stopped || m_idle) {
         frame_timer.FrameBegin();
         frame_timer.FrameEnd();
         return;
     }
     frame_timer.FrameBegin();
     if (m_rg) {
+        const bool diagnostic = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR") != nullptr;
+        const double diagnostic_step = diagnostic && m_scene->elapsingTime < 20.0 ? 1.0 / 30.0 : 0.0;
+        if (diagnostic) m_scene->frameTime = diagnostic_step;
         {
-            auto pos                 = m_mouse_pos.load();
+            auto pos                 = diagnostic ? std::array<float, 2> { 0.5f, 0.5f } : m_mouse_pos.load();
             m_scene->pointerPosition = pos;
             m_scene->shaderValueUpdater->MouseInput(pos[0], pos[1]);
         }
@@ -1153,17 +1354,19 @@ void SceneRenderController::on(RenderDraw&&) {
         // The runtime is a no-op when no ScriptScene is installed.
         {
             sr::script::FrameInputs fi;
-            fi.frametime = static_cast<float>(m_scene->frameTime * m_speed);
+            fi.frametime   = static_cast<float>(m_scene->frameTime);
             fi.runtime   = static_cast<float>(m_scene->elapsingTime);
             fi.canvas_w  = static_cast<float>(m_scene->ortho[0]);
             fi.canvas_h  = static_cast<float>(m_scene->ortho[1]);
             fi.screen_w  = fi.canvas_w;
             fi.screen_h  = fi.canvas_h;
-            fi.time_of_day = LocalTimeOfDay();
+            fi.time_of_day = m_scene->script_scene ? LocalTimeOfDay() : 0.0f;
             {
                 auto pos    = m_mouse_pos.load();
                 fi.cursor_x = pos[0];
                 fi.cursor_y = pos[1];
+                if (m_scene->script_scene)
+                    fi.cursor_world = m_scene->CursorPositionOnCanvas(pos[0], pos[1]);
             }
             fi.cursor_in_window       = cursorInWindow();
             fi.mouse_buttons_down     = buttonsDown();
@@ -1201,6 +1404,17 @@ void SceneRenderController::on(RenderDraw&&) {
             const bool             stale =
                 ! primed || spec.publish_ms == 0 || (now_ms - spec.publish_ms) > kStaleMs;
             if (stale) spec.clear();
+            if (diagnostic) {
+                fi.frametime = static_cast<float>(diagnostic_step);
+                fi.time_of_day = 0.5f;
+                fi.cursor_x = 0.5f;
+                fi.cursor_y = 0.5f;
+                fi.cursor_world = m_scene->CursorPositionOnCanvas(0.5, 0.5);
+                fi.mouse_buttons_down = 0;
+                fi.mouse_buttons_pressed = 0;
+                fi.mouse_buttons_released = 0;
+                spec.clear();
+            }
             fi.audio_left    = spec.left;
             fi.audio_right   = spec.right;
             fi.audio_average = spec.average;
@@ -1218,7 +1432,7 @@ void SceneRenderController::on(RenderDraw&&) {
                 for (std::size_t i = begin; i < end; ++i) sum += fi.audio_average[i];
                 const float level = end > begin ? sum / static_cast<float>(end - begin) : 0.0f;
                 auto&       slot  = m_scene->audioAverage[bin];
-                const float old   = slot.load(std::memory_order_relaxed);
+                const float old   = diagnostic ? 0.0f : slot.load(std::memory_order_relaxed);
                 slot.store(std::max(old * 0.75f, level), std::memory_order_relaxed);
             }
             if (m_scene->uses_audio_spectrum) {
@@ -1238,6 +1452,7 @@ void SceneRenderController::on(RenderDraw&&) {
             }
         }
         m_scene->paritileSys->Emitt();
+        refreshPendingTextAtlasSwaps();
         refreshPreparedMeshDirtyEvents();
         refreshPreparedMaterialDirtyEvents();
 
@@ -1251,15 +1466,25 @@ void SceneRenderController::on(RenderDraw&&) {
         m_render->pumpFontAtlases(*m_scene);
 
         const bool rendered = m_render->drawFrame(*m_scene);
+        if (rendered) m_last_render_time = m_scene->elapsingTime;
         if (m_render->failed()) {
             frame_timer.Stop();
             frame_timer.FrameEnd();
             return;
         }
 
-        m_scene->PassFrameTime(frame_timer.IdeaTime() * m_speed);
+        m_scene->PassFrameTime(diagnostic ? diagnostic_step : frame_timer.IdeaTime() * m_speed);
 
         m_scene->shaderValueUpdater->FrameEnd();
+
+        if (rendered && m_allow_on_demand && ! diagnostic &&
+            std::getenv("SCENERENDERER_DUMP_FRAME") == nullptr &&
+            SceneCanRenderOnDemand(*m_scene)) {
+            frame_timer.Stop();
+            m_render->flushPendingFrame();
+            m_idle = true;
+            if (m_frame_activity_cb) m_frame_activity_cb(false);
+        }
 
         if (rendered && ! m_scene->first_frame_ok) {
             m_scene->first_frame_ok = true;
@@ -1271,11 +1496,44 @@ void SceneRenderController::on(RenderDraw&&) {
 
 void SceneRenderController::on(RenderSetFillMode&& m) {
     if (m.mode == m_fillmode) return;
+    wakeIdleFrame();
     m_fillmode = m.mode;
     if (m_scene && renderInited()) {
         m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
+        updatePosition();
         if (m_rg) m_render->refreshPreparedResources(*m_scene, m_render_scene);
+        redrawStoppedFrame();
     }
+}
+
+void SceneRenderController::updatePosition() {
+    if (!m_scene || !renderInited()) return;
+    const auto axes = m_render->UpdateCameraPosition(*m_scene, m_fillmode, m_position);
+    if (axes != m_position_axes && m_main_tx) {
+        m_position_axes = axes;
+        (void)m_main_tx->send(MainMsg { MainPositionAvailability { axes } });
+    }
+}
+
+void SceneRenderController::redrawStoppedFrame() {
+    if (!m_stopped || !m_scene || !m_rg || !m_render->readyToDraw()) return;
+    const double runtime = m_scene->elapsingTime;
+    const double frame_time = m_scene->frameTime;
+    m_scene->elapsingTime = m_last_render_time.value_or(runtime);
+    m_scene->frameTime = 0;
+    m_render->drawFrame(*m_scene);
+    m_render->flushPendingFrame();
+    m_scene->elapsingTime = runtime;
+    m_scene->frameTime = frame_time;
+}
+
+void SceneRenderController::on(RenderSetPosition&& m) {
+    const auto position = m.position.Normalized();
+    if (m_position == position) return;
+    wakeIdleFrame();
+    m_position = position;
+    updatePosition();
+    redrawStoppedFrame();
 }
 
 void SceneRenderController::rebuildRenderGraph(vulkan::RenderGraphResourceRetention retention,
@@ -1284,6 +1542,7 @@ void SceneRenderController::rebuildRenderGraph(vulkan::RenderGraphResourceRetent
     if (m_rg) m_render->clearLastRenderGraph(retention);
     if (evict_meshes) m_render->evictUnusedMeshes();
     m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
+    updatePosition();
     m_render_scene = ExtractRenderSceneSnapshot(*m_scene);
     m_rg           = sceneToRenderGraph(*m_scene, m_render_scene);
 
@@ -1323,6 +1582,16 @@ void SceneRenderController::refreshPreparedMeshDirtyEvents() {
     }
 }
 
+void SceneRenderController::refreshPendingTextAtlasSwaps() {
+    if (! m_scene || ! renderInited() || ! m_rg) return;
+    auto materials = m_scene->TakeTextTextureRefresh();
+    if (materials.empty()) return;
+    m_render_scene = ExtractRenderSceneSnapshot(*m_scene);
+    if (! m_render->refreshPreparedMaterialTextures(*m_scene, m_render_scene, materials)) {
+        rebuildRenderGraph(vulkan::RenderGraphResourceRetention::KeepSceneTextures, false);
+    }
+}
+
 void SceneRenderController::refreshPreparedMaterialDirtyEvents() {
     if (! m_scene || ! renderInited() || ! m_rg) return;
     auto events = m_scene->ConsumePreparedMaterialDirtyEvents();
@@ -1345,9 +1614,12 @@ void SceneRenderController::refreshPreparedMaterialDirtyEvents() {
 }
 
 void SceneRenderController::on(RenderSetScene&& m) {
+    wakeIdleFrame();
     m_scene_ready.store(false, std::memory_order_release);
     m_scene = std::move(m.scene);
+    m_last_render_time.reset();
     rebuildRenderGraph(vulkan::RenderGraphResourceRetention::ReleaseSceneTextures, true);
+    if (m_scene && m_media_status) applyMediaStatus(*m_media_status);
     m_scene_ready.store(m_scene != nullptr && m_render->readyToDraw(), std::memory_order_release);
     if (! m_stopped && renderInited() && m_rg && m_render->exSwapchain() == nullptr) {
         frame_timer.Run();
@@ -1359,6 +1631,7 @@ void SceneRenderController::on(RenderSetSpeed&& m) {
 }
 
 void SceneRenderController::on(RenderSetUserProperty&& m) {
+    wakeIdleFrame();
     if (! m_scene) return;
     std::string key                      = CanonicalUserPropertyKey(m.key);
     const bool  has_shader_combo_binding = m_scene->shader_combo_user_index.contains(key);
@@ -1379,6 +1652,8 @@ void SceneRenderController::on(RenderSetUserProperty&& m) {
     ApplyUserPropertyToPointSize(*m_scene, key, m.property);
     ApplyUserPropertyToTextColor(*m_scene, key, m.property);
     ApplyUserPropertyToTextAlpha(*m_scene, key, m.property);
+    ApplyUserPropertyToTextMaxWidth(*m_scene, key, m.property);
+    (void)ApplyUserPropertyToNodeScale(*m_scene, key, m.property);
     ApplyUserPropertyToParticles(*m_scene, key, m.property);
     ApplyUserPropertyToSoundVolume(*m_scene, key, m.property);
     ApplyUserPropertyToCameraParallax(*m_scene, key, m.property);
@@ -1388,6 +1663,8 @@ void SceneRenderController::on(RenderSetUserProperty&& m) {
     requires_graph_rebuild =
         m_scene->ApplyUserImageEffectVisibilityBindings(key, m.property) || requires_graph_rebuild;
     requires_graph_rebuild = requires_graph_rebuild || shader_combo_requires_graph;
+    requires_graph_rebuild =
+        ApplyUserPropertyToPostProcessEnable(*m_scene, key, m.property) || requires_graph_rebuild;
 
     // Pointsize edits swap the text atlas (new FontFace → new atlas texture);
     // fold those materials into the texture-refresh set so the new atlas binds.
@@ -1423,38 +1700,50 @@ void SceneRenderController::on(RenderSetUserProperty&& m) {
 }
 
 void SceneRenderController::on(RenderSetMediaStatus&& m) {
+    const bool texture_changed = ! m_media_status || m_media_status->art_url != m.status.art_url ||
+                                 m_media_status->previous_art_url != m.status.previous_art_url;
+    m_media_status = std::move(m.status);
+    if (! m_scene) return;
+    const bool media_texture =
+        m_scene->material_texture_user_index.contains("$mediaThumbnail") ||
+        m_scene->material_texture_user_index.contains("$mediaPreviousThumbnail");
+    if (! m_scene->script_scene && (! media_texture || ! texture_changed)) return;
+    wakeIdleFrame();
+    applyMediaStatus(*m_media_status);
+}
+
+void SceneRenderController::applyMediaStatus(const MediaStatus& status) {
     if (! m_scene) return;
 
-    sr::script::SetSceneMediaStatus(*m_scene, ToScriptMediaStatus(m.status));
+    sr::script::SetSceneMediaStatus(*m_scene, ToScriptMediaStatus(status));
 
     std::vector<SceneMaterialId> texture_materials;
     for (auto material : ApplyUserPropertyToMaterialTextures(
-             *m_scene, "$mediaThumbnail", RuntimeTextureProperty(m.status.art_url))) {
+             *m_scene, "$mediaThumbnail", RuntimeTextureProperty(status.art_url))) {
         PushUniqueMaterialId(texture_materials, material);
     }
     for (auto material :
          ApplyUserPropertyToMaterialTextures(*m_scene,
                                              "$mediaPreviousThumbnail",
-                                             RuntimeTextureProperty(m.status.previous_art_url))) {
+                                             RuntimeTextureProperty(status.previous_art_url))) {
         PushUniqueMaterialId(texture_materials, material);
     }
 
-    bool requires_graph_rebuild = false;
     if (! texture_materials.empty() && renderInited() && m_rg) {
         m_render_scene = ExtractRenderSceneSnapshot(*m_scene);
         if (! m_render->refreshPreparedMaterialTextures(
-                *m_scene, m_render_scene, texture_materials)) {
-            requires_graph_rebuild = true;
-        }
-    }
-    if (requires_graph_rebuild) {
-        rebuildRenderGraph(vulkan::RenderGraphResourceRetention::KeepSceneTextures, false);
+                *m_scene, m_render_scene, texture_materials))
+            rebuildRenderGraph(vulkan::RenderGraphResourceRetention::KeepSceneTextures, false);
+        else
+            refreshPreparedMaterialDirtyEvents();
         return;
     }
     if (renderInited() && m_rg) refreshPreparedMaterialDirtyEvents();
 }
 
 void SceneRenderController::on(RenderInit&& m) {
+    m_frame_activity_cb    = m.info->frame_activity_callback;
+    m_allow_on_demand      = m.info->allow_on_demand;
     const bool initialized = m_render->init(std::move(*m.info));
 
     // Subscribe to ExSwapchain ready/extent/format changes. The
@@ -1482,6 +1771,7 @@ void SceneRenderController::on(RenderInit&& m) {
 }
 
 void SceneRenderController::on(RenderSwapchainReady&& m) {
+    wakeIdleFrame();
     if (! m.ready) {
         frame_timer.Stop();
         return;
@@ -1489,7 +1779,9 @@ void SceneRenderController::on(RenderSwapchainReady&& m) {
     bool extent_changed = m_render->onSwapchainReady(m.width, m.height);
     if (extent_changed && m_scene && m_rg) {
         m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
+        updatePosition();
         m_render->refreshPreparedResources(*m_scene, m_render_scene);
+        redrawStoppedFrame();
     }
     if (m_stopped)
         frame_timer.Stop();
@@ -1504,6 +1796,15 @@ void SceneRenderController::on(RenderRequestPreparedPassDiagnostics&& m) {
         .cb          = std::move(m.cb),
         .diagnostics = std::move(diagnostics),
     } });
+}
+
+void SceneRenderController::on(RenderExportScriptStorage&& message) {
+    if (message.callback) message.callback(m_scene ? sr::script::SceneStorageSnapshot(*m_scene) : "{}");
+}
+
+void SceneRenderController::on(RenderResetScriptStorage&&) {
+    if (! m_scene) return;
+    sr::script::ResetSceneLocalStorage(*m_scene);
 }
 
 // ---- SceneRuntimeController message handlers --------------------------------
@@ -1523,8 +1824,6 @@ void SceneRuntimeController::on(MainConfigure&& m) {
         m.config.speed = 1.0f;
     }
     m_config          = std::move(m.config);
-    m_render_controller->configureAudioCapture(
-        m_config.spectrum_enabled, m_config.external_spectrum);
     m_user_properties = NormalizeUserProperties(m_config.user_properties);
     ++m_config_generation;
     // Preserve zero as the "not configured" sentinel after wraparound.
@@ -1540,6 +1839,7 @@ void SceneRuntimeController::on(MainConfigure&& m) {
     on(MainSetVolumeScale { 1.0f });
     on(MainSetMuted { m_config.muted });
     on(MainSetFillMode { m_config.fill_mode });
+    on(MainSetPosition { m_config.position });
     on(MainSetSpeed { m_config.speed });
 
     // MainConfigure and RenderInit run on separate message loops. Start the
@@ -1550,7 +1850,7 @@ void SceneRuntimeController::on(MainConfigure&& m) {
 
 void SceneRuntimeController::on(MainSetFps&& m) {
     m_config.fps = m.fps;
-    if (m.fps >= 5) m_render_controller->frame_timer.SetRequiredFps(static_cast<uint8_t>(m.fps));
+    if (m.fps >= 5) (void)m_render_loop.sender().send(RenderMsg { RenderSetFps { m.fps } });
 }
 
 void SceneRuntimeController::on(MainSetVolume&& m) {
@@ -1570,6 +1870,15 @@ void SceneRuntimeController::on(MainSetMuted&& m) {
 void SceneRuntimeController::on(MainSetFillMode&& m) {
     m_config.fill_mode = m.mode;
     (void)m_render_loop.sender().send(RenderMsg { RenderSetFillMode { m.mode } });
+}
+
+void SceneRuntimeController::on(MainSetPosition&& m) {
+    m_config.position = m.position.Normalized();
+    (void)m_render_loop.sender().send(RenderMsg { RenderSetPosition { m_config.position } });
+}
+
+void SceneRuntimeController::on(MainPositionAvailability&& m) {
+    if (m_position_cb) m_position_cb(m.axes[0], m.axes[1]);
 }
 
 void SceneRuntimeController::on(MainSetSpeed&& m) {
@@ -1639,6 +1948,7 @@ void SceneRuntimeController::on(MainPreparedPassDiagnostics&& m) {
 }
 
 void SceneRuntimeController::on(MainStop&& m) {
+    m_playback_paused         = m.stop;
     const uint64_t generation = ++m_audio_pause_generation;
     if (m.stop) {
         if (m.scale_audio) m_sound_manager->set_volume_scale(0.0f, m.fade_ms);
@@ -1672,18 +1982,10 @@ void SceneRuntimeController::loadScene() {
 
     rstd_info("loading scene: {}", m_config.source_pkg_path);
 
-    // Device lifecycle only here; playback is (re)started after the scene's
-    // sound streams are mounted below. loadScene can run with the device
-    // ALREADY inited — MainConfigure calls set_muted(false) before MainLoadScene,
-    // and set_muted(false) eagerly re-inits the device. If play() were gated on
-    // the `!is_inited()` branch, that pre-init makes loadScene take the else
-    // branch and the AudioQueue never starts, leaving all BGM silent.
-    // SoundManager::init() is a no-op when muted, so this stays mute-safe.
-    if (! m_sound_manager->is_inited()) {
-        m_sound_manager->init();
-    } else {
-        m_sound_manager->unmount_all();
-    }
+    // Streams are loaded without starting a device. This also removes streams
+    // left by a muted scene, whose device was already uninitialized.
+    m_sound_manager->pause();
+    m_sound_manager->unmount_all();
 
     std::shared_ptr<Scene> scene { nullptr };
 
@@ -1704,6 +2006,39 @@ void SceneRuntimeController::loadScene() {
     std::string pkgDir   = pkgPath_fs.parent_path().native();
     std::string scene_id = pkgPath_fs.parent_path().filename().native();
     MergeProjectUserProperties(pkgPath_fs.parent_path(), m_user_properties);
+
+    m_scene_parser.SetScriptStorageSnapshot(m_config.script_storage_snapshot);
+    if (!m_config.script_storage_snapshot) {
+    std::filesystem::path script_storage_dir;
+    if (! m_config.script_storage_dir.empty()) {
+        script_storage_dir = m_config.script_storage_dir;
+    } else {
+#if defined(__APPLE__)
+        const char* home = std::getenv("HOME");
+        if (home != nullptr && home[0] != '\0')
+            script_storage_dir = std::filesystem::path(home) /
+                                 "Library/Application Support/Mirage/SceneStorage";
+#endif
+        if (script_storage_dir.empty())
+            script_storage_dir = std::filesystem::path(m_config.cache_dir) / "script_localstorage";
+    }
+    std::error_code storage_ec;
+    std::filesystem::create_directories(script_storage_dir, storage_ec);
+    const auto script_storage_file = script_storage_dir / (scene_id + ".json");
+    const auto legacy_storage_file = std::filesystem::path(m_config.cache_dir) /
+                                     "script_localstorage" / (scene_id + ".json");
+    if (! std::filesystem::exists(script_storage_file) &&
+        legacy_storage_file != script_storage_file &&
+        std::filesystem::is_regular_file(legacy_storage_file)) {
+        std::filesystem::copy_file(legacy_storage_file,
+                                    script_storage_file,
+                                    std::filesystem::copy_options::skip_existing,
+                                    storage_ec);
+    }
+    m_scene_parser.SetScriptPersistencePath(script_storage_file.native());
+    } else {
+        m_scene_parser.SetScriptPersistencePath({});
+    }
 
     // load pkgfile. Read pkg version stamp before move-mounting so we can
     // pass it to the scene parser; on fallback (loose dir) we have no
@@ -1746,13 +2081,16 @@ void SceneRuntimeController::loadScene() {
             rstd::ref<rstd::json::Map>::from_raw_parts(rstd::addressof(m_user_properties))));
         scene = m_scene_parser.Parse(scene_id, *scene_doc, vfs, *m_sound_manager);
         m_scene_parser.SetUserProperties(rstd::None());
+        if (! scene) return;
+        (void)m_render_loop.sender().send(RenderMsg {
+            RenderSetAudioCapture { m_config.spectrum_enabled &&
+                                    (scene->uses_audio_spectrum || scene->script_scene != nullptr),
+                                    m_config.external_spectrum } });
+        sr::script::SetSceneStorageCallback(*scene, m_config.script_storage_callback);
 
-        // Start (or resume) the output device now that this scene's sound
-        // streams are mounted. Unconditional on purpose: the device may have
-        // been inited earlier by set_muted(false), so gating on the init
-        // branch above would skip start and silence all BGM. start() is a
-        // no-op if the device isn't inited (e.g. muted) or already running.
-        if (! m_config.muted) m_sound_manager->play();
+        // Preserve playback intent while muted; unmuting starts the device only
+        // when at least one stream exists and playback has not been paused.
+        if (! m_playback_paused) m_sound_manager->play();
         // Apply initial bindings while the parsed Scene is still private to
         // this preparation loop. The VFS must be attached first for shader
         // combo and text asset resolution. Doing this before RenderSetScene
@@ -1764,13 +2102,13 @@ void SceneRuntimeController::loadScene() {
             const auto& prop               = *entry_value;
             ApplyUserPropertyBeforeFirstGraph(*scene, key, prop);
         });
-        if (! m_config.cache_dir.empty() && scene) {
-            std::filesystem::path ls_dir =
-                std::filesystem::path(m_config.cache_dir) / "script_localstorage";
-            std::error_code ec;
-            std::filesystem::create_directories(ls_dir, ec);
-            std::string ls_file = (ls_dir / (scene_id + ".json")).native();
-            sr::script::SetScenePersistence(*scene, std::move(ls_file));
+        if (m_user_shortcut_cb) {
+            sr::script::SetSceneUserShortcutOpener(
+                *scene,
+                [cb = m_user_shortcut_cb](std::string_view name, std::string_view target) {
+                    cb(name, target);
+                    return true;
+                });
         }
         // Surface the parsed clear color before the scene is shipped
         // off to the render thread; downstream callers use it to keep
@@ -1890,7 +2228,7 @@ void SceneWallpaper::pause(uint32_t fade_ms) {
     (void)m_runtime->mainSender().send(MainMsg { MainStop { true, fade_ms, true } });
 }
 void SceneWallpaper::requestFrame() {
-    (void)m_runtime->renderSender().send(RenderMsg { RenderDraw {} });
+    (void)m_runtime->renderSender().send(RenderMsg { RenderRequestFrame {} });
 }
 
 void SceneWallpaper::mouseInput(double x, double y) {
@@ -1931,6 +2269,10 @@ void SceneWallpaper::setFillMode(FillMode mode) {
     (void)m_runtime->mainSender().send(MainMsg { MainSetFillMode { mode } });
 }
 
+void SceneWallpaper::setPosition(WallpaperPosition position) {
+    (void)m_runtime->mainSender().send(MainMsg { MainSetPosition { position.Normalized() } });
+}
+
 void SceneWallpaper::setSpeed(float speed) {
     (void)m_runtime->mainSender().send(MainMsg { MainSetSpeed { speed } });
 }
@@ -1963,6 +2305,14 @@ void SceneWallpaper::setOnAudioDemand(AudioDemandCallback cb) {
     m_runtime->setOnAudioDemand(std::move(cb));
 }
 
+void SceneWallpaper::setOnPositionAvailability(PositionAvailabilityCallback cb) {
+    m_runtime->setOnPositionAvailability(std::move(cb));
+}
+
+void SceneWallpaper::setOnUserShortcut(UserShortcutCallback cb) {
+    m_runtime->setOnUserShortcut(std::move(cb));
+}
+
 void SceneWallpaper::setOnFirstFrame(FirstFrameCallback cb) {
     (void)m_runtime->mainSender().send(MainMsg { MainSetFirstFrameCallback { std::move(cb) } });
 }
@@ -1975,6 +2325,14 @@ void SceneWallpaper::setOnUserPropertyDiagnostics(UserPropertyDiagnosticCallback
 void SceneWallpaper::requestPreparedPassDiagnostics(RenderPassDiagnosticCallback cb) {
     (void)m_runtime->renderSender().send(
         RenderMsg { RenderRequestPreparedPassDiagnostics { std::move(cb) } });
+}
+
+void SceneWallpaper::exportScriptStorage(std::function<void(std::string)> callback) {
+    (void)m_runtime->renderSender().send(RenderMsg { RenderExportScriptStorage { std::move(callback) } });
+}
+
+void SceneWallpaper::resetScriptStorage() {
+    (void)m_runtime->renderSender().send(RenderMsg { RenderResetScriptStorage {} });
 }
 
 ExSwapchain* SceneWallpaper::exSwapchain() const {

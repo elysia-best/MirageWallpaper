@@ -110,6 +110,7 @@ public:
     void UpdateUniforms(SceneNode*, sprite_map_t&, const UpdateUniformOp&, SceneRenderViewKind,
                         SceneRenderAlphaMode) override;
     void FrameEnd() override;
+    bool RequiresContinuousFrames() const override;
     void MouseInput(double, double) override;
     void SetTexelSize(float x, float y) override;
 
@@ -146,7 +147,16 @@ public:
     NodeRenderTransform(SceneNode* node,
                         SceneRenderViewKind view = SceneRenderViewKind::Primary);
 
+    std::optional<SceneNodeRenderTransform>
+    NodeScreenTransform(SceneNode* node,
+                        SceneRenderViewKind view = SceneRenderViewKind::Primary);
+
 private:
+    std::optional<SceneNodeRenderTransform>
+    NodeTransform(SceneNode* node, SceneRenderViewKind view, bool screen_camera,
+                  bool apply_geometry_transform);
+
+    bool                 m_dynamic_uniforms { false };
     Scene*               m_scene;
     SceneCameraParallax  m_parallax;
     SceneCameraShake     m_cameraShake;

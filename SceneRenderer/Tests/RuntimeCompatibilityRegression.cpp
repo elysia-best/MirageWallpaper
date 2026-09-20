@@ -136,6 +136,120 @@ void TestOrthographicFillModeDerivesPerspectiveFov() {
           "orthographic scene fill mode derives embedded perspective field of view");
 }
 
+void TestWallpaperCropPosition() {
+    sr::Scene scene;
+    scene.SetProjectionKind(sr::SceneProjectionKind::OrthographicCanvas);
+    scene.ortho[0] = 1920;
+    scene.ortho[1] = 1080;
+    sr::SceneNode camera_node;
+    camera_node.SetTranslate({ 960.0f, 540.0f, 0.0f });
+    auto camera = std::make_shared<sr::SceneCamera>(
+        sr::SceneCamera::MakeOrthographic(1920, 1080, -5000, 5000));
+    camera->AttatchNode(&camera_node);
+    scene.cameras["global"] = camera;
+    scene.cameras["global_perspective"] = std::make_shared<sr::SceneCamera>(
+        sr::SceneCamera::MakePerspective(16.0 / 9.0, 5, 15000, 50));
+    scene.cameras["linked"] = std::make_shared<sr::SceneCamera>(*camera);
+    scene.cameras["effect"] = std::make_shared<sr::SceneCamera>(
+        sr::SceneCamera::MakeOrthographic(2, 2, -1, 1));
+    scene.linkedCameras["global"].push_back("linked");
+    scene.activeCamera = camera.get();
+    sr::vulkan::UpdateCameraFillModeForExtent(scene, sr::FillMode::ASPECTCROP, 1080, 1920);
+    const Eigen::Matrix4d centered = camera->GetViewProjectionMatrix();
+    const Eigen::Matrix4d view = camera->GetViewMatrix();
+    for (double x : { 0.0, 0.25, 0.5, 0.75, 1.0 }) {
+        auto axes = sr::vulkan::UpdateCameraPositionForExtent(
+            scene, sr::FillMode::ASPECTCROP, { x, 1.0 }, 1080, 1920);
+        Check(axes[0] && !axes[1], "portrait cover only exposes horizontal overflow");
+        const double left = x * (1920.0 - 607.5);
+        Eigen::Vector4d clip = camera->GetViewProjectionMatrix() * Eigen::Vector4d(left, 540, 0, 1);
+        Check(std::abs(clip.x() / clip.w() + 1.0) < 1e-9,
+              "crop position selects the expected source left edge");
+        Check(camera->GetViewMatrix().isApprox(view), "crop position preserves the authored camera view");
+        Check(scene.cameras["linked"]->GetViewProjectionMatrix().isApprox(camera->GetViewProjectionMatrix()),
+              "linked cameras receive the same projection offset");
+        Check(scene.cameras["effect"]->ProjectionOffset() == std::array<double, 2> {},
+              "private effect cameras remain in layer coordinates");
+    }
+    sr::vulkan::UpdateCameraPositionForExtent(scene, sr::FillMode::ASPECTCROP, {}, 1080, 1920);
+    Check(centered.isApprox(camera->GetViewProjectionMatrix()), "center restores the original projection");
+    sr::vulkan::UpdateCameraPositionForExtent(scene, sr::FillMode::ASPECTCROP, { 1, 0 }, 1080, 1920);
+    const auto cursor = scene.CursorPositionOnCanvas(0, 0.5);
+    Check(cursor && std::abs((*cursor)[0] - 1312.5) < 1e-9 && std::abs((*cursor)[1] - 540) < 1e-9,
+          "script canvas cursor coordinates include the crop offset");
+    sr::SceneUniformUpdater updater(&scene);
+    sr::SceneNode node;
+    node.SetTranslate({ 1600.0f, 540.0f, 0.0f });
+    auto transform = updater.NodeScreenTransform(&node);
+    Check(transform.has_value(), "positioned layers expose their screen transform for cursor picking");
+    if (transform) {
+        const Eigen::Vector4d clip = transform->model_view_projection * Eigen::Vector4d(0, 0, 0, 1);
+        Check(std::abs(clip.x() / clip.w()) < 1,
+              "a layer hidden by center cropping becomes hittable after moving the crop");
+        const Eigen::Vector4d local = transform->model_view_projection.inverse() * clip;
+        Check(local.head<3>().norm() < 1e-9, "cursor inverse projection retains the positioned layer coordinates");
+    }
+    auto path = std::make_shared<sr::SceneCameraPath>();
+    path->camera_name = "global";
+    path->camera = camera;
+    path->node = &camera_node;
+    path->origin_base = { 960, 540, 0 };
+    scene.camera_paths.push_back(path);
+    scene.CaptureCameraPathViewports();
+    const auto offset = camera->ProjectionOffset();
+    scene.TickCameraPaths();
+    scene.TickCameraPaths();
+    Check(camera->ProjectionOffset() == offset, "camera path ticks retain the user crop without accumulation");
+    for (auto mode : { sr::FillMode::ASPECTFIT, sr::FillMode::STRETCH }) {
+        auto axes = sr::vulkan::UpdateCameraPositionForExtent(scene, mode, { 1, 1 }, 1080, 1920);
+        Check(!axes[0] && !axes[1] && camera->ProjectionOffset() == std::array<double, 2> {},
+              "non-cover modes clear the effective crop offset");
+    }
+    scene.camera_paths.clear();
+    scene.ortho[0] = 1080;
+    scene.ortho[1] = 1920;
+    camera_node.SetTranslate({ 540, 960, 0 });
+    sr::vulkan::UpdateCameraFillModeForExtent(scene, sr::FillMode::ASPECTCROP, 1920, 1080);
+    auto axes = sr::vulkan::UpdateCameraPositionForExtent(scene, sr::FillMode::ASPECTCROP, { 0, 0 }, 1920, 1080);
+    Eigen::Vector4d top = camera->GetViewProjectionMatrix() * Eigen::Vector4d(540, 1920, 0, 1);
+    Check(!axes[0] && axes[1] && std::abs(top.y() / top.w() - 1) < 1e-9,
+          "zero vertical position reveals the source top edge");
+    sr::vulkan::UpdateCameraPositionForExtent(scene, sr::FillMode::ASPECTCROP, { 1, 1 }, 1920, 1080);
+    Eigen::Vector4d bottom = camera->GetViewProjectionMatrix() * Eigen::Vector4d(540, 0, 0, 1);
+    Check(std::abs(bottom.y() / bottom.w() + 1) < 1e-9,
+          "full vertical position reveals the source bottom edge");
+    const auto invalid = sr::WallpaperPosition { std::numeric_limits<double>::quiet_NaN(),
+                                                  std::numeric_limits<double>::infinity() }.Normalized();
+    Check(invalid == sr::WallpaperPosition {}, "non-finite positions recover to center");
+}
+
+void TestPerspectiveWallpaperPosition() {
+    sr::Scene scene;
+    scene.SetProjectionKind(sr::SceneProjectionKind::Perspective3D);
+    scene.cameras["global"] = std::make_shared<sr::SceneCamera>(
+        sr::SceneCamera::MakeOrthographic(1920, 1080, -5000, 5000));
+    auto camera = std::make_shared<sr::SceneCamera>(
+        sr::SceneCamera::MakePerspective(16.0 / 9.0, 0.1, 1000, 50));
+    camera->SetLookAt({ 0, 0, 3 }, { 0, 0, 0 }, { 0, 1, 0 });
+    scene.cameras["global_perspective"] = camera;
+    scene.activeCamera = camera.get();
+    sr::vulkan::UpdateCameraFillModeForExtent(scene, sr::FillMode::ASPECTCROP, 1080, 1920);
+    const Eigen::Matrix4d original = camera->GetViewProjectionMatrix();
+    const auto eye = camera->GetPosition();
+    sr::vulkan::UpdateCameraPositionForExtent(scene, sr::FillMode::ASPECTCROP, { 1, 0.5 }, 1080, 1920);
+    for (double depth : { 0.0, -5.0, -50.0 }) {
+        const Eigen::Vector4d point(0, 0, depth, 1);
+        const Eigen::Vector4d a = original * point;
+        const Eigen::Vector4d b = camera->GetViewProjectionMatrix() * point;
+        Check(std::abs((b.x() / b.w() - a.x() / a.w()) - camera->ProjectionOffset()[0]) < 1e-9,
+              "perspective crop shifts every depth by the same screen distance");
+    }
+    Check(camera->Fov() == 50 && camera->GetPosition().isApprox(eye),
+          "perspective crop preserves authored field of view and eye position");
+    auto axes = sr::vulkan::UpdateCameraPositionForExtent(scene, sr::FillMode::ASPECTCROP, { 1, 1 }, 2560, 1080);
+    Check(!axes[0] && !axes[1], "native perspective preserves its existing wider-screen field of view");
+}
+
 void TestAuthoredSceneZoom() {
     sr::Scene scene;
     scene.ortho[0] = 1920;
@@ -755,6 +869,72 @@ void TestEffectSelfCompositeStaysLocal() {
           "a self-composite does not allocate an external link target");
 }
 
+void TestExplicitEffectFboFormatSurvivesHdr() {
+    const char* assets_root = std::getenv("SCENERENDERER_ASSETS_DIR");
+    if (assets_root == nullptr || assets_root[0] == '\0') return;
+
+    sr::fs::VFS vfs;
+    Check(vfs.Mount("/assets", sr::fs::CreatePhysicalFs(assets_root)),
+          "effect FBO format regression mounts the shared assets");
+    const auto effect_root = std::filesystem::path(assets_root) / "effects/cursorripple";
+    Check(vfs.Mount("/assets/materials/effects",
+                    sr::fs::CreatePhysicalFs((effect_root / "materials/effects").string())),
+          "effect FBO format regression mounts cursor ripple materials");
+    Check(vfs.Mount("/assets/shaders/effects",
+                    sr::fs::CreatePhysicalFs((effect_root / "shaders/effects").string())),
+          "effect FBO format regression mounts cursor ripple shaders");
+
+    auto document = sr::wpscene::ParseSceneDocumentJson(
+        R"JSON({
+            "camera": {},
+            "general": {
+                "hdr": true,
+                "orthogonalprojection": {"width": 1920, "height": 1080}
+            },
+            "objects": [{
+                "id": 569,
+                "name": "HDR Cursor Ripple",
+                "image": "models/util/solidlayer.json",
+                "origin": [960.0, 540.0, 0.0],
+                "size": [1920.0, 1080.0],
+                "solid": true,
+                "effects": [{
+                    "file": "effects/cursorripple/effect.json",
+                    "visible": true
+                }],
+                "visible": true
+            }]
+        })JSON",
+        sr::wpscene::kSceneVersionUnknown);
+    Check(document.has_value(), "effect FBO format regression parses its scene document");
+    if (! document) return;
+
+    wavsen::audio::SoundManager sound_manager;
+    sr::WPSceneParser           parser;
+    auto scene = parser.Parse("hdr-cursor-ripple", *document, vfs, sound_manager);
+    Check(scene != nullptr, "effect FBO format regression compiles its scene");
+    if (! scene) return;
+
+    bool found_first  = false;
+    bool found_second = false;
+    for (const auto& [name, target] : scene->renderTargets) {
+        if (name.starts_with("_rt_EightBuffer1_")) {
+            found_first = true;
+            Check(! target.hdr_format && ! target.inherit_scene_format,
+                  "rgba8888 cursor ripple buffer 1 stays fixed at RGBA8 in HDR scenes");
+        }
+        if (name.starts_with("_rt_EightBuffer2_")) {
+            found_second = true;
+            Check(! target.hdr_format && ! target.inherit_scene_format,
+                  "rgba8888 cursor ripple buffer 2 stays fixed at RGBA8 in HDR scenes");
+        }
+    }
+    Check(found_first && found_second, "cursor ripple declares both simulation buffers");
+    const auto main_target = scene->renderTargets.find(std::string(sr::SpecTex_Default));
+    Check(main_target != scene->renderTargets.end() && main_target->second.hdr_format,
+          "the main render target remains HDR");
+}
+
 sr::SceneNode* FindWallpaperNode(sr::SceneNode* node, std::int32_t id) {
     if (node == nullptr) return nullptr;
     if (auto wallpaper = node->WallpaperIdentity(); wallpaper && wallpaper->value == id) return node;
@@ -893,21 +1073,19 @@ void TestCompositeLayerElisionAndPhysicalExtent() {
           "linked composite effect camera is registered");
     if (camera == linked->cameras.end() || ! camera->second) return;
     auto attached = camera->second->GetAttachedNode();
-    Check(attached.is_some() && (*attached)->Parent() == linked_node,
-          "linked composite capture camera follows its aligned layer anchor");
-    if (attached.is_some()) {
-        Check(Near((*attached)->Translate().x(), 50.0f) &&
-                  Near((*attached)->Translate().y(), 0.0f),
-              "linked composite capture camera uses authored left alignment");
-    }
+    auto global   = linked->activeCamera->GetAttachedNode();
+    Check(attached.is_some() && global.is_some() && *attached == *global,
+          "a linked composite captures through the shared passthrough camera node");
+    Check(linked->cameras.count(linked_node->Camera() + "_group") == 0,
+          "a linked composite registers no per-layer group camera");
 
-    Check(Near(static_cast<float>(linked_node->GeometryTransform()(0, 3)), 50.0f),
-          "linked composite source geometry uses authored left alignment");
+    Check(Near(static_cast<float>(linked_node->GeometryTransform()(0, 3)), 0.0f),
+          "a linked composite keeps its authored source geometry unshifted");
     auto effect_layer = camera->second->GetImgEffect();
     Check(effect_layer != nullptr, "linked composite camera retains its effect layer");
     if (effect_layer) {
         Check(Near(static_cast<float>(effect_layer->FinalMesh().GeometryTransform()(0, 3)), 50.0f),
-              "linked composite final geometry matches source alignment");
+              "linked composite final geometry carries the authored alignment offset");
     }
 
     const std::string pingpong =
@@ -915,9 +1093,11 @@ void TestCompositeLayerElisionAndPhysicalExtent() {
     auto target = linked->renderTargets.find(pingpong);
     Check(target != linked->renderTargets.end(), "linked composite allocates its source target");
     if (target != linked->renderTargets.end()) {
-        Check(target->second.bind.enable && target->second.bind.screen &&
-                  target->second.bind.name == linked_node->Camera(),
-              "linked composite target defers sizing to physical output projection");
+        Check(! target->second.bind.enable && target->second.width == 100 &&
+                  target->second.height == 100,
+              "a linked composite source target keeps its authored fixed extent");
+        Check(! target->second.preserve_on_write,
+              "a linked composite source target does not preserve previous contents");
     }
 
     sr::vulkan::UpdateCameraFillModeForExtent(
@@ -1576,12 +1756,218 @@ void TestPlaybackSpeedAndAtomicCachePublication() {
     std::filesystem::remove_all(root, ec);
 }
 
+void TestSwizzledVaryingDeclCompatibility() {
+    sr::SceneShaderVariantDesc desc;
+    desc.scene_id    = "swizzled-varying-test";
+    desc.shader_name = "swizzled-varying-test";
+    desc.stages.push_back(sr::SceneShaderVariantStage {
+        .stage      = sr::ShaderType::VERTEX,
+        .source_key = "/assets/shaders/swizzled-varying-test.vert",
+        .source     = R"(
+attribute vec3 a_Position;
+varying vec4 v_Size.xy;
+void main() {
+    v_Size = vec4(2.0, 3.0, 0.0, 0.0);
+    gl_Position = vec4(a_Position, 1.0);
+}
+)",
+    });
+    desc.stages.push_back(sr::SceneShaderVariantStage {
+        .stage      = sr::ShaderType::FRAGMENT,
+        .source_key = "/assets/shaders/swizzled-varying-test.frag",
+        .source     = R"(
+varying vec4 v_Size.xy;
+void main() {
+    gl_FragColor = vec4(v_Size.xy, 0.0, 1.0);
+}
+)",
+    });
+
+    sr::fs::VFS vfs;
+    const auto  result = sr::WPShaderParser::CompileSceneShaderVariant(desc, vfs);
+    Check(result.ok && result.shader && result.shader->codes.size() == 2,
+          "swizzled varying declarators compile in both stages");
+    if (! result.ok || ! result.shader) return;
+
+    std::vector<sr::vulkan::Uni_ShaderSpv> reflected_spvs;
+    sr::vulkan::ShaderReflected            reflection;
+    Check(sr::vulkan::GenReflect(result.shader->codes, reflected_spvs, reflection),
+          "a swizzle-declared varying still reflects across stages");
+}
+
+void TestScriptedInvisibleCompositeElision() {
+    const char* assets_root = std::getenv("SCENERENDERER_ASSETS_DIR");
+    if (assets_root == nullptr || assets_root[0] == '\0') return;
+
+    sr::fs::VFS vfs;
+    Check(vfs.Mount("/assets", sr::fs::CreatePhysicalFs(assets_root)),
+          "scripted visibility regression mounts the shared assets");
+    if (! vfs.Open("/assets/models/util/composelayer.json")) return;
+    const auto tint_root = std::filesystem::path(assets_root) / "effects/tint";
+    if (std::filesystem::exists(tint_root / "materials/effects"))
+        Check(vfs.Mount("/assets/materials/effects",
+                        sr::fs::CreatePhysicalFs((tint_root / "materials/effects").string())),
+              "scripted visibility regression mounts the tint materials");
+    if (std::filesystem::exists(tint_root / "shaders/effects"))
+        Check(vfs.Mount("/assets/shaders/effects",
+                        sr::fs::CreatePhysicalFs((tint_root / "shaders/effects").string())),
+              "scripted visibility regression mounts the tint shaders");
+    auto document = sr::wpscene::ParseSceneDocumentJson(
+        R"JSON({
+            "camera": {},
+            "general": {"orthogonalprojection": {"width": 1920, "height": 1080}},
+            "objects": [{
+                "id": 930,
+                "name": "Hover Hit Area",
+                "image": "models/util/composelayer.json",
+                "config": {"passthrough": false},
+                "origin": [960.0, 540.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+                "size": [1008.0, 245.0],
+                "solid": true,
+                "visible": {
+                    "value": false,
+                    "script": "export let __workshopId = '3674038504';\nexport function cursorEnter() {}\nexport function cursorLeave() {}\n"
+                }
+            }, {
+                "id": 931,
+                "name": "Scripted Toggle",
+                "image": "models/util/composelayer.json",
+                "config": {"passthrough": false},
+                "origin": [400.0, 300.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+                "size": [200.0, 200.0],
+                "visible": {
+                    "value": false,
+                    "script": "let on = false;\nexport function cursorClick() { on = ! on; }\nexport function update() { return on; }\n"
+                }
+            }, {
+                "id": 932,
+                "name": "Hidden Link Source",
+                "image": "models/util/composelayer.json",
+                "copybackground": true,
+                "origin": [700.0, 400.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+                "size": [100.0, 100.0],
+                "visible": false
+            }, {
+                "id": 933,
+                "name": "Composite Consumer",
+                "image": "models/util/composelayer.json",
+                "config": {"passthrough": false},
+                "origin": [200.0, 200.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+                "size": [100.0, 100.0],
+                "instance": {"textures": ["_rt_imageLayerComposite_932_a"]},
+                "visible": true
+            }, {
+                "id": 934,
+                "name": "Hidden Effect Controller",
+                "image": "models/util/solidlayer.json",
+                "origin": [100.0, 100.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+                "size": [10.0, 10.0],
+                "visible": false,
+                "effects": [{
+                    "file": "effects/tint/effect.json",
+                    "name": "Controller",
+                    "visible": {
+                        "value": false,
+                        "script": "export function update() { shared.enabled = true; return false; }"
+                    }
+                }]
+            }, {
+                "id": 935,
+                "name": "Scripted Effect Consumer",
+                "image": "models/util/solidlayer.json",
+                "origin": [120.0, 120.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+                "size": [10.0, 10.0],
+                "visible": true,
+                "effects": [{
+                    "file": "effects/tint/effect.json",
+                    "name": "Consumer",
+                    "visible": {
+                        "value": false,
+                        "script": "export function update() { return shared.enabled === true; }"
+                    }
+                }]
+            }]
+        })JSON",
+        sr::wpscene::kSceneVersionUnknown);
+    Check(document.has_value(), "scripted visibility fixture parses");
+    if (! document) return;
+
+    wavsen::audio::SoundManager sound_manager;
+    sr::WPSceneParser           parser;
+    auto scene = parser.Parse("scripted-visibility", *document, vfs, sound_manager);
+    Check(scene != nullptr, "scripted visibility fixture compiles");
+    if (! scene) return;
+
+    Check(scene->visibility_elidable_layer_ids.count(930) != 0 &&
+              ! scene->RuntimeLayerVisibilityEnabled(sr::WallpaperLayerId { .value = 930 }),
+          "a visible binding without update leaves the hidden layer elided");
+    Check(scene->visibility_elidable_layer_ids.count(931) == 0 &&
+              scene->RuntimeLayerVisibilityEnabled(sr::WallpaperLayerId { .value = 931 }),
+          "a visible binding with update keeps its hidden layer in the graph");
+    auto* effect_consumer = FindWallpaperNode(scene->sceneGraph.as_ptr(), 935);
+    auto* effect_controller = FindWallpaperNode(scene->sceneGraph.as_ptr(), 934);
+    auto controller_effect = effect_controller != nullptr
+                                  ? scene->FindNodeImageEffect(*effect_controller, "Controller")
+                                  : std::nullopt;
+    auto consumer_effect = effect_consumer != nullptr
+                                ? scene->FindNodeImageEffect(*effect_consumer, "Consumer")
+                                : std::nullopt;
+    Check(controller_effect.has_value(),
+          "the hidden controller effect compiles");
+    Check(consumer_effect.has_value(),
+          "a hidden effect with a visibility script remains compiled");
+    sr::script::TickSceneScripts(*scene, {});
+    Check(consumer_effect && scene->ImageEffectRuntimeVisible(*consumer_effect),
+          "an invisible controller effect can drive another effect through shared state");
+
+    auto snapshot = sr::ExtractRenderSceneSnapshot(*scene);
+    auto graph    = sr::sceneToRenderGraph(*scene, snapshot);
+    Check(graph != nullptr, "scripted visibility render graph builds");
+    if (! graph) return;
+
+    Check(! GraphEmitsLayer(*graph, snapshot, 930),
+          "the hidden hover hit area emits no render pass");
+    Check(GraphEmitsLayer(*graph, snapshot, 931),
+          "the scripted toggle keeps a render pass while hidden");
+    Check(snapshot.HasLinkConsumer(sr::WallpaperLayerId { .value = 932 }) &&
+              GraphEmitsLayer(*graph, snapshot, 932),
+          "a hidden link source still publishes its composite target");
+
+    std::size_t gated = 0, ungated = 0, mismatched = 0;
+    for (auto node_id : graph->topologicalOrder()) {
+        auto state = graph->passState(node_id);
+        if (! state || state->type != sr::rg::PassNode::Type::CustomShader) continue;
+        auto* pass = static_cast<sr::vulkan::CustomShaderPass*>(graph->getPass(node_id));
+        if (pass == nullptr) continue;
+        const auto& pdesc    = pass->desc();
+        const bool  expected = pdesc.alpha_mode == sr::SceneRenderAlphaMode::Composite &&
+                              pdesc.output == sr::SpecTex_Default;
+        if (pdesc.hide_when_node_invisible != expected) ++mismatched;
+        if (expected)
+            ++gated;
+        else
+            ++ungated;
+    }
+    Check(mismatched == 0,
+          "only main-composite passes gate their draw on runtime node visibility");
+    Check(gated > 0 && ungated > 0,
+          "the fixture covers both the gated composite and the ungated capture passes");
+}
+
 } // namespace
 
 int main() {
     TestExplicitCameraFactories();
     TestPerspectiveFillModePreservesFov();
     TestOrthographicFillModeDerivesPerspectiveFov();
+    TestWallpaperCropPosition();
+    TestPerspectiveWallpaperPosition();
     TestAuthoredSceneZoom();
     TestAnimatedSceneZoom();
     TestAnimatedSceneZoomWithCameraPath();
@@ -1602,6 +1988,7 @@ int main() {
     TestDirectShapeLayerState();
     TestJsonArraysAndSceneDocumentMetadata();
     TestEffectSelfCompositeStaysLocal();
+    TestExplicitEffectFboFormatSurvivesHdr();
     TestCompositeLayerElisionAndPhysicalExtent();
     TestDynamicCopySnapshotMatchesSourceRequest();
     TestFinalResolvePrecedesLinkPublication();
@@ -1610,6 +1997,8 @@ int main() {
     TestMdlv23MultiCurveMorphEvents();
     TestWallpaper2887099508Interactions();
     TestShaderHlslSemanticCompatibility();
+    TestSwizzledVaryingDeclCompatibility();
+    TestScriptedInvisibleCompositeElision();
     TestMissingTexturePlaceholderSemantics();
     TestParticleRuntimeState();
     TestPlaybackSpeedAndAtomicCachePublication();

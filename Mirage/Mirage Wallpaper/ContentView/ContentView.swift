@@ -10,11 +10,20 @@ protocol SubviewOfContentView: View {
     var viewModel: ContentViewModel { get set }
 }
 
-enum MainSection: Int, CaseIterable, Hashable {
+enum MainSection: String, CaseIterable, Hashable {
     case installed
     case discover
     case workshop
     case subscriptions
+
+    var title: String {
+        switch self {
+        case .installed: return L("已安装")
+        case .discover: return L("发现")
+        case .workshop: return L("创意工坊")
+        case .subscriptions: return L("已订阅")
+        }
+    }
 }
 
 final class MainNavigationModel: ObservableObject {
@@ -58,16 +67,19 @@ private struct FilterSidebarLayout<Sidebar: View, Content: View>: View {
 }
 
 struct ContentView: View {
-    @EnvironmentObject var globalSettingsViewModel: GlobalSettingsViewModel
+    @Environment(GlobalSettingsViewModel.self) var globalSettingsViewModel
     @ObservedObject private var localization = MirageLocalization.shared
 
-    @ObservedObject var viewModel: ContentViewModel
-    @ObservedObject var wallpaperViewModel: WallpaperViewModel
-    @ObservedObject var workshopViewModel: WorkshopViewModel
+    @Bindable var viewModel: ContentViewModel
+    @Bindable var wallpaperViewModel: WallpaperViewModel
+    @Bindable var workshopViewModel: WorkshopViewModel
     @ObservedObject var navigationModel: MainNavigationModel
     @ObservedObject private var shortcutManager = WallpaperShortcutManager.shared
+    @ObservedObject private var dynamicLockScreenManager = DynamicLockScreenManager.shared
+    @ObservedObject private var screenSaverDynamicLockScreenManager = ScreenSaverDynamicLockScreenManager.shared
     @StateObject private var steamSetupViewModel = SteamSetupViewModel()
     @State private var loadedSections: Set<MainSection>
+    @State private var hasPresentedUI = false
 
     init(
         viewModel: ContentViewModel,
@@ -83,9 +95,11 @@ struct ContentView: View {
     }
 
     var body: some View {
+        @Bindable var globalSettingsViewModel = globalSettingsViewModel
+        let interfaceActive = viewModel.isStaging && viewModel.isWindowVisible
         ZStack {
             HSplitView {
-                if viewModel.isStaging {
+                if hasPresentedUI || viewModel.isStaging {
                     VStack(spacing: 5) {
                         TopTabBar(navigationModel: navigationModel,
                                   wallpaperViewModel: wallpaperViewModel)
@@ -94,15 +108,15 @@ struct ContentView: View {
                             if loadedSections.contains(.installed) {
                                 VStack(spacing: 5) {
                                     ExplorerTopBar(contentViewModel: viewModel)
-                                        .environmentObject(globalSettingsViewModel)
+                                        .environment(globalSettingsViewModel)
                                     FilterSidebarLayout(isPresented: viewModel.isFilterReveal, sidebar: {
                                         FilterResults(viewModel: viewModel)
                                     }, content: {
                                         WallpaperExplorer(
                                             contentViewModel: viewModel,
                                             wallpaperViewModel: wallpaperViewModel,
-                                            isActive: navigationModel.selection == .installed,
-                                            animatedPreviewMode: globalSettingsViewModel.settings.animatedPreviewPlaybackMode
+                                            isActive: interfaceActive && navigationModel.selection == .installed,
+                                            animatedPreviewMode: globalSettingsViewModel.animatedPreviewPlaybackMode
                                         )
                                         .onDrop(of: [.fileURL], delegate: viewModel)
                                         .contextMenu {
@@ -113,7 +127,8 @@ struct ContentView: View {
                                         }
                                     })
                                     ExplorerBottomBar(contentViewModel: viewModel,
-                                                      wallpaperViewModel: wallpaperViewModel)
+                                                      wallpaperViewModel: wallpaperViewModel,
+                                                      isActive: interfaceActive && navigationModel.selection == .installed)
                                 }
                                 .sectionVisibility(navigationModel.selection == .installed)
                             }
@@ -124,7 +139,7 @@ struct ContentView: View {
                                     viewModel: viewModel,
                                     wallpaperViewModel: wallpaperViewModel,
                                     navigationModel: navigationModel,
-                                    isActive: navigationModel.selection == .discover
+                                    isActive: interfaceActive && navigationModel.selection == .discover
                                 )
                                 .sectionVisibility(navigationModel.selection == .discover)
                             }
@@ -137,7 +152,7 @@ struct ContentView: View {
                                         workshopViewModel: workshopViewModel,
                                         viewModel: viewModel,
                                         wallpaperViewModel: wallpaperViewModel,
-                                        isActive: navigationModel.selection == .workshop
+                                        isActive: interfaceActive && navigationModel.selection == .workshop
                                     )
                                 })
                                 .sectionVisibility(navigationModel.selection == .workshop)
@@ -151,7 +166,7 @@ struct ContentView: View {
                                         workshopViewModel: workshopViewModel,
                                         viewModel: viewModel,
                                         wallpaperViewModel: wallpaperViewModel,
-                                        isActive: navigationModel.selection == .subscriptions
+                                        isActive: interfaceActive && navigationModel.selection == .subscriptions
                                     )
                                 })
                                 .sectionVisibility(navigationModel.selection == .subscriptions)
@@ -167,7 +182,8 @@ struct ContentView: View {
                         WallpaperPreview(contentViewModel: viewModel,
                                         wallpaperViewModel: wallpaperViewModel,
                                         workshopViewModel: workshopViewModel,
-                                        isActive: navigationModel.selection == .installed || workshopViewModel.showCustomization)
+                                        isActive: interfaceActive && !workshopViewModel.showCreatorProfile &&
+                                            (navigationModel.selection == .installed || workshopViewModel.showCustomization))
                             .frame(maxWidth: 320)
                             .sectionVisibility(
                                 workshopViewModel.showCreatorProfile == false &&
@@ -177,7 +193,8 @@ struct ContentView: View {
                         WorkshopItemDetail(
                             item: workshopViewModel.selectedItem,
                             workshopViewModel: workshopViewModel,
-                            isActive: navigationModel.selection != .installed && workshopViewModel.showCustomization == false
+                            isActive: interfaceActive && !workshopViewModel.showCreatorProfile &&
+                                navigationModel.selection != .installed && workshopViewModel.showCustomization == false
                         )
                             .frame(maxWidth: 320)
                             .sectionVisibility(
@@ -191,7 +208,7 @@ struct ContentView: View {
                             CreatorProfileView(
                                 creator: creator,
                                 workshopViewModel: workshopViewModel,
-                                animatedPreviewMode: globalSettingsViewModel.settings.animatedPreviewPlaybackMode
+                                animatedPreviewMode: globalSettingsViewModel.animatedPreviewPlaybackMode
                             )
                             .frame(maxWidth: 420)
                         }
@@ -241,11 +258,27 @@ struct ContentView: View {
         }
         .alert(isPresented: $viewModel.importAlertPresented, error: viewModel.importAlertError) { }
         .alert(item: $viewModel.screenSaverFeedback) { feedback in
-            Alert(
+            if feedback.action == .openFullDiskAccess {
+                return Alert(
+                    title: Text(feedback.title),
+                    message: Text(feedback.message),
+                    primaryButton: .default(Text("打开完全磁盘访问权限设置")) {
+                        dynamicLockScreenManager.openFullDiskAccessSettings()
+                    },
+                    secondaryButton: .cancel(Text("取消"))
+                )
+            }
+            return Alert(
                 title: Text(feedback.title),
                 message: Text(feedback.message),
                 dismissButton: .default(Text("好"))
             )
+        }
+        .sheet(isPresented: $dynamicLockScreenManager.isConfirmationPresented) {
+            DynamicLockScreenConfirmationSheet(manager: dynamicLockScreenManager)
+        }
+        .sheet(isPresented: $screenSaverDynamicLockScreenManager.isConfirmationPresented) {
+            ScreenSaverDynamicLockScreenConfirmationSheet(manager: screenSaverDynamicLockScreenManager)
         }
         .alert(
             "Steam 收藏",
@@ -279,7 +312,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $globalSettingsViewModel.isFirstLaunch) {
             FirstLaunchView()
-                .environmentObject(globalSettingsViewModel)
+                .environment(globalSettingsViewModel)
         }
         .sheet(item: $shortcutManager.recordingWallpaper, onDismiss: {
             shortcutManager.cancelRecording()
@@ -307,15 +340,15 @@ struct ContentView: View {
         }
         .environment(\.locale, localization.locale)
         .preferredColorScheme(globalSettingsViewModel.settings.appearance == .light ? .light : (globalSettingsViewModel.settings.appearance == .dark ? .dark : nil))
+        .environment(\.mirageContentActive, interfaceActive)
         .frame(minWidth: 1100, minHeight: 640)
         .onChange(of: navigationModel.selection) { _, section in
-            loadedSections.insert(section)
+            if viewModel.isStaging { loadedSections.insert(section) }
         }
-        .task {
-            for section in MainSection.allCases where !loadedSections.contains(section) {
-                await Task.yield()
-                loadedSections.insert(section)
-            }
+        .task(id: viewModel.isStaging) {
+            guard viewModel.isStaging else { return }
+            hasPresentedUI = true
+            loadedSections.insert(navigationModel.selection)
         }
     }
 }
@@ -342,6 +375,6 @@ struct ContentView_Previews: PreviewProvider {
             wallpaperViewModel: .init(),
             navigationModel: MainNavigationModel()
         )
-            .environmentObject(GlobalSettingsViewModel())
+            .environment(GlobalSettingsViewModel())
     }
 }

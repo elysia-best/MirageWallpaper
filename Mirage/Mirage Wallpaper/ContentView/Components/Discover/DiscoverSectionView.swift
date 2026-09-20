@@ -8,14 +8,13 @@ import SwiftUI
 
 struct DiscoverSectionView: View {
     var row: DiscoverRow
-    @ObservedObject var workshopViewModel: WorkshopViewModel
-    @ObservedObject var contentViewModel: ContentViewModel
-    @ObservedObject var wallpaperViewModel: WallpaperViewModel
+    @Bindable var workshopViewModel: WorkshopViewModel
+    @Bindable var contentViewModel: ContentViewModel
+    @Bindable var wallpaperViewModel: WallpaperViewModel
     let isActive: Bool
     let animatedPreviewMode: GSAnimatedPreviewPlayback
     let onSeeAll: () -> Void
 
-    @State private var hoveredID: String?
     @State private var scrollIndex = 0
 
     private var cardWidth: CGFloat {
@@ -69,7 +68,8 @@ struct DiscoverSectionView: View {
                 }
             }
         }
-        .onAppear {
+        .task(id: isActive) {
+            guard isActive else { return }
             workshopViewModel.loadDiscoverRow(id: row.id)
         }
     }
@@ -95,24 +95,21 @@ struct DiscoverSectionView: View {
                         ForEach(row.items) { item in
                             DiscoverCard(
                                 item: item,
-                                isHovered: hoveredID == item.id,
+
                                 isSelected: workshopViewModel.discoverSelectedItemID == item.id,
                                 isDownloaded: workshopViewModel.isInstalled(item.publishedFileId),
                                 presetNeedsDependency: workshopViewModel.presetNeedsDependency(item.publishedFileId),
-                                downloadState: workshopViewModel.downloadState(for: item.publishedFileId),
+                                downloadTask: workshopViewModel.downloadTask(for: item.publishedFileId),
                                 cardWidth: cardWidth,
                                 isActive: isActive,
                                 animatedPreviewMode: animatedPreviewMode
                             )
                             .id(item.id)
-                            .onHover { hovered in
-                                hoveredID = hovered ? item.id : nil
-                            }
                             .onTapGesture {
                                 workshopViewModel.selectDiscoverItem(item)
                             }
                             .contextMenu {
-                                if let wallpaper = workshopViewModel.installedItem(workshopId: item.publishedFileId) {
+                                if let wallpaper = workshopViewModel.cachedInstalledWallpapers[item.publishedFileId] {
                                     ExplorerItemMenu(
                                         contentViewModel: contentViewModel,
                                         wallpaperViewModel: wallpaperViewModel,
@@ -186,11 +183,13 @@ struct DiscoverSectionView: View {
 
 struct DiscoverCard: View {
     var item: WorkshopItem
-    var isHovered: Bool
+    @State private var isHovered = false
     var isSelected: Bool
     var isDownloaded: Bool
     var presetNeedsDependency: Bool
-    var downloadState: DownloadState?
+    var downloadTask: DownloadTask?
+
+    private var downloadState: DownloadState? { isActive ? downloadTask?.state : nil }
     var cardWidth: CGFloat
     var isActive: Bool
     var animatedPreviewMode: GSAnimatedPreviewPlayback
@@ -201,7 +200,8 @@ struct DiscoverCard: View {
                 url: item.previewImageURL,
                 contentMode: .fill,
                 isAnimating: isActive && (isHovered || isSelected || animatedPreviewMode == .visible),
-                isLoadingEnabled: isActive
+                isLoadingEnabled: isActive,
+                preloadsWhenInactive: false
             )
             .frame(width: cardWidth, height: cardWidth)
             .clipped()
@@ -245,6 +245,7 @@ struct DiscoverCard: View {
                 )
                 .allowsHitTesting(false)
         }
+        .onHover { isHovered = $0 }
         .brightness(isHovered ? 0.06 : 0)
         .animation(.easeOut(duration: 0.14), value: isHovered)
     }

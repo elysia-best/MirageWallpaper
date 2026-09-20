@@ -10,6 +10,10 @@ enum VRVideoFillMode : int {
 
 struct VRVideoEngineConfig {
     VRVideoFillMode fillMode = VRVideoFillModeCover;
+    // Crop anchors are shared across backends so macOS and Linux interpret
+    // the same renderer protocol values identically.
+    double positionX = 0.5;
+    double positionY = 0.5;
     float initialVolume = 1.0f;
     bool muted = false;
     bool autoplay = true;

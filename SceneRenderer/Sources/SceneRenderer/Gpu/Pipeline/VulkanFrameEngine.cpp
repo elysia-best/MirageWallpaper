@@ -9,6 +9,12 @@ module;
 #include "vvk/macros.hpp"
 
 #include <atomic>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <filesystem>
+#include <iomanip>
+#include "vk_mem_alloc.h"
 #include <unistd.h>
 #include <vulkan/vulkan.h>
 
@@ -344,17 +350,17 @@ struct RenderProgram {
         }
     }
 
-    bool refreshMaterialTextureBindings(const sr::RenderSceneSnapshot&    render_scene,
-                                        std::span<const sr::RenderItemId> render_items) {
-        if (render_items.empty()) return false;
+    bool refreshMaterialTextureBindings(const sr::RenderSceneSnapshot&       render_scene,
+                                        std::span<const sr::SceneDrawItemId> draw_items) {
+        if (draw_items.empty()) return false;
 
         bool requires_graph_rebuild = false;
         for (auto& record : pass_records) {
             if (record.pass == nullptr) continue;
-            auto pass_render_item = record.pass->renderItemId();
-            if (! pass_render_item.has_value()) continue;
-            auto matched = std::any_of(render_items.begin(), render_items.end(), [&](auto id) {
-                return SameRenderItemId(*pass_render_item, id);
+            auto pass_draw_item = record.pass->sceneDrawItemId();
+            if (! pass_draw_item.has_value()) continue;
+            auto matched = std::any_of(draw_items.begin(), draw_items.end(), [&](auto id) {
+                return id.index == pass_draw_item->index && id.generation == pass_draw_item->generation;
             });
             if (! matched) continue;
 
@@ -490,6 +496,27 @@ struct RenderProgram {
     }
 
     void finalizeResourceRequests(sr::Scene& scene) {
+        // Materialize implicit copy destinations before deriving their usage.
+        for (auto& record : pass_records) {
+            if (auto* copy = dynamic_cast<CopyPass*>(record.pass))
+                record.invalidate(copy->finalizeResourceRequests(scene));
+        }
+        const bool capture = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR") != nullptr;
+        for (auto& [name, rt] : scene.renderTargets) {
+            rt.transfer_source      = capture || name == sr::SpecTex_Default || rt.mipmap_level > 1;
+            rt.transfer_destination = name == sr::SpecTex_Default || rt.mipmap_level > 1;
+        }
+        for (const auto& record : pass_records) {
+            if (auto* copy = dynamic_cast<CopyPass*>(record.pass)) {
+                if (auto it = scene.renderTargets.find(copy->desc().src);
+                    it != scene.renderTargets.end())
+                    it->second.transfer_source = true;
+                if (auto it = scene.renderTargets.find(copy->desc().dst);
+                    it != scene.renderTargets.end())
+                    it->second.transfer_destination = true;
+            }
+        }
+        finalizeFramePassRequests(scene);
         for (auto& record : pass_records) {
             if (record.pass == nullptr) continue;
             auto flags = record.pass->finalizeResourceRequests(scene);
@@ -513,6 +540,29 @@ struct RenderProgram {
 
         for (auto& record : pass_records) {
             record.prepareIfNeeded(scene, device, rr);
+        }
+        std::vector<std::string> imported_keys;
+        for (const auto& record : pass_records) {
+            if (record.pass == nullptr) continue;
+            for (const auto& texture : record.pass->textureRequestDiagnostics()) {
+                if (texture.request && texture.request->kind == TextureRequestKind::Imported)
+                    imported_keys.push_back(
+                        imported_textures.ResolveImportedTextureKey(*texture.request));
+            }
+        }
+        device.tex_cache().RetainImportedTextures(imported_keys);
+        device.mesh_cache().evictUnused();
+        if (auto* fonts = sr::text::SceneFontCache(scene)) {
+            // Include hidden material references, since those can become visible
+            // without constructing a new layouter or registering the atlas again.
+            for (const auto* material : scene.ResourceIndex().Materials())
+                if (material)
+                    imported_keys.insert(
+                        imported_keys.end(), material->textures.begin(), material->textures.end());
+            fonts->TrimUnusedFaces(imported_keys, [&scene](std::string_view key) {
+                if (scene.imageParser) scene.imageParser->ReleaseSyntheticImage(key);
+                scene.textures.erase(std::string(key));
+            });
         }
     }
 
@@ -564,12 +614,160 @@ struct RenderProgram {
         flushScopePasses();
     }
 
+    struct DiagnosticReadback {
+        vvk::VmaBuffer buffer;
+        std::string name;
+        uint32_t width;
+        uint32_t height;
+        bool half;
+        std::size_t size;
+    };
+    std::vector<DiagnosticReadback> diagnostic_readbacks;
+    std::size_t diagnostic_bytes { 0 };
+    uint64_t diagnostic_frame { 0 };
+    uint64_t diagnostic_capture_frame { 0 };
+    bool diagnostic_ready { false };
+    bool diagnostic_finished { false };
+
+    void captureDiagnostic(const Device& device, RenderingResources& rr, VulkanPass* pass, bool input) {
+        const char* directory = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR");
+        if (directory == nullptr || diagnostic_capture_frame == 0 || diagnostic_frame != diagnostic_capture_frame || diagnostic_readbacks.size() >= 8) return;
+        auto* material_pass = dynamic_cast<CustomShaderPass*>(pass);
+        if (material_pass == nullptr) return;
+        const auto& desc = material_pass->desc();
+        if (desc.node == nullptr || desc.node->Mesh() == nullptr) return;
+        const auto& mesh = *desc.node->Mesh();
+        if (desc.submesh_index >= mesh.Submeshes().size()) return;
+        const auto slot = mesh.Submeshes()[desc.submesh_index].material_slot;
+        if (slot >= mesh.MaterialSlots().size() || !mesh.MaterialSlots()[slot]) return;
+        const auto& shader = mesh.MaterialSlots()[slot]->customShader.shader;
+        if (!shader) return;
+        const std::string& name = shader->name;
+        const bool selected = input ? name.find("godrays_downsample") != std::string::npos
+                                    : name.find("color_grading") != std::string::npos ||
+                                      name.find("godrays_combine") != std::string::npos ||
+                                      name.find("combine_hdr") != std::string::npos;
+        if (!selected) return;
+        ImageParameters image = desc.vk_output;
+        auto request = desc.output_request;
+        if (input) {
+            if (desc.vk_textures.empty() || desc.vk_textures[0].slots.empty() || desc.texture_bindings.empty()) return;
+            image = desc.vk_textures[0].getActive();
+            request = desc.texture_bindings[0].request;
+        }
+        if (!request || !request->cache_key || image.handle == VK_NULL_HANDLE) return;
+        const auto format = request->cache_key->format;
+        if (format != sr::TextureFormat::RGBA8 && format != sr::TextureFormat::RGBA16F) return;
+        const bool half = format == sr::TextureFormat::RGBA16F;
+        const std::size_t size = std::size_t(image.extent.width) * image.extent.height * (half ? 8u : 4u);
+        if (size == 0 || size > 256u * 1024u * 1024u - diagnostic_bytes) return;
+        VkBufferCreateInfo info { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+                                  .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+        VmaAllocationCreateInfo allocation {};
+        allocation.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+        DiagnosticReadback dump { .name = (input ? "input/" : "output/") + name,
+                                  .width = image.extent.width, .height = image.extent.height,
+                                  .half = half, .size = size };
+        if (vvk::CreateBuffer(device.vma_allocator(), info, allocation, dump.buffer) != VK_SUCCESS) return;
+        VkImageMemoryBarrier barrier {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image.handle,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        rr.command.PipelineBarrier(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, barrier);
+        VkBufferImageCopy copy { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .imageExtent = image.extent };
+        rr.command.CopyImageToBuffer(image.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *dump.buffer, copy);
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        rr.command.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, barrier);
+        diagnostic_bytes += size;
+        diagnostic_readbacks.push_back(std::move(dump));
+    }
+
+    void finishDiagnostics(const Device& device) {
+        const char* directory = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR");
+        if (directory == nullptr) return;
+        if (diagnostic_frame >= 606 && !diagnostic_ready) {
+            std::ofstream ready(std::string(directory) + "/ready");
+            ready << "live-frame-ready";
+            diagnostic_ready = true;
+        }
+        if (diagnostic_capture_frame == 0 || diagnostic_finished) return;
+        for (std::size_t index = 0; index < diagnostic_readbacks.size(); ++index) {
+            auto& dump = diagnostic_readbacks[index];
+            void* mapped = nullptr;
+            if (dump.buffer.MapMemory(&mapped) != VK_SUCCESS || mapped == nullptr) continue;
+            vmaInvalidateAllocation(device.vma_allocator(), dump.buffer.Allocation(), 0, dump.size);
+            const auto* data = static_cast<const uint8_t*>(mapped);
+            const std::string base = std::string(directory) + "/stage-" + std::to_string(index);
+            std::ofstream image(base + ".ppm", std::ios::binary);
+            image << "P6\n" << dump.width << " " << dump.height << "\n255\n";
+            std::array<uint64_t, 4> nonfinite {}, negative {}, above_one {};
+            std::array<double, 4> sums {};
+            for (std::size_t pixel = 0; pixel < std::size_t(dump.width) * dump.height; ++pixel) {
+                char rgb[3] {};
+                for (unsigned channel = 0; channel < 4; ++channel) {
+                    double value;
+                    if (dump.half) {
+                        uint16_t bits;
+                        std::memcpy(&bits, data + (pixel * 4 + channel) * 2, 2);
+                        const unsigned exp = (bits >> 10) & 31u;
+                        const unsigned mantissa = bits & 1023u;
+                        value = exp == 31 ? std::numeric_limits<double>::quiet_NaN()
+                                : exp == 0 ? std::ldexp(double(mantissa), -24)
+                                           : std::ldexp(double(mantissa + 1024), int(exp) - 25);
+                        if (bits & 0x8000) value = -value;
+                    } else value = double(data[pixel * 4 + channel]) / 255.0;
+                    if (!std::isfinite(value)) { ++nonfinite[channel]; value = 0; }
+                    else { sums[channel] += value; negative[channel] += value < 0; above_one[channel] += value > 1; }
+                    if (channel < 3) rgb[channel] = static_cast<char>(std::clamp(value, 0.0, 1.0) * 255.0 + 0.5);
+                }
+                image.write(rgb, 3);
+            }
+            dump.buffer.UnMapMemory();
+            std::ofstream metadata(base + ".json");
+            metadata << "{\"shader\":" << std::quoted(dump.name) << ",\"width\":" << dump.width
+                     << ",\"height\":" << dump.height << ",\"format\":\"" << (dump.half ? "RGBA16F" : "RGBA8")
+                     << "\",\"frame\":" << diagnostic_capture_frame << ",\"readback_may_be_corrupted\":true,\"channels\":[";
+            for (unsigned c = 0; c < 4; ++c) {
+                if (c) metadata << ",";
+                metadata << "{\"nonfinite\":" << nonfinite[c] << ",\"negative\":" << negative[c]
+                         << ",\"above_one\":" << above_one[c] << ",\"sum\":" << sums[c] << "}";
+            }
+            metadata << "]}\n";
+        }
+        diagnostic_readbacks.clear();
+        std::error_code error;
+        if (std::filesystem::exists(std::string(directory) + "/frame.ppm", error)) {
+            std::ofstream completed(std::string(directory) + "/captured");
+            completed << "capture-complete";
+            diagnostic_finished = true;
+        }
+    }
+
     void execute(const Device& device, RenderingResources& rr) {
+        if (const char* directory = std::getenv("SCENERENDERER_DIAGNOSTICS_DIR")) {
+            ++diagnostic_frame;
+            std::error_code error;
+            if (diagnostic_capture_frame == 0 && std::filesystem::exists(std::string(directory) + "/capture", error))
+                diagnostic_capture_frame = diagnostic_frame;
+        }
         for (auto& scope : scopes) {
             if (scope.single != nullptr) {
                 auto* pass = scope.single->pass;
                 if (pass->prepared()) {
+                    captureDiagnostic(device, rr, pass, true);
                     pass->execute(device, rr);
+                    captureDiagnostic(device, rr, pass, false);
                 }
                 continue;
             }
@@ -579,7 +777,9 @@ struct RenderProgram {
             if (scoped_passes.size() == 1) {
                 auto* pass = scoped_passes.front()->pass;
                 if (pass->prepared()) {
+                    captureDiagnostic(device, rr, pass, true);
                     pass->execute(device, rr);
+                    captureDiagnostic(device, rr, pass, false);
                 }
                 continue;
             }
@@ -593,16 +793,19 @@ struct RenderProgram {
             for (auto* record : scoped_passes) {
                 record->pass->prepareRenderScopeDraw(rr);
             }
+            captureDiagnostic(device, rr, scoped_passes.front()->pass, true);
             scoped_passes.front()->pass->beginRenderScope(rr);
             for (auto* record : scoped_passes) {
                 record->pass->recordRenderScopeDraw(rr);
             }
             scoped_passes.front()->pass->endRenderScope(rr);
+            captureDiagnostic(device, rr, scoped_passes.back()->pass, false);
         }
     }
 };
 
 void ReleaseCompletedRetiredResources(RenderingResources& rr) {
+    if (rr.pipeline_retire_queue.pending() == 0) return;
     rr.pipeline_retire_queue.ReleaseAllReady();
     rr.pipeline_cache.PruneExpired();
     rr.render_pass_cache.PruneExpired();
@@ -639,6 +842,7 @@ struct VulkanRender::Impl {
                              PassInvalidationFlags);
     std::vector<PreparedPassDiagnostic> preparedPassDiagnostics() const;
     void                                UpdateCameraFillMode(Scene&, sr::FillMode);
+    std::array<bool, 2> UpdateCameraPosition(Scene&, sr::FillMode, WallpaperPosition);
 
     bool                       initRes();
     bool                       recreateSurfaceSwapchain();
@@ -755,6 +959,9 @@ void VulkanRender::deviceUuid(uint8_t out[16]) const {
 
 void VulkanRender::pumpVideoTextures(double dt_seconds) {
     if (! pImpl->m_inited || ! pImpl->m_device) return;
+    // CPU fallback staging belongs to the previous submitted frame as well.
+    // Retire it before the decoder can overwrite that staging allocation.
+    if (! pImpl->retireInFlightFrame()) return;
     pImpl->m_device->tex_cache().PumpVideoTextures(dt_seconds);
 }
 
@@ -784,17 +991,18 @@ void VulkanRender::pumpFontAtlases(Scene& scene) {
         }
         const auto fm     = face->Metrics();
         const auto pixels = face->AtlasPixels();
-        (void)tex.UploadFontAtlasRegion(face->AtlasUrl(),
-                                        pixels.data(),
-                                        fm.atlas_w,
-                                        min_x,
-                                        min_y,
-                                        max_x - min_x,
-                                        max_y - min_y);
-        // Clear regardless: if VkImage didn't exist yet, the pixels are
-        // already in the CPU buffer that CreateTex aliases on its first
-        // call. Re-uploading would just duplicate work.
-        face->ClearDirtyRects();
+        const bool uploaded = tex.UploadFontAtlasRegion(face->AtlasUrl(),
+                                                        pixels.data(),
+                                                        fm.atlas_w,
+                                                        min_x,
+                                                        min_y,
+                                                        max_x - min_x,
+                                                        max_y - min_y);
+        // Clear when the copy is queued, and also when no VkImage exists yet:
+        // the pixels are then already in the CPU buffer CreateTex aliases on
+        // its first call. Stay pending only if an image was there and the
+        // upload itself failed.
+        if (uploaded || ! tex.HasFontAtlasImage(face->AtlasUrl())) face->ClearDirtyRects();
     }
 }
 
@@ -867,6 +1075,11 @@ void VulkanRender::evictUnusedMeshes() {
 void VulkanRender::UpdateCameraFillMode(Scene& scene, sr::FillMode fill) {
     pImpl->UpdateCameraFillMode(scene, fill);
 };
+
+std::array<bool, 2> VulkanRender::UpdateCameraPosition(Scene& scene, sr::FillMode fill,
+                                                     WallpaperPosition position) {
+    return pImpl->UpdateCameraPosition(scene, fill, position);
+}
 
 bool VulkanRender::onSwapchainReady(unsigned width, unsigned height) {
     return pImpl->onSwapchainReady(width, height);
@@ -1009,7 +1222,7 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
         rstd_info("msaa requested={} actual={}", requested, (uint32_t)m_msaa_samples);
     }
 
-    if (info.offscreen) {
+    if (info.offscreen && ! m_metal_frame_cb) {
         if (info.ex_swapchain_factory) {
             m_ex_swapchain = info.ex_swapchain_factory(
                 *m_instance.inst(), *m_device->gpu(), *m_device->handle(),
@@ -1047,7 +1260,7 @@ bool VulkanRender::Impl::initRes() {
         m_finpass->setPresentFormat(m_device->swapchain().format());
         m_finpass->setPresentCanTransferSrc(
             (m_device->swapchain().usage() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0);
-    } else {
+    } else if (m_ex_swapchain) {
         // Offscreen: ExSwapchain implementation chooses both. Local offscreen
         // returns (GENERAL,
         // IGNORED). Translate IGNORED to graphics_family so FinPass's
@@ -1195,7 +1408,6 @@ bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr) {
         };
         VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(ci, rr.sem_export));
     }
-
     rr.dyn_buf                 = m_dyn_buf.get();
     rr.shader_reflection_cache = &m_shader_reflection_cache;
     return true;
@@ -1412,6 +1624,7 @@ bool VulkanRender::Impl::retireInFlightFrame() {
     m_frame_in_flight = false;
     ReleaseCompletedRetiredResources(rr);
     m_finpass->finishFrameDump(*m_device);
+    m_program.finishDiagnostics(*m_device);
     m_device->tex_cache().ReleaseRecordedUploads();
     finishMeshUpload();
     rr.pending_upload_value = 0;
@@ -1574,24 +1787,24 @@ bool VulkanRender::Impl::drawFrameSwapchain() {
     return true;
 }
 bool VulkanRender::Impl::drawFrameOffscreen() {
-    if (! m_ex_swapchain || m_failed) return false;
+    if ((! m_ex_swapchain && ! m_metal_frame_cb) || m_failed) return false;
 
     // Poll the offscreen swapchain before committing to a slot.
     // Previous frame's GPU work has fenced at the tail of the last
     // drawFrameOffscreen, so the cmd pool is idle.
-    m_ex_swapchain->poll();
+    if (m_ex_swapchain) m_ex_swapchain->poll();
 
     // Skip until both the swapchain has slots and the scene has loaded
     // (FinPass.prepare runs from compileRenderGraph). FinPass itself is
     // format-agnostic now — vkCmdBlitImage handles cross-format channel
     // mapping, no rebuild needed on renegotiation.
-    if (! m_ex_swapchain->ready() || ! m_finpass->prepared()) {
+    if ((m_ex_swapchain && ! m_ex_swapchain->ready()) || ! m_finpass->prepared()) {
         return false;
     }
 
     RenderingResources& rr = m_rendering_resources;
-    ImageParameters     image;
-    if (! m_ex_swapchain->acquireRenderTarget(image)) {
+    ImageParameters     image {};
+    if (m_ex_swapchain && ! m_ex_swapchain->acquireRenderTarget(image)) {
         return false;
     }
 
@@ -1631,14 +1844,16 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
     std::array<uint64_t, 1> wait_values {
         rr.pending_upload_value,
     };
-    std::array<uint64_t, 1>       signal_values { 0 };
+    std::array<uint64_t, 1> signal_values { 0 };
     VkTimelineSemaphoreSubmitInfo timeline_info {
         .sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
         .pNext                     = nullptr,
         .waitSemaphoreValueCount   = wait_upload ? 1u : 0u,
         .pWaitSemaphoreValues      = wait_upload ? wait_values.data() : nullptr,
-        .signalSemaphoreValueCount = wait_upload ? 1u : 0u,
-        .pSignalSemaphoreValues    = wait_upload ? signal_values.data() : nullptr,
+        // The external DMA-BUF path signals one binary semaphore. Its value
+        // entry must still be present when the upload timeline wait is chained.
+        .signalSemaphoreValueCount = m_external_swapchain ? 1u : 0u,
+        .pSignalSemaphoreValues    = m_external_swapchain ? signal_values.data() : nullptr,
     };
     VkSubmitInfo sub_info {
         .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1648,8 +1863,8 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
         .pWaitDstStageMask    = wait_upload ? wait_stages.data() : nullptr,
         .commandBufferCount   = 1,
         .pCommandBuffers      = rr.command.address(),
-        .signalSemaphoreCount = 1,
-        .pSignalSemaphores    = rr.sem_export.address(),
+        .signalSemaphoreCount = m_external_swapchain ? 1u : 0u,
+        .pSignalSemaphores    = m_external_swapchain ? rr.sem_export.address() : nullptr,
     };
     VkResult res = m_device->graphics_queue().handle.Submit(sub_info, *rr.fence_frame);
     if (res != VK_SUCCESS) {
@@ -1657,16 +1872,10 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
         return false;
     }
 
-    /* The export semaphore is signalled by the submission above, so publish
-     * the protocol frame before waiting on the host fence.  The consumer's
-     * acquire sync_file carries the GPU dependency; the fence wait remains
-     * below because command buffers, dynamic data, and render targets are
-     * single-frame resources that must not be reset while in flight. */
-#ifdef __APPLE__
-    m_ex_swapchain->submitRendered(-1);
-#else
-    m_ex_swapchain->submitRendered(*rr.sem_export);
-#endif
+    /* The mirage-display exporter consumes the signalled sync_file before the
+     * host fence wait. Apple MetalFX presents through m_metal_frame_cb and has
+     * no ExSwapchain, so it must not enter this protocol-only publication. */
+    if (m_external_swapchain) m_ex_swapchain->submitRendered(*rr.sem_export);
 
     res = rr.fence_frame.Wait(vk_wait_time);
     if (res != VK_SUCCESS) {
@@ -1675,6 +1884,7 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
     }
     ReleaseCompletedRetiredResources(rr);
     m_finpass->finishFrameDump(*m_device);
+    m_program.finishDiagnostics(*m_device);
     m_device->tex_cache().ReleaseRecordedUploads();
     finishMeshUpload();
     rr.pending_upload_value = 0;
@@ -1683,6 +1893,10 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
         fail(res);
         return false;
     }
+    // Local offscreen swapchains have no exported semaphore; publish only
+    // after the fence confirms completion, matching the upstream Apple path.
+    if (m_ex_swapchain && ! m_external_swapchain)
+        m_ex_swapchain->submitRendered(VK_NULL_HANDLE);
     return true;
 }
 
@@ -1763,6 +1977,38 @@ void sr::vulkan::UpdateCameraFillModeForExtent(sr::Scene& scene, sr::FillMode fi
     scene.TickCameraPaths();
 }
 
+std::array<bool, 2> sr::vulkan::UpdateCameraPositionForExtent(
+    sr::Scene& scene, sr::FillMode fillmode, WallpaperPosition position,
+    unsigned width, unsigned height) {
+    position = position.Normalized();
+    const auto extent = scene.OrthographicProjectionExtent();
+    double overflow_x = 0.0, overflow_y = 0.0;
+    if (fillmode == FillMode::ASPECTCROP && width > 0 && height > 0 &&
+        std::isfinite(extent[0]) && std::isfinite(extent[1]) && extent[0] > 0 && extent[1] > 0) {
+        const double source_aspect = extent[0] / extent[1];
+        const double target_aspect = static_cast<double>(width) / height;
+        overflow_x = std::max(0.0, source_aspect / target_aspect - 1.0);
+        if (scene.UsesSyntheticPerspectiveCamera())
+            overflow_y = std::max(0.0, target_aspect / source_aspect - 1.0);
+    }
+    const double x = (1.0 - 2.0 * position.x) * overflow_x;
+    const double y = (2.0 * position.y - 1.0) * overflow_y;
+    for (const auto* name : { "global", "global_perspective" }) {
+        auto it = scene.cameras.find(name);
+        if (it == scene.cameras.end() || !it->second) continue;
+        it->second->SetProjectionOffset(x, y);
+        it->second->Update();
+        scene.UpdateLinkedCamera(name);
+    }
+    return { overflow_x > 0.000001, overflow_y > 0.000001 };
+}
+
+std::array<bool, 2> VulkanRender::Impl::UpdateCameraPosition(
+    sr::Scene& scene, sr::FillMode fillmode, WallpaperPosition position) {
+    const auto extent = m_device->out_extent();
+    return UpdateCameraPositionForExtent(scene, fillmode, position, extent.width, extent.height);
+}
+
 void VulkanRender::Impl::UpdateCameraFillMode(sr::Scene& scene, sr::FillMode fillmode) {
     const auto extent = m_device->out_extent();
     UpdateCameraFillModeForExtent(scene, fillmode, extent.width, extent.height);
@@ -1806,7 +2052,6 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg,
     };
     m_program.finalizeRenderTargetSizes(
         scene, m_device->out_extent(), max_framebuffer_extent, m_msaa_samples);
-    m_program.finalizeFramePassRequests(scene);
     m_program.finalizeResourceRequests(scene);
     m_device->tex_cache().BeginVideoTextureActivity();
     m_program.prepare(scene, *m_device, m_rendering_resources, render_scene);
@@ -1833,7 +2078,6 @@ void VulkanRender::Impl::refreshPreparedResources(Scene&                     sce
     };
     m_program.finalizeRenderTargetSizes(
         scene, m_device->out_extent(), max_framebuffer_extent, m_msaa_samples);
-    m_program.finalizeFramePassRequests(scene);
     m_program.finalizeResourceRequests(scene);
     m_program.prepare(scene, *m_device, m_rendering_resources, render_scene);
     m_program.rebuildScopes();
@@ -1873,9 +2117,15 @@ bool VulkanRender::Impl::refreshPreparedMaterialTextures(
     Scene& scene, const RenderSceneSnapshot& render_scene,
     std::span<const sr::SceneMaterialId> materials) {
     if (! m_inited || m_program.pass_records.empty()) return true;
-    auto render_items = RenderItemsForMaterials(render_scene, materials);
+    std::vector<SceneDrawItemId> draw_items;
+    for (auto material : materials) {
+        for (auto item : render_scene.renderItemsFor(material)) {
+            if (auto* record = render_scene.renderItem(item))
+                draw_items.push_back(record->scene_draw_item);
+        }
+    }
     bool requires_graph_rebuild =
-        m_program.refreshMaterialTextureBindings(render_scene, render_items);
+        m_program.refreshMaterialTextureBindings(render_scene, draw_items);
     if (requires_graph_rebuild) return false;
     refreshPreparedResources(scene, render_scene);
     return true;

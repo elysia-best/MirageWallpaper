@@ -12,6 +12,7 @@ if(APPLE)
         macOS/VRMemoryAssetLoader.mm
         macOS/VideoRendererEngine.h
         macOS/VideoRendererEngine.mm
+        VRVideoLayout.h
         VRTranscoder.h
         VRTranscoder.mm)
 elseif(UNIX AND NOT APPLE)
@@ -36,7 +37,8 @@ add_library(VideoRendererEngine STATIC
 target_compile_features(VideoRendererEngine PUBLIC cxx_std_20)
 target_include_directories(VideoRendererEngine PUBLIC
     "${VR_COMMON_DIR}"
-    "${VR_PLATFORM_DIR}")
+    "${VR_PLATFORM_DIR}"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(APPLE)
     set_target_properties(VideoRendererEngine PROPERTIES

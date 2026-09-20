@@ -114,6 +114,7 @@ struct FrameInputs {
     // GLFW numbering (left=0, right=1, middle=2). down is held-state,
     // pressed/released are edge events for this frame only.
     float    cursor_x { 0.0f }, cursor_y { 0.0f };
+    std::optional<std::array<double, 2>> cursor_world;
     bool     cursor_in_window { false };
     uint32_t mouse_buttons_down { 0 };
     uint32_t mouse_buttons_pressed { 0 };
@@ -126,9 +127,18 @@ struct MediaStatus {
     std::string artist;
     std::string album;
     std::string album_artist;
+    double      position { 0.0 };
+    double      duration { 0.0 };
     std::string art_url;
     std::string previous_art_url;
+    std::array<float, 3> primary_color { 1.0f, 1.0f, 1.0f };
+    std::array<float, 3> secondary_color { 0.0f, 0.0f, 0.0f };
+    std::array<float, 3> tertiary_color { 0.0f, 0.0f, 0.0f };
+    std::array<float, 3> text_color { 0.0f, 0.0f, 0.0f };
+    std::array<float, 3> high_contrast_color { 0.0f, 0.0f, 0.0f };
 };
+
+using UserShortcutOpener = std::function<bool(std::string_view name, std::string_view target)>;
 
 // --- script properties (configuration) --------------------------------------
 
@@ -187,6 +197,10 @@ public:
     // Pending initializers run in authored layer order once the complete scene
     // graph is available.
     void SetInitializationOrder(FieldScript& script, std::uint64_t order);
+    void SetImplicitAnimation(FieldScript& script,
+                              std::shared_ptr<sr::SceneAnimationPlayback> playback);
+
+    void SetFieldScriptEffectSelf(FieldScript& script, const sr::SceneImageEffectRef& ref);
 
     // Snapshot used by thisScene.getInitialLayerConfig(layer).
     void RegisterInitialLayerConfig(sr::SceneNode* node, Json config);
@@ -196,10 +210,18 @@ public:
     void SetScene(sr::Scene* scene);
     void SetSceneRoot(sr::SceneNode* root);
 
+    void SetCanvasSize(float width, float height);
+
     // Wire localStorage to a JSON file. Existing keys load synchronously;
     // subsequent script writes flush back to the file. Pass an empty
     // string to revert to in-memory-only behaviour.
     void SetPersistence(std::string path);
+    void SetStorageSnapshot(std::string_view snapshot);
+    std::string StorageSnapshot() const;
+    void SetStorageCallback(std::function<void(std::string)> callback);
+    void PublishStorageSnapshot();
+
+    void ResetLocalStorage();
 
     // Push one frame's worth of host state into the runtime. The next
     // FieldScript::Update call will see these values via `engine.*`.
@@ -213,6 +235,8 @@ public:
     // Dispatch Wallpaper Engine media callbacks for the current media
     // snapshot. Call from the renderer owner thread.
     void SetMediaStatus(const MediaStatus& status);
+
+    void SetUserShortcutOpener(UserShortcutOpener opener);
 
     using BoneIndexResolver = std::function<uint32_t(sr::SceneNode*, std::string_view)>;
     using BoneTransformResolver =
@@ -267,6 +291,8 @@ public:
                                   std::function<void(double)>           set_point_size = {});
     void RegisterImageAlignmentSetter(sr::SceneNode* node, std::string alignment,
                                       std::function<void(std::string_view)> setter);
+    void RegisterTextFontSetter(sr::SceneNode* node, std::function<std::string()> get_font,
+                                std::function<void(std::string_view)> set_font);
 
     using LayerFactory = std::function<std::optional<rstd::sync::Arc<sr::SceneNode>>(
         sr::SceneNode*, LayerAssetReference)>;
@@ -291,6 +317,7 @@ public:
     FieldKind          field_kind() const noexcept;
     const ScriptValue& last_value() const noexcept;
     bool               alive() const noexcept;
+    bool               HasUpdate() const noexcept;
     std::string_view   script_sha() const noexcept;
     std::span<const std::string> RegisteredAssets() const noexcept;
     std::optional<std::string_view> WorkshopId() const noexcept;
@@ -375,6 +402,12 @@ void TickSceneScripts(sr::Scene& scene, const FrameInputs& fi);
 void SetSceneUserProperty(sr::Scene& scene, std::string_view key, const Json& property);
 
 void SetSceneMediaStatus(sr::Scene& scene, const MediaStatus& status);
+
+void SetSceneUserShortcutOpener(sr::Scene& scene, UserShortcutOpener opener);
+
+void ResetSceneLocalStorage(sr::Scene& scene);
+std::string SceneStorageSnapshot(sr::Scene& scene);
+void SetSceneStorageCallback(sr::Scene& scene, std::function<void(std::string)> callback);
 
 // Forward `SetPersistence` to the ScriptScene attached to `scene`. No-op
 // when the scene has no script runtime.

@@ -1010,6 +1010,25 @@ Scene::Scene()
 }
 Scene::~Scene() = default;
 
+std::optional<std::array<double, 2>> Scene::CursorPositionOnCanvas(double x, double y) const {
+    if (!UsesSyntheticPerspectiveCamera() || activeCamera == nullptr ||
+        !std::isfinite(x) || !std::isfinite(y)) return std::nullopt;
+    const Eigen::Matrix4d matrix = activeCamera->GetViewProjectionMatrix();
+    if (!matrix.allFinite() || std::abs(matrix.determinant()) < 1e-20) return std::nullopt;
+    const Eigen::Matrix4d inverse = matrix.inverse();
+    Eigen::Vector4d near = inverse * Eigen::Vector4d(2 * x - 1, 1 - 2 * y, 0, 1);
+    Eigen::Vector4d far = inverse * Eigen::Vector4d(2 * x - 1, 1 - 2 * y, 1, 1);
+    if (!near.allFinite() || !far.allFinite() || std::abs(near.w()) < 1e-12 ||
+        std::abs(far.w()) < 1e-12) return std::nullopt;
+    near /= near.w();
+    far /= far.w();
+    const double depth = far.z() - near.z();
+    if (std::abs(depth) < 1e-12) return std::nullopt;
+    const Eigen::Vector4d point = near + (far - near) * (-near.z() / depth);
+    if (!point.allFinite()) return std::nullopt;
+    return std::array { point.x(), point.y() };
+}
+
 std::optional<SceneCameraTransforms> Scene::ActiveCameraTransforms() const {
     if (! activeCamera) return std::nullopt;
     return activeCamera->Transforms();
@@ -1286,6 +1305,12 @@ void Scene::EnableRuntimeLayerVisibility(WallpaperLayerId id) {
     m_pending_node_visibility_changes.erase(id.value);
 }
 
+void Scene::RegisterPuppetAnimationVisibilityBinding(
+    std::string key, std::function<void(const Json&)> setter) {
+    if (key.empty() || ! setter) return;
+    puppet_animation_visibility_index[std::move(key)].push_back(std::move(setter));
+}
+
 bool Scene::ConsumeRenderGraphDirty() {
     const bool dynamic_visibility_changed =
         m_hidden_scene_node_ids != m_render_graph_hidden_scene_node_ids;
@@ -1354,6 +1379,10 @@ bool Scene::CommitDynamicTopology() {
 }
 
 bool Scene::ApplyUserNodeVisibilityBindings(std::string_view key, const Json& property) {
+    if (auto it = puppet_animation_visibility_index.find(std::string(key));
+        it != puppet_animation_visibility_index.end()) {
+        for (const auto& setter : it->second) setter(property);
+    }
     if (m_resource_index.Empty()) RebuildResourceIndex();
     bool matched_binding = false;
     for (auto* node : m_resource_index.Nodes()) {
@@ -1640,8 +1669,7 @@ void Scene::CaptureCameraPathViewports() {
     }
 }
 
-void Scene::EnablePlanarReflection() {
-    m_planar_reflection_enabled = true;
+void Scene::EnsurePlanarReflectionRenderTarget() {
     const std::string key(WE_REFLECTION_PREFIX);
     if (renderTargets.count(key) != 0) return;
 
@@ -1658,7 +1686,13 @@ void Scene::EnablePlanarReflection() {
         .withDepth         = true,
         .bind              = { .enable = true, .screen = true },
         .preserve_on_write = true,
+        .hdr_format        = hdr_render_targets,
     };
+}
+
+void Scene::EnablePlanarReflection() {
+    m_planar_reflection_enabled = true;
+    EnsurePlanarReflectionRenderTarget();
 }
 
 std::string Scene::EnsureLinkRenderTarget(WallpaperLayerId source_layer,
@@ -1670,6 +1704,7 @@ std::string Scene::EnsureLinkRenderTarget(WallpaperLayerId source_layer,
             .width      = sz.x() > 0 ? static_cast<i32>(sz.x()) : ortho[0],
             .height     = sz.y() > 0 ? static_cast<i32>(sz.y()) : ortho[1],
             .allowReuse = false,
+            .hdr_format = hdr_render_targets,
         };
     }
     return link_key;

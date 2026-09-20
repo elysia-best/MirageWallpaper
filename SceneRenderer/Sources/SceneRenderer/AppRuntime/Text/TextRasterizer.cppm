@@ -124,6 +124,7 @@ public:
 
 private:
     friend class FontCache;
+    friend class TextLayouter;
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };
@@ -139,15 +140,20 @@ public:
     // size. The shared_ptr keeps the blob alive for the face's lifetime so
     // FreeType's pointers into it stay valid. Returns nullptr if FreeType
     // cannot open the blob.
-    FontFace* GetFace(std::shared_ptr<std::vector<std::byte>> blob, std::uint32_t pixel_size);
+    FontFace* GetFace(std::shared_ptr<std::vector<std::byte>> blob, std::uint32_t pixel_size,
+                      std::int32_t face_index = 0);
 
     // Iterate every face the cache currently owns (used by the renderer's
     // per-frame atlas-commit hook).
-    std::vector<FontFace*> Faces() const;
+    std::span<FontFace* const> Faces() const;
+    // Layouts and materials pin their faces; call after GPU resource retirement.
+    void TrimUnusedFaces(std::span<const std::string>                 material_textures,
+                         const std::function<void(std::string_view)>& before_remove);
 
     struct ResolvedBlob {
         std::shared_ptr<std::vector<std::byte>> bytes;
         std::string                             source; // path or "in-pkg:..."
+        std::int32_t                            face_index { 0 };
     };
 
     // Resolves a font reference. Tries:
@@ -172,10 +178,9 @@ private:
 FontCache& EnsureSceneFontCache(sr::Scene& scene);
 FontCache* SceneFontCache(sr::Scene& scene) noexcept;
 
-// Snapshot the face's atlas pixels into a renderer-consumable Image (R8,
-// single slot, single mipmap, LINEAR/CLAMP_TO_EDGE sampler). The returned
-// Image owns its pixel buffer; the FontFace can subsequently mutate or be
-// destroyed without affecting the snapshot.
+// Alias the face's atlas pixels into a renderer-consumable Image (R8,
+// single slot, single mipmap, LINEAR/CLAMP_TO_EDGE sampler). The face must
+// outlive the Image; TrimUnusedFaces removes the Image before retiring it.
 std::shared_ptr<sr::Image> BuildAtlasImage(const FontFace& face, const std::string& key);
 
 // Lazily compiles the embedded text HLSL shader (one-time, process-wide
@@ -217,6 +222,12 @@ struct TextLayoutStyle {
     // Effect/background layers must retain the font baseline coordinates so
     // effect projection and logical layer framing use the same origin.
     bool center_source { true };
+
+    bool          limit_width { false };
+    float         max_width { 0.0f };
+    bool          limit_rows { false };
+    std::uint32_t max_rows { 0 };
+    bool          use_ellipsis { false };
 };
 
 struct TextLayoutMetrics {
@@ -249,13 +260,15 @@ struct TextGeometry {
     float uv_source_height { 1.0f };
     float effect_frame_width { 1.0f };
     float effect_frame_height { 1.0f };
+    bool  operator==(const TextGeometry&) const = default;
 };
 
 TextGeometry ResolveTextGeometry(const TextGeometryPolicy& policy,
                                  const TextLayoutMetrics&  metrics);
 
-// Resolves WE's text-frame alignment without involving the visible glyph
-// crop. The returned position is the logical frame centre in parent space.
+// Resolves WE's text-frame alignment. The returned position is where the
+// layout's line box centre goes; a non-centre alignment lands the line box's
+// edge on the frame's edge rather than its centre on the frame's centre.
 std::array<float, 2> ResolveTextAnchorPosition(std::string_view horizontal,
                                                std::string_view vertical,
                                                float            origin_x,
@@ -263,7 +276,9 @@ std::array<float, 2> ResolveTextAnchorPosition(std::string_view horizontal,
                                                float            frame_width,
                                                float            frame_height,
                                                float            scale_x,
-                                               float            scale_y);
+                                               float            scale_y,
+                                               float            line_box_width,
+                                               float            line_box_height);
 
 class TextLayouter {
 public:
@@ -282,12 +297,14 @@ public:
     void SetText(std::string_view utf8);
     void SetFace(FontFace* face);
     void SetHorizontalAlign(std::string_view align);
+    void SetLayoutScale(float scale);
 
     // Live per-vertex color / alpha updates. Rewrites the glyph vertex colors
     // in place (re-runs the current layout), so text-layer `color` / `alpha`
     // user properties take effect without a scene reload.
     void SetColor(float r, float g, float b);
     void SetAlpha(float alpha);
+    void SetMaxWidth(float max_width);
 
     // For ParseTextObj's initial-bbox log; reflects the most recent layout.
     float             TextWidth() const noexcept;

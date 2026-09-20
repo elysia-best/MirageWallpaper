@@ -34,7 +34,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate {
                 viewModel: AppDelegate.shared.contentViewModel,
                 wallpaperViewModel: AppDelegate.shared.wallpaperViewModel,
                 navigationModel: AppDelegate.shared.navigationModel
-            ).environmentObject(AppDelegate.shared.globalSettingsViewModel)
+            ).environment(AppDelegate.shared.globalSettingsViewModel)
         )
         hostingView.sizingOptions = []
         self.window.contentView = hostingView
@@ -82,6 +82,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate {
     }
     
     func windowWillClose(_ notification: Notification) {
+        AppDelegate.shared.contentViewModel.isWindowVisible = false
         AppDelegate.shared.contentViewModel.isStaging = false
         AppDelegate.shared.enterMenuBarMode()
     }
@@ -92,10 +93,23 @@ class MainWindowController: NSWindowController, NSWindowDelegate {
     
     func windowDidBecomeKey(_ notification: Notification) {
         DispatchQueue.main.async {
-            withAnimation {
-                AppDelegate.shared.contentViewModel.isStaging = true
-            }
+            AppDelegate.shared.contentViewModel.isStaging = true
+            AppDelegate.shared.contentViewModel.isWindowVisible = true
         }
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let window else { return }
+        AppDelegate.shared.contentViewModel.isWindowVisible = window.isVisible &&
+            !window.isMiniaturized && window.occlusionState.contains(.visible)
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        AppDelegate.shared.contentViewModel.isWindowVisible = false
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        windowDidChangeOcclusionState(notification)
     }
 
     func refreshLocalizedTitle() {

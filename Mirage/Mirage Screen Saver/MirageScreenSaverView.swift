@@ -3,8 +3,6 @@ import AppKit
 import Darwin
 import OSLog
 import ScreenSaver
-import UniformTypeIdentifiers
-import WebKit
 
 private let screenSaverLogger = Logger(
     subsystem: "cn.laobamac.Mirage.ScreenSaver",
@@ -14,35 +12,57 @@ private let screenSaverLogger = Logger(
 private struct MirageSaverConfiguration {
     let title: String
     let kind: String
-    let renderDirectory: URL
     let entryURL: URL
     let playbackEntryURL: URL
     let fallbackEntryURL: URL?
-    let entryRelativePath: String
-    let overlays: [URL]
-    let properties: [String: Any]
     let rawProperties: [String: Any]
     let fps: Int
     let fillMode: String
+    let position: WallpaperPosition
+    let positionsByDisplay: [String: WallpaperPosition]
     let enableHDRVideo: Bool
+    let loadFromMemory: Bool
     let language: String
+    let speed: Float
+    let scriptStorage: [String: String]
+    let hostApplicationPath: String?
+    let identity: Data
 
-    static func load() -> Self? {
+    static func load(displayKey: String? = nil) -> Self? {
         let home: URL
         if let record = getpwuid(getuid()), let path = String(validatingUTF8: record.pointee.pw_dir) {
             home = URL(fileURLWithPath: path, isDirectory: true)
         } else {
             home = FileManager.default.homeDirectoryForCurrentUser
         }
+        let configurationName = Bundle(for: MirageScreenSaverView.self).bundleIdentifier
+            == "cn.laobamac.Mirage.DynamicLockScreen"
+            ? "dynamic-lock-screen-screensaver.json"
+            : "screensaver.json"
         let url = home
-            .appendingPathComponent("Library/Application Support/Mirage/screensaver.json")
+            .appendingPathComponent("Library/Application Support/Mirage/\(configurationName)")
         guard let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              (object["version"] as? Int) == 1,
-              let kind = object["kind"] as? String,
-              let renderPath = object["renderDirectory"] as? String,
-              let entryPath = object["entryPath"] as? String else { return nil }
-        let renderDirectory = URL(fileURLWithPath: renderPath, isDirectory: true)
+              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (decoded["version"] as? Int) == 1,
+              let kind = decoded["kind"] as? String,
+              kind == "video" || kind == "scene",
+              let entryPath = decoded["entryPath"] as? String else { return nil }
+        var object = decoded
+        if let displayKey,
+           let snapshots = decoded["runtimeByDisplay"] as? [String: [String: Any]],
+           let snapshot = snapshots[displayKey] {
+            for key in ["rawProperties", "fillMode", "position", "speed", "scriptStorage"] {
+                if let value = snapshot[key] { object[key] = value }
+            }
+        }
+        if let displayKey, let positions = decoded["positionsByDisplay"] as? [String: [String: Any]],
+           let position = positions[displayKey] { object["position"] = position }
+        var identityObject = object
+        identityObject.removeValue(forKey: "runtimeByDisplay")
+        identityObject.removeValue(forKey: "positionsByDisplay")
+        guard let identity = try? JSONSerialization.data(withJSONObject: identityObject, options: .sortedKeys) else { return nil }
+        let rawSpeed = (object["speed"] as? NSNumber)?.floatValue ?? 1
+        let speed = rawSpeed.isFinite && rawSpeed > 0 ? rawSpeed : 1
         let entryURL = URL(fileURLWithPath: entryPath)
         guard FileManager.default.fileExists(atPath: entryURL.path) else { return nil }
         let candidate = (object["playableEntryPath"] as? String).map(URL.init(fileURLWithPath:))
@@ -57,20 +77,22 @@ private struct MirageSaverConfiguration {
         return Self(
             title: object["title"] as? String ?? "Mirage",
             kind: kind,
-            renderDirectory: renderDirectory,
             entryURL: entryURL,
             playbackEntryURL: entryURL,
             fallbackEntryURL: fallbackEntryURL,
-            entryRelativePath: entryURL.path.hasPrefix(renderDirectory.path + "/")
-                ? String(entryURL.path.dropFirst(renderDirectory.path.count + 1))
-                : entryURL.lastPathComponent,
-            overlays: (object["assetOverlays"] as? [String] ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) },
-            properties: object["properties"] as? [String: Any] ?? [:],
             rawProperties: object["rawProperties"] as? [String: Any] ?? [:],
             fps: max(10, min(object["fps"] as? Int ?? 30, 60)),
             fillMode: object["fillMode"] as? String ?? "cover",
+            position: WallpaperPosition(dictionary: object["position"] as? [String: Any]),
+            positionsByDisplay: (object["positionsByDisplay"] as? [String: [String: Any]] ?? [:])
+                .mapValues { WallpaperPosition(dictionary: $0) },
             enableHDRVideo: object["enableHDRVideo"] as? Bool ?? false,
-            language: object["language"] as? String ?? Locale.preferredLanguages.first ?? "en"
+            loadFromMemory: object["loadFromMemory"] as? Bool ?? false,
+            language: object["language"] as? String ?? Locale.preferredLanguages.first ?? "en",
+            speed: speed,
+            scriptStorage: object["scriptStorage"] as? [String: String] ?? [:],
+            hostApplicationPath: object["hostApplicationPath"] as? String,
+            identity: identity
         )
     }
 
@@ -100,115 +122,281 @@ private enum MirageSaverLocalization {
     }
 }
 
+struct MirageSaverRenderSize {
+    let drawableWidth: UInt32
+    let drawableHeight: UInt32
+    let renderWidth: UInt32
+    let renderHeight: UInt32
+
+    init?(size: CGSize, isPreview: Bool) {
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0,
+              let width = UInt32(exactly: max(1, size.width.rounded())),
+              let height = UInt32(exactly: max(1, size.height.rounded())) else { return nil }
+        let scale = isPreview ? max(1, 500 / min(size.width, size.height)) : 1
+        guard scale.isFinite else { return nil }
+        let scaledWidth = size.width >= 8192 / scale ? 8192 : ceil(size.width * scale)
+        let scaledHeight = size.height >= 8192 / scale ? 8192 : ceil(size.height * scale)
+        guard let renderWidth = UInt32(exactly: max(1, scaledWidth)),
+              let renderHeight = UInt32(exactly: max(1, scaledHeight)) else { return nil }
+        drawableWidth = isPreview ? 0 : width
+        drawableHeight = isPreview ? 0 : height
+        self.renderWidth = renderWidth
+        self.renderHeight = renderHeight
+    }
+}
+
 private final class MirageSceneLibrary {
     typealias Create = @convention(c) (
         UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?,
-        UInt32, UInt32, UInt32, UInt32, UInt32
+        UInt32, UInt32, UInt32, UInt32, UInt32, UnsafePointer<CChar>?, Double, Double, UnsafePointer<CChar>?
     ) -> UnsafeMutableRawPointer?
     typealias SetPaused = @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void
+    typealias FirstFrame = @convention(c) (UnsafeMutableRawPointer?) -> Void
+    typealias SetFirstFrame = @convention(c) (UnsafeMutableRawPointer?, FirstFrame?, UnsafeMutableRawPointer?) -> Void
     typealias Destroy = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
     let handle: UnsafeMutableRawPointer
     let create: Create
     let setPaused: SetPaused
+    let setFirstFrame: SetFirstFrame
     let destroy: Destroy
 
-    init?(bundle: Bundle) {
-        guard let frameworkDirectory = bundle.privateFrameworksURL else { return nil }
-        let libraryURL = frameworkDirectory.appendingPathComponent("libMirageSceneSaver.dylib")
-        guard let handle = dlopen(libraryURL.path, RTLD_NOW | RTLD_LOCAL),
-              let createSymbol = dlsym(handle, "MirageSceneSaverCreate"),
+    init?(libraryURL: URL) {
+        guard let handle = dlopen(libraryURL.path, RTLD_NOW | RTLD_LOCAL) else { return nil }
+        guard let createSymbol = dlsym(handle, "MirageSceneSaverCreateWithRuntime"),
               let pauseSymbol = dlsym(handle, "MirageSceneSaverSetPaused"),
+              let firstFrameSymbol = dlsym(handle, "MirageSceneDesktopSetFirstFrameCallback"),
               let destroySymbol = dlsym(handle, "MirageSceneSaverDestroy") else {
+            dlclose(handle)
             return nil
         }
         self.handle = handle
         create = unsafeBitCast(createSymbol, to: Create.self)
         setPaused = unsafeBitCast(pauseSymbol, to: SetPaused.self)
+        setFirstFrame = unsafeBitCast(firstFrameSymbol, to: SetFirstFrame.self)
         destroy = unsafeBitCast(destroySymbol, to: Destroy.self)
     }
 
     deinit { dlclose(handle) }
 }
 
-private final class MirageWallpaperSchemeHandler: NSObject, WKURLSchemeHandler {
-    let base: URL
-    let overlays: [URL]
+private final class MirageSaverSceneSession {
+    private final class Request: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        private var firstFrameAction: (() -> Void)?
 
-    init(base: URL, overlays: [URL]) {
-        self.base = base
-        self.overlays = overlays
-    }
-
-    private func sendFile(_ candidate: URL, for requestURL: URL, task: WKURLSchemeTask) -> Bool {
-        guard let data = try? Data(contentsOf: candidate) else { return false }
-        let mime = UTType(filenameExtension: candidate.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-        let response = URLResponse(url: requestURL, mimeType: mime, expectedContentLength: data.count, textEncodingName: nil)
-        task.didReceive(response)
-        task.didReceive(data)
-        task.didFinish()
-        return true
-    }
-
-    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        guard let requestURL = urlSchemeTask.request.url,
-              let relative = requestURL.path.removingPercentEncoding?.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-              !relative.isEmpty else {
-            urlSchemeTask.didFailWithError(URLError(.badURL))
-            return
+        func onFirstFrame(_ action: @escaping () -> Void) {
+            lock.lock()
+            firstFrameAction = action
+            lock.unlock()
         }
 
-        if relative == "__mirage_local",
-           let requestedPath = URLComponents(url: requestURL, resolvingAgainstBaseURL: false)?
-            .queryItems?.first(where: { $0.name == "path" })?.value,
-           (requestedPath as NSString).isAbsolutePath {
-            let candidate = URL(fileURLWithPath: requestedPath).standardizedFileURL.resolvingSymlinksInPath()
-            for rootURL in overlays + [base] {
-                let root = rootURL.standardizedFileURL.resolvingSymlinksInPath()
-                if candidate.path == root.path || candidate.path.hasPrefix(root.path + "/") {
-                    if sendFile(candidate, for: requestURL, task: urlSchemeTask) { return }
-                    break
-                }
+        func signalFirstFrame() {
+            lock.lock()
+            let action = firstFrameAction
+            firstFrameAction = nil
+            lock.unlock()
+            DispatchQueue.main.async { [self] in
+                if !isCancelled { action?() }
             }
-            urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
-            return
         }
 
-        let roots = relative.lowercased() == "project.json" ? [base] : overlays + [base]
-        for root in roots {
-            let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
-            let candidate = normalizedRoot.appendingPathComponent(relative).standardizedFileURL.resolvingSymlinksInPath()
-            guard candidate.path.hasPrefix(normalizedRoot.path + "/") else { continue }
-            if sendFile(candidate, for: requestURL, task: urlSchemeTask) { return }
+        var isCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return cancelled
         }
-        urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            lock.unlock()
+        }
     }
 
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+    private final class Resources {
+        let view: Unmanaged<NSView>
+        let request: Request
+        var library: MirageSceneLibrary?
+        var engine: UnsafeMutableRawPointer?
+
+        init(view: NSView, request: Request) {
+            self.view = .passRetained(view)
+            self.request = request
+        }
+
+        deinit {
+            let view = view, library = library, engine = engine, request = request
+            MirageSaverSceneSession.queue.async {
+                withExtendedLifetime(request) {
+                    if let library, let engine {
+                        library.setFirstFrame(engine, nil, nil)
+                        library.destroy(engine)
+                    }
+                }
+                DispatchQueue.main.async { view.release() }
+            }
+        }
+    }
+
+    private static let queue = DispatchQueue(label: "cn.laobamac.Mirage.ScreenSaver.Scene", qos: .userInitiated)
+    private let request = Request()
+    private var resources: Resources?
+    private var paused = true
+
+    init(view: NSView, bundle: Bundle, configuration: MirageSaverConfiguration,
+         size: MirageSaverRenderSize, position: WallpaperPosition,
+         onFirstFrame: @escaping () -> Void = {}, completion: @escaping (String?) -> Void) {
+        let request = request
+        request.onFirstFrame(onFirstFrame)
+        let resources = Resources(view: view, request: request)
+        let data = (try? JSONSerialization.data(withJSONObject: configuration.rawProperties, options: .sortedKeys)) ?? Data("{}".utf8)
+        let properties = String(data: data, encoding: .utf8) ?? "{}"
+        let runtimeData = try? JSONSerialization.data(withJSONObject: [
+            "speed": configuration.speed, "scriptStorage": configuration.scriptStorage
+        ], options: .sortedKeys)
+        let runtimeJSON = runtimeData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        Self.queue.async { [weak self] in
+            let failure: String? = autoreleasepool {
+                guard !request.isCancelled else { return nil }
+                guard let host = MirageHostApplication.locate(configuredPath: configuration.hostApplicationPath, component: bundle) else {
+                    return "场景屏保资源不完整"
+                }
+                guard let library = MirageSceneLibrary(libraryURL: host.sceneLibraryURL) else {
+                    return "场景屏保组件不可用"
+                }
+                resources.library = library
+                let assets = host.assetsURL
+                let icd = host.vulkanICDURL
+                guard !request.isCancelled else { return nil }
+                setenv("VK_ICD_FILENAMES", icd.path, 1)
+                setenv("VK_DRIVER_FILES", icd.path, 1)
+                resources.engine = assets.path.withCString { assetsPath in
+                    configuration.entryURL.path.withCString { packagePath in
+                        properties.withCString { properties in
+                            configuration.fillMode.withCString { fill in
+                                runtimeJSON.withCString { runtime in
+                                    library.create(resources.view.toOpaque(), assetsPath, packagePath, properties,
+                                                   size.renderWidth, size.renderHeight,
+                                                   size.drawableWidth, size.drawableHeight,
+                                                   UInt32(configuration.fps), fill, position.x, position.y, runtime)
+                                }
+                            }
+                        }
+                    }
+                }
+                if let engine = resources.engine {
+                    library.setFirstFrame(engine, { pointer in
+                        guard let pointer else { return }
+                        Unmanaged<Request>.fromOpaque(pointer).takeUnretainedValue().signalFirstFrame()
+                    }, Unmanaged.passUnretained(request).toOpaque())
+                }
+                return resources.engine == nil ? "场景壁纸加载失败" : nil
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !request.isCancelled else { return }
+                if resources.engine != nil {
+                    self.resources = resources
+                    self.setPaused(self.paused)
+                }
+                completion(failure)
+            }
+        }
+    }
+
+    func setPaused(_ paused: Bool) {
+        self.paused = paused
+        if let resources, let engine = resources.engine {
+            resources.library?.setPaused(engine, paused ? 1 : 0)
+        }
+    }
+
+    func stop() {
+        request.cancel()
+        setPaused(true)
+        resources = nil
+    }
+
+    deinit {
+        request.cancel()
+        if let resources, let engine = resources.engine {
+            resources.library?.setPaused(engine, 1)
+        }
+    }
 }
 
 @objc(MirageScreenSaverView)
 final class MirageScreenSaverView: ScreenSaverView {
-    private var player: AVPlayer?
+    private var player: AVQueuePlayer?
+    private var looper: AVPlayerLooper?
+    private var memoryAssetLoader: MirageMemoryVideoAssetLoader?
     private var playerLayer: AVPlayerLayer?
-    private var webView: WKWebView?
-    private var schemeHandler: MirageWallpaperSchemeHandler?
-    private var endObserver: NSObjectProtocol?
+    private var videoLayout: WallpaperVideoLayout?
     private var messageLabel: NSTextField?
     private var configuration: MirageSaverConfiguration?
-    private var sceneLibrary: MirageSceneLibrary?
-    private var sceneEngine: UnsafeMutableRawPointer?
+    private var sceneSession: MirageSaverSceneSession?
+    private var sceneView: NSView?
+    private var wallpaperLoadWorkItem: DispatchWorkItem?
     private var didLoadWallpaper = false
     private var isAnimatingWallpaper = false
+    private var isWaitingForLayout = false
     private var videoLoadTask: Task<Void, Never>?
     private var videoLoadID = UUID()
     private var hostReportedSize = CGSize.zero
+    private var configurationObserver: NSObjectProtocol?
+    private var videoReadyObservation: NSKeyValueObservation?
+    private var finishReload: (() -> Void)?
+    private var configurationReload: DispatchWorkItem?
+    private var configurationRequestID = UUID()
+
+    private var currentDisplayKey: String? {
+        guard !isPreview, let screen = window?.screen,
+              let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        else { return nil }
+        return wallpaperDisplayKey(displayID)
+    }
+
+    private func observeConfiguration() {
+        guard configurationObserver == nil else { return }
+        configurationObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("cn.laobamac.Mirage.screensaver.configurationChanged"),
+            object: nil, queue: .main) { [weak self] notification in
+                guard let self else { return }
+                let target = Bundle(for: MirageScreenSaverView.self).bundleIdentifier
+                    == "cn.laobamac.Mirage.DynamicLockScreen" ? "lock" : "saver"
+                guard notification.object as? String == target else { return }
+                self.reloadConfiguration()
+            }
+    }
+
+    private func reloadConfiguration() {
+        guard isAnimatingWallpaper else { return }
+        configurationReload?.cancel()
+        let request = UUID()
+        configurationRequestID = request
+        let displayKey = currentDisplayKey
+        let work = DispatchWorkItem { [weak self] in
+            let value = MirageSaverConfiguration.load(displayKey: displayKey)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.configurationRequestID == request, self.isAnimatingWallpaper,
+                      let value, value.identity != self.configuration?.identity else { return }
+                self.preserveWallpaperForReload()
+                self.releaseWallpaper(preservingReload: true)
+                self.loadWallpaper(value)
+            }
+        }
+        configurationReload = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
 
     override init?(frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
         autoresizingMask = [.width, .height]
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
+        layer?.masksToBounds = true
     }
 
     required init?(coder: NSCoder) {
@@ -220,35 +408,58 @@ final class MirageScreenSaverView: ScreenSaverView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil else { return }
-        // legacyScreenSaver attaches the view before its final layout pass.
-        // Defer one run-loop turn so the first Vulkan extent is derived from
-        // the host's settled bounds/backing coordinate space.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.window != nil else { return }
-            self.loadWallpaper()
-        }
+        if window == nil { releaseWallpaper() }
+        else { scheduleWallpaperLoad() }
     }
 
     deinit {
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        finishReload?()
+        videoReadyObservation?.invalidate()
+        configurationReload?.cancel()
+        if let configurationObserver { DistributedNotificationCenter.default().removeObserver(configurationObserver) }
         player?.pause()
+        looper?.disableLooping()
+        player?.removeAllItems()
+        looper = nil
+        playerLayer?.player = nil
+        memoryAssetLoader = nil
         videoLoadTask?.cancel()
-        webView?.stopLoading()
-        if let sceneEngine { sceneLibrary?.destroy(sceneEngine) }
+        wallpaperLoadWorkItem?.cancel()
+        sceneSession?.stop()
     }
 
     private func localized(_ key: String) -> String {
         MirageSaverLocalization.string(key, language: configuration?.language)
     }
 
-    private func loadWallpaper() {
-        guard !didLoadWallpaper, window != nil else { return }
+    private func scheduleWallpaperLoad() {
+        guard isAnimatingWallpaper, !didLoadWallpaper, window != nil,
+              wallpaperLoadWorkItem == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            defer { self.wallpaperLoadWorkItem = nil }
+            self.loadWallpaper()
+        }
+        wallpaperLoadWorkItem = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func loadWallpaper(_ replacement: MirageSaverConfiguration? = nil) {
+        guard isAnimatingWallpaper, !didLoadWallpaper, window != nil else { return }
         layoutSubtreeIfNeeded()
         normalizeFullScreenBoundsIfNeeded()
         layoutSubtreeIfNeeded()
+        guard hasValidBounds,
+              MirageSaverRenderSize(size: convertToBacking(bounds).size, isPreview: isPreview) != nil else {
+            if !isWaitingForLayout {
+                screenSaverLogger.info("Waiting for valid screen saver layout: \(self.bounds.width, privacy: .public)x\(self.bounds.height, privacy: .public)")
+                isWaitingForLayout = true
+            }
+            return
+        }
+        isWaitingForLayout = false
         didLoadWallpaper = true
-        guard let configuration = MirageSaverConfiguration.load() else {
+        guard let configuration = replacement ?? MirageSaverConfiguration.load(displayKey: currentDisplayKey) else {
             showMessage(MirageSaverLocalization.string("请先在 Mirage 设置中选择屏保壁纸"))
             return
         }
@@ -256,65 +467,48 @@ final class MirageScreenSaverView: ScreenSaverView {
         animationTimeInterval = 1.0 / Double(configuration.fps)
         switch configuration.kind {
         case "video": loadVideo(configuration)
-        case "web": loadWeb(configuration)
         case "scene": loadScene(configuration)
         default: showMessage(localized("不支持的壁纸格式"))
         }
     }
 
+    private func position(for configuration: MirageSaverConfiguration) -> WallpaperPosition {
+        guard !isPreview,
+              let screen = window?.screen,
+              let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+              let key = wallpaperDisplayKey(displayID) else { return configuration.position }
+        return configuration.positionsByDisplay[key] ?? configuration.position
+    }
+
     private func loadScene(_ configuration: MirageSaverConfiguration) {
         let bundle = Bundle(for: MirageScreenSaverView.self)
-        guard let resources = bundle.resourceURL,
-              let library = MirageSceneLibrary(bundle: bundle) else {
-            showMessage(localized("场景屏保组件不可用"))
-            return
-        }
-        let assets = resources.appendingPathComponent("assets", isDirectory: true)
-        let icd = resources.appendingPathComponent("vulkan/icd.d/MoltenVK_icd.json")
-        guard FileManager.default.fileExists(atPath: assets.path),
-              FileManager.default.fileExists(atPath: icd.path) else {
-            showMessage(localized("场景屏保资源不完整"))
-            return
-        }
-        setenv("VK_ICD_FILENAMES", icd.path, 1)
-        setenv("VK_DRIVER_FILES", icd.path, 1)
-        let data = (try? JSONSerialization.data(withJSONObject: configuration.rawProperties)) ?? Data("{}".utf8)
-        let json = String(data: data, encoding: .utf8) ?? "{}"
-        // ScreenSaverView uses logical points while Vulkan renders pixels.
-        // Ask AppKit for this view's actual backing rect so mixed-DPI displays
-        // and System Settings' preview both retain the correct aspect ratio.
         let backingSize = convertToBacking(bounds).size
         let drawableSize = isPreview ? backingSize : displayPixelSize() ?? backingSize
-        let drawableWidth = UInt32(max(1, drawableSize.width.rounded()))
-        let drawableHeight = UInt32(max(1, drawableSize.height.rounded()))
-        let fixedDrawableWidth = isPreview ? 0 : drawableWidth
-        let fixedDrawableHeight = isPreview ? 0 : drawableHeight
-        let previewScale = isPreview
-            ? max(1, 500 / min(drawableSize.width, drawableSize.height))
-            : 1
-        let renderWidth = UInt32(min(ceil(drawableSize.width * previewScale), 8192))
-        let renderHeight = UInt32(min(ceil(drawableSize.height * previewScale), 8192))
-        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
-        screenSaverLogger.notice(
-            "MirageScreenSaver build=\(build, privacy: .public) preview=\(self.isPreview, privacy: .public) host=\(Int(self.hostReportedSize.width), privacy: .public)x\(Int(self.hostReportedSize.height), privacy: .public) points=\(Int(self.bounds.width), privacy: .public)x\(Int(self.bounds.height), privacy: .public) backing=\(Int(backingSize.width), privacy: .public)x\(Int(backingSize.height), privacy: .public) drawable=\(drawableWidth, privacy: .public)x\(drawableHeight, privacy: .public) render=\(renderWidth, privacy: .public)x\(renderHeight, privacy: .public)"
-        )
-        let viewPointer = Unmanaged.passUnretained(self).toOpaque()
-        let engine = assets.path.withCString { assetsPath in
-            configuration.entryURL.path.withCString { packagePath in
-                json.withCString { properties in
-                    library.create(viewPointer, assetsPath, packagePath, properties,
-                                   renderWidth, renderHeight,
-                                   fixedDrawableWidth, fixedDrawableHeight,
-                                   UInt32(configuration.fps))
-                }
-            }
-        }
-        guard let engine else {
-            showMessage(localized("场景壁纸加载失败"))
+        guard let size = MirageSaverRenderSize(size: drawableSize, isPreview: isPreview) else {
+            didLoadWallpaper = false
             return
         }
-        sceneLibrary = library
-        sceneEngine = engine
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        screenSaverLogger.notice(
+            "MirageScreenSaver build=\(build, privacy: .public) preview=\(self.isPreview, privacy: .public) host=\(self.hostReportedSize.width, privacy: .public)x\(self.hostReportedSize.height, privacy: .public) points=\(self.bounds.width, privacy: .public)x\(self.bounds.height, privacy: .public) backing=\(backingSize.width, privacy: .public)x\(backingSize.height, privacy: .public) drawable=\(drawableSize.width, privacy: .public)x\(drawableSize.height, privacy: .public) render=\(size.renderWidth, privacy: .public)x\(size.renderHeight, privacy: .public)"
+        )
+        let view = NSView(frame: bounds)
+        view.autoresizingMask = [.width, .height]
+        view.alphaValue = finishReload == nil ? 1 : 0
+        addSubview(view)
+        sceneView = view
+        sceneSession = MirageSaverSceneSession(view: view, bundle: bundle, configuration: configuration,
+                                              size: size, position: position(for: configuration),
+                                              onFirstFrame: { [weak self] in self?.finishConfigurationReload() }) { [weak self] failure in
+            guard let self else { return }
+            if let failure {
+                screenSaverLogger.error("Scene screen saver initialization failed: \(failure, privacy: .public)")
+                self.showMessage(self.localized(failure))
+            } else {
+                screenSaverLogger.info("Scene screen saver initialized")
+            }
+        }
+        sceneSession?.setPaused(!isAnimatingWallpaper)
     }
 
     private func normalizeFullScreenBoundsIfNeeded() {
@@ -323,10 +517,24 @@ final class MirageScreenSaverView: ScreenSaverView {
         }
         guard !isPreview else { return }
         guard let screen = window?.screen ?? NSScreen.main else { return }
-        let logicalSize = screen.frame.size
-        guard logicalSize.width > 0, logicalSize.height > 0 else { return }
-        guard !approximatelyEqual(bounds.size, logicalSize) else { return }
-        bounds = NSRect(origin: bounds.origin, size: logicalSize)
+        guard screen.backingScaleFactor.isFinite, screen.backingScaleFactor > 0 else { return }
+        let backingSize = screen.convertRectToBacking(screen.frame).size
+        let logicalSize = CGSize(
+            width: backingSize.width / screen.backingScaleFactor,
+            height: backingSize.height / screen.backingScaleFactor
+        )
+        guard logicalSize.width.isFinite, logicalSize.height.isFinite,
+              logicalSize.width > 0, logicalSize.height > 0 else { return }
+        if !approximatelyEqual(bounds.size, logicalSize) {
+            var normalizedBounds = bounds
+            normalizedBounds.size = logicalSize
+            bounds = normalizedBounds
+        }
+        if !approximatelyEqual(frame.size, logicalSize) {
+            var normalizedFrame = frame
+            normalizedFrame.size = logicalSize
+            frame = normalizedFrame
+        }
     }
 
     private func approximatelyEqual(_ lhs: CGSize, _ rhs: CGSize) -> Bool {
@@ -338,68 +546,107 @@ final class MirageScreenSaverView: ScreenSaverView {
     private func displayPixelSize() -> CGSize? {
         guard let screen = window?.screen ?? NSScreen.main else { return nil }
         let size = screen.convertRectToBacking(screen.frame).size
-        guard size.width > 0, size.height > 0 else { return nil }
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0 else { return nil }
         return size
+    }
+
+    private var hasValidBounds: Bool {
+        bounds.width.isFinite && bounds.height.isFinite && bounds.width > 0 && bounds.height > 0
     }
 
     private func loadVideo(_ configuration: MirageSaverConfiguration) {
         videoLoadTask?.cancel()
         let loadID = UUID()
         videoLoadID = loadID
-        videoLoadTask = Task { [weak self] in
+        videoLoadTask = Task.detached(priority: .userInitiated) { [weak self] in
             let candidates = [configuration.playbackEntryURL, configuration.fallbackEntryURL]
                 .compactMap { $0 }
             var playableAsset: AVURLAsset?
+            var playableLoader: MirageMemoryVideoAssetLoader?
             for url in candidates {
-                let asset = AVURLAsset(url: url)
-                guard let playable = try? await asset.load(.isPlayable), playable,
-                      let tracks = try? await asset.loadTracks(withMediaType: .video),
-                      !tracks.isEmpty else { continue }
-                var decodable = true
-                for track in tracks {
-                    guard let value = try? await track.load(.isDecodable), value else {
-                        decodable = false
-                        break
+                guard !Task.isCancelled else { return }
+                let loader: MirageMemoryVideoAssetLoader?
+                let asset: AVURLAsset
+                if configuration.loadFromMemory {
+                    do {
+                        let candidateLoader = try MirageMemoryVideoAssetLoader(fileURL: url, isCancelled: { Task.isCancelled })
+                        loader = candidateLoader
+                        asset = candidateLoader.makeAsset()
+                    } catch {
+                        guard !Task.isCancelled else { return }
+                        screenSaverLogger.error("In-memory video load failed: \(error.localizedDescription, privacy: .public)")
+                        loader = nil
+                        asset = AVURLAsset(url: url)
                     }
+                } else {
+                    loader = nil
+                    asset = AVURLAsset(url: url)
                 }
-                if decodable {
+                let decodable = try? await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    guard try await asset.load(.isPlayable) else { return false }
+                    try Task.checkCancellation()
+                    let duration = try await asset.load(.duration)
+                    guard duration.isNumeric, CMTimeCompare(duration, .zero) > 0 else { return false }
+                    try Task.checkCancellation()
+                    let tracks = try await asset.loadTracks(withMediaType: .video)
+                    guard !tracks.isEmpty else { return false }
+                    for track in tracks {
+                        try Task.checkCancellation()
+                        guard try await track.load(.isDecodable) else { return false }
+                    }
+                    return true
+                } onCancel: {
+                    asset.cancelLoading()
+                }
+                guard !Task.isCancelled else { return }
+                if decodable == true {
                     playableAsset = asset
+                    playableLoader = loader
                     break
                 }
             }
+            guard !Task.isCancelled else { return }
             guard let asset = playableAsset else {
-                await MainActor.run {
-                    guard let self, self.videoLoadID == loadID else { return }
+                await MainActor.run { [weak self] in
+                    guard let self, self.videoLoadID == loadID,
+                          self.isAnimatingWallpaper, self.window != nil else { return }
+                    self.videoLoadTask = nil
                     self.showMessage(self.localized("此视频格式无法播放，请先在 Mirage 中播放一次以完成转换"))
                 }
                 return
             }
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let self, self.videoLoadID == loadID else { return }
+            await MainActor.run { [weak self, playableLoader] in
+                guard let self, self.videoLoadID == loadID,
+                      self.isAnimatingWallpaper, self.window != nil else { return }
+                self.videoLoadTask = nil
                 let item = AVPlayerItem(asset: asset)
-                let player = AVPlayer(playerItem: item)
+                let player = AVQueuePlayer()
+                player.automaticallyWaitsToMinimizeStalling = true
                 player.isMuted = true
+                let looper = AVPlayerLooper(player: player, templateItem: item)
                 let playerLayer = AVPlayerLayer(player: player)
-                playerLayer.frame = self.videoPresentationBounds
-                playerLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-                switch configuration.fillMode {
-                case "contain": playerLayer.videoGravity = .resizeAspect
-                case "stretch": playerLayer.videoGravity = .resize
-                default: playerLayer.videoGravity = .resizeAspectFill
-                }
+                playerLayer.frame = self.presentationBounds
                 self.applyVideoDynamicRange(to: playerLayer, enabled: configuration.enableHDRVideo)
                 self.layer?.addSublayer(playerLayer)
+                self.videoLayout = WallpaperVideoLayout(
+                    layer: playerLayer, bounds: self.presentationBounds,
+                    fillMode: configuration.fillMode, position: self.position(for: configuration))
                 self.player = player
+                self.looper = looper
+                self.memoryAssetLoader = playableLoader
                 self.playerLayer = playerLayer
-                self.endObserver = NotificationCenter.default.addObserver(
-                    forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
-                ) { [weak self] _ in
-                    guard let self else { return }
-                    self.player?.seek(to: .zero)
-                    if self.isAnimatingWallpaper { self.player?.play() }
+                playerLayer.opacity = self.finishReload == nil ? 1 : 0
+                self.videoReadyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
+                    guard layer.isReadyForDisplay else { return }
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.videoLoadID == loadID else { return }
+                        self.finishConfigurationReload()
+                    }
                 }
-                if self.isAnimatingWallpaper { player.play() }
+                if self.isAnimatingWallpaper { player.playImmediately(atRate: configuration.speed) }
             }
         }
     }
@@ -407,19 +654,111 @@ final class MirageScreenSaverView: ScreenSaverView {
     override func layout() {
         super.layout()
         normalizeFullScreenBoundsIfNeeded()
+        guard hasValidBounds else {
+            releaseWallpaper()
+            return
+        }
+        scheduleWallpaperLoad()
         guard let rootLayer = layer else { return }
         rootLayer.contentsScale = window?.backingScaleFactor ?? rootLayer.contentsScale
-        playerLayer?.frame = videoPresentationBounds
+        videoLayout?.update(bounds: videoPresentationBounds)
         playerLayer?.contentsScale = rootLayer.contentsScale
         if let playerLayer, let configuration {
             applyVideoDynamicRange(to: playerLayer, enabled: configuration.enableHDRVideo)
         }
-        webView?.frame = bounds
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        scheduleWallpaperLoad()
+    }
+
+    override func setBoundsSize(_ newSize: NSSize) {
+        super.setBoundsSize(newSize)
+        scheduleWallpaperLoad()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsLayout = true
+        scheduleWallpaperLoad()
+    }
+
+    private func preserveWallpaperForReload() {
+        guard finishReload == nil, sceneView != nil || playerLayer != nil else { return }
+        let oldSession = sceneSession, oldView = sceneView
+        let oldPlayer = player, oldLayer = playerLayer, oldLooper = looper, oldLoader = memoryAssetLoader
+        oldSession?.setPaused(true)
+        oldPlayer?.pause()
+        sceneSession = nil
+        sceneView = nil
+        player = nil
+        playerLayer = nil
+        looper = nil
+        memoryAssetLoader = nil
+        videoLayout = nil
+        finishReload = {
+            oldSession?.stop()
+            oldView?.removeFromSuperview()
+            withExtendedLifetime(oldLoader) {
+                oldLooper?.disableLooping()
+                oldLayer?.player = nil
+                oldPlayer?.removeAllItems()
+                oldLayer?.removeFromSuperlayer()
+            }
+        }
+    }
+
+    private func finishConfigurationReload() {
+        sceneView?.alphaValue = 1
+        playerLayer?.opacity = 1
+        finishReload?()
+        finishReload = nil
+    }
+
+    private func releaseWallpaper(preservingReload: Bool = false) {
+        if !preservingReload {
+            finishReload?()
+            finishReload = nil
+        }
+        videoReadyObservation?.invalidate()
+        videoReadyObservation = nil
+        if didLoadWallpaper {
+            screenSaverLogger.info("Releasing screen saver resources, preview=\(self.isPreview, privacy: .public)")
+        }
+        if !isAnimatingWallpaper || window == nil { isWaitingForLayout = false }
+        wallpaperLoadWorkItem?.cancel()
+        wallpaperLoadWorkItem = nil
+        videoLoadID = UUID()
+        videoLoadTask?.cancel()
+        videoLoadTask = nil
+        player?.pause()
+        looper?.disableLooping()
+        playerLayer?.player = nil
+        player?.removeAllItems()
+        videoLayout = nil
+        playerLayer?.removeFromSuperlayer()
+        playerLayer = nil
+        looper = nil
+        player = nil
+        memoryAssetLoader = nil
+        sceneSession?.stop()
+        sceneSession = nil
+        sceneView?.removeFromSuperview()
+        sceneView = nil
+        messageLabel?.removeFromSuperview()
+        messageLabel = nil
+        configuration = nil
+        didLoadWallpaper = false
+        hostReportedSize = .zero
     }
 
     private var videoPresentationBounds: CGRect {
-        guard !isPreview, let screen = window?.screen ?? NSScreen.main else { return bounds }
-        return CGRect(origin: .zero, size: screen.frame.size)
+        presentationBounds
+    }
+
+    private var presentationBounds: CGRect {
+        CGRect(origin: .zero, size: bounds.size)
     }
 
     private func applyVideoDynamicRange(to playerLayer: AVPlayerLayer, enabled: Bool) {
@@ -435,121 +774,8 @@ final class MirageScreenSaverView: ScreenSaverView {
         }
     }
 
-    private func loadWeb(_ configuration: MirageSaverConfiguration) {
-        let webConfiguration = WKWebViewConfiguration()
-        let controller = WKUserContentController()
-        let propertiesData = (try? JSONSerialization.data(withJSONObject: configuration.properties)) ?? Data("{}".utf8)
-        let propertiesJSON = String(data: propertiesData, encoding: .utf8) ?? "{}"
-        let shim = """
-        (function(){
-          window.wallpaperEngine_paused=false;
-          window.chrome=window.chrome||{runtime:{}};
-          function __mirageLocalAssetURL(raw){
-            if(typeof raw!=='string'||raw.slice(0,5).toLowerCase()!=='file:')return raw;
-            try{
-              var u=new URL(raw),p=decodeURIComponent(u.pathname||'');
-              while(p.length>1&&p.charAt(0)==='/'&&p.charAt(1)==='/')p=p.slice(1);
-              return 'mirage-wallpaper://wallpaper/__mirage_local?path='+encodeURIComponent(p);
-            }catch(e){return raw;}
-          }
-          function __mirageRewriteCssURLs(value){
-            if(typeof value!=='string')return value;
-            return value.replace(/file:[^'")]+/gi,function(url){return __mirageLocalAssetURL(url.trim());});
-          }
-          function __mirageWrapCssProperty(name){
-            try{
-              var d=Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype,name);
-              if(d&&d.get&&d.set)Object.defineProperty(CSSStyleDeclaration.prototype,name,{
-                configurable:d.configurable,enumerable:d.enumerable,get:d.get,
-                set:function(v){d.set.call(this,__mirageRewriteCssURLs(v));}
-              });
-            }catch(e){}
-          }
-          ['background','backgroundImage','cssText'].forEach(__mirageWrapCssProperty);
-          try{
-            var nativeSetProperty=CSSStyleDeclaration.prototype.setProperty;
-            CSSStyleDeclaration.prototype.setProperty=function(name,value,priority){
-              return nativeSetProperty.call(this,name,__mirageRewriteCssURLs(value),priority);
-            };
-          }catch(e){}
-          function __mirageWrapURLProperty(proto,name){
-            try{
-              var d=Object.getOwnPropertyDescriptor(proto,name);
-              if(d&&d.get&&d.set)Object.defineProperty(proto,name,{
-                configurable:d.configurable,enumerable:d.enumerable,get:d.get,
-                set:function(v){d.set.call(this,__mirageLocalAssetURL(v));}
-              });
-            }catch(e){}
-          }
-          [[HTMLImageElement.prototype,'src'],[HTMLMediaElement.prototype,'src'],
-           [HTMLSourceElement.prototype,'src']].forEach(function(x){__mirageWrapURLProperty(x[0],x[1]);});
-          try{
-            var nativeSetAttribute=Element.prototype.setAttribute;
-            Element.prototype.setAttribute=function(name,value){
-              var n=String(name).toLowerCase();
-              if(n==='src'||n==='poster')value=__mirageLocalAssetURL(value);
-              else if(n==='style')value=__mirageRewriteCssURLs(value);
-              return nativeSetAttribute.call(this,name,value);
-            };
-          }catch(e){}
-          function __mirageRewriteElementAsset(element,name){
-            try{
-              var value=element.getAttribute(name);
-              if(!value||value.toLowerCase().indexOf('file:')<0)return;
-              var rewritten=name==='style'?__mirageRewriteCssURLs(value):__mirageLocalAssetURL(value);
-              if(rewritten!==value)nativeSetAttribute.call(element,name,rewritten);
-            }catch(e){}
-          }
-          function __mirageInstallLocalAssetObserver(){
-            if(!document.documentElement||window.__mirageLocalAssetObserver)return;
-            var observer=new MutationObserver(function(records){
-              records.forEach(function(record){__mirageRewriteElementAsset(record.target,record.attributeName);});
-            });
-            observer.observe(document.documentElement,{subtree:true,attributes:true,attributeFilter:['style','src','poster']});
-            window.__mirageLocalAssetObserver=observer;
-          }
-          if(document.documentElement)__mirageInstallLocalAssetObserver();
-          document.addEventListener('DOMContentLoaded',__mirageInstallLocalAssetObserver,{once:true});
-          var retry=window.setTimeout.bind(window);
-          var listeners=[];
-          window.wallpaperRegisterAudioListener=function(cb){if(typeof cb==='function')listeners.push(cb);};
-          window.wallpaperRemoveAudioListener=function(cb){var i=listeners.indexOf(cb);if(i>=0)listeners.splice(i,1);};
-          window.wallpaperRegisterAudioStream=function(el){if(el)el.muted=true;return el;};
-          var mediaPlay=HTMLMediaElement.prototype.play;
-          HTMLMediaElement.prototype.play=function(){this.muted=true;return mediaPlay.apply(this,arguments);};
-          window.__mirageProperties=\(propertiesJSON);
-          window.__mirageApply=function(){
-            var l=window.wallpaperPropertyListener;
-            if(l&&typeof l.applyUserProperties==='function'){
-              try{l.applyUserProperties(window.__mirageProperties);return;}catch(e){}
-            }
-            retry(window.__mirageApply,25);
-          };
-          document.addEventListener('DOMContentLoaded',window.__mirageApply,{once:true});
-        })();
-        """
-        controller.addUserScript(WKUserScript(source: shim, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        webConfiguration.userContentController = controller
-        webConfiguration.websiteDataStore = .nonPersistent()
-        webConfiguration.mediaTypesRequiringUserActionForPlayback = []
-        let handler = MirageWallpaperSchemeHandler(base: configuration.renderDirectory, overlays: configuration.overlays)
-        webConfiguration.setURLSchemeHandler(handler, forURLScheme: "mirage-wallpaper")
-        schemeHandler = handler
-
-        let webView = WKWebView(frame: bounds, configuration: webConfiguration)
-        webView.autoresizingMask = [.width, .height]
-        webView.setValue(false, forKey: "drawsBackground")
-        addSubview(webView)
-        self.webView = webView
-
-        var components = URLComponents()
-        components.scheme = "mirage-wallpaper"
-        components.host = "wallpaper"
-        components.path = "/" + configuration.entryRelativePath
-        if let url = components.url { webView.load(URLRequest(url: url)) }
-    }
-
     private func showMessage(_ text: String) {
+        messageLabel?.removeFromSuperview()
         let label = NSTextField(labelWithString: text)
         label.textColor = .secondaryLabelColor
         label.font = .systemFont(ofSize: 18, weight: .medium)
@@ -568,21 +794,26 @@ final class MirageScreenSaverView: ScreenSaverView {
     override func startAnimation() {
         super.startAnimation()
         isAnimatingWallpaper = true
-        loadWallpaper()
-        player?.play()
-        webView?.evaluateJavaScript("window.wallpaperEngine_paused=false;if(window.wallpaperPropertyListener&&window.wallpaperPropertyListener.setPaused)window.wallpaperPropertyListener.setPaused(false);")
-        if let sceneEngine { sceneLibrary?.setPaused(sceneEngine, 0) }
+        observeConfiguration()
+        reloadConfiguration()
+        scheduleWallpaperLoad()
+        player?.playImmediately(atRate: configuration?.speed ?? 1)
+        sceneSession?.setPaused(false)
     }
 
     override func stopAnimation() {
+        configurationRequestID = UUID()
+        configurationReload?.cancel()
+        configurationReload = nil
         isAnimatingWallpaper = false
-        player?.pause()
-        webView?.evaluateJavaScript("window.wallpaperEngine_paused=true;if(window.wallpaperPropertyListener&&window.wallpaperPropertyListener.setPaused)window.wallpaperPropertyListener.setPaused(true);")
-        if let sceneEngine { sceneLibrary?.setPaused(sceneEngine, 1) }
+        releaseWallpaper()
         super.stopAnimation()
     }
 
-    override func animateOneFrame() {}
+    override func animateOneFrame() {
+        normalizeFullScreenBoundsIfNeeded()
+        videoLayout?.update(bounds: presentationBounds)
+    }
 
     override var hasConfigureSheet: Bool { false }
 }

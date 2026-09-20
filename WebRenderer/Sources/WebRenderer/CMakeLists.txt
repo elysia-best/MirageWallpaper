@@ -1,7 +1,15 @@
 # WebRenderer engine library — WKWebView + WE JS API host.
 
 if(APPLE)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/WRLive2DCompatibility.js")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/WRLive2DCompatibility.js" WR_LIVE2D_SCRIPT)
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/WRLive2DCompatibilityScript.h"
+        CONTENT "static constexpr char kWRLive2DCompatibilityJS[] = R\"WRL2D(${WR_LIVE2D_SCRIPT})WRL2D\";\n")
     add_library(WebRendererEngine STATIC
+        WRLive2DCompatibility.h
+        WRLive2DCompatibility.mm
+        WRLive2DCompatibility.js
         macOS/WallpaperManifest.h macOS/WallpaperManifest.mm
         macOS/WRAudioTap.h macOS/WRAudioTap.mm
         macOS/WRURLSchemeHandler.h macOS/WRURLSchemeHandler.mm
@@ -31,7 +39,8 @@ endif()
 
 target_compile_features(WebRendererEngine PUBLIC cxx_std_20)
 if(APPLE)
-    target_include_directories(WebRendererEngine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/macOS)
+    target_include_directories(WebRendererEngine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/macOS
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 else()
     target_include_directories(WebRendererEngine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Linux)
 endif()

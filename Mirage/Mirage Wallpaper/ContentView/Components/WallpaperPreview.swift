@@ -6,10 +6,27 @@
 
 import SwiftUI
 
+private struct WallpaperSizeLabel: View {
+    let directory: URL
+    let isActive: Bool
+    @State private var model = WallpaperSizeModel()
+
+    var body: some View {
+        Text(model.bytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "…")
+            .task(id: isActive ? directory : nil) {
+                if isActive { model.load(directory) } else { model.cancel() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: WallpaperSizeCache.didInvalidate)) { _ in
+                if isActive { model.load(directory) }
+            }
+            .onDisappear { model.cancel() }
+    }
+}
+
 struct WallpaperPreview: SubviewOfContentView {
-    @ObservedObject var viewModel: ContentViewModel
-    @ObservedObject var wallpaperViewModel: WallpaperViewModel
-    @ObservedObject var workshopViewModel: WorkshopViewModel
+    @Bindable var viewModel: ContentViewModel
+    @Bindable var wallpaperViewModel: WallpaperViewModel
+    @Bindable var workshopViewModel: WorkshopViewModel
     let isActive: Bool
     
     @Environment(\.undoManager) var undoManager
@@ -23,9 +40,6 @@ struct WallpaperPreview: SubviewOfContentView {
     @State var isTagsHovered = false
     @State private var isConfirmingUnsubscribe = false
 
-    // 目录大小异步计算并缓存，避免每次重绘在主线程遍历整个壁纸目录造成卡顿。
-    @State private var sizeText: String = "…"
-
     init(contentViewModel viewModel: ContentViewModel,
          wallpaperViewModel: WallpaperViewModel,
          workshopViewModel: WorkshopViewModel = AppDelegate.shared.workshopViewModel,
@@ -36,18 +50,8 @@ struct WallpaperPreview: SubviewOfContentView {
         self.isActive = isActive
     }
 
-    private func recomputeSize(for wallpaper: WEWallpaper) {
-        sizeText = "…"
-        let dir = wallpaper.wallpaperDirectory
-        Task.detached(priority: .utility) {
-            let bytes = (try? dir.directoryTotalAllocatedSize(includingSubfolders: true)) ?? 0
-            let text = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-            await MainActor.run { self.sizeText = text }
-        }
-    }
-
     private func beginTitleEditing() {
-        title = wallpaperViewModel.currentWallpaper.project.title
+        title = wallpaperViewModel.previewWallpaper.project.title
         isEditingId = "title"
         titleFieldFocused = true
     }
@@ -67,6 +71,7 @@ struct WallpaperPreview: SubviewOfContentView {
     }
     
     var body: some View {
+        let displayKey = wallpaperViewModel.selectedDisplayKey
         VStack {
             ScrollView {
                 LazyVStack(spacing: 16) {
@@ -81,16 +86,24 @@ struct WallpaperPreview: SubviewOfContentView {
                     .padding(.horizontal)
 
                     VStack(spacing: 10) {
-                        GifImage(contentsOf: wallpaperViewModel.currentWallpaper.project.preview.isEmpty
-                            ? Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!
-                            : wallpaperViewModel.currentWallpaper.previewURL,
-                            animates: isActive)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
+                        WorkshopImage(wallpaper: wallpaperViewModel.previewWallpaper,
+                                      contentMode: .fit, isAnimating: isActive,
+                                      isLoadingEnabled: isActive, preloadsWhenInactive: false)
                             .background(Color(nsColor: NSColor.controlBackgroundColor))
                             .frame(width: 280, height: 280)
                             .clipShape(RoundedRectangle(cornerRadius: 16.0))
                             .border(Color.white, width: 4)
+                            .overlay(alignment: .topTrailing) {
+                                if wallpaperViewModel.isApplyingSelection {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .padding(8)
+                                        .background(.regularMaterial, in: Circle())
+                                        .padding(8)
+                                        .accessibilityLabel(Text("正在应用壁纸…"))
+                                        .help("正在应用壁纸…")
+                                }
+                            }
                         HStack {
                             if isEditingId == "title" {
                                 TextField("壁纸名称", text: $title)
@@ -103,7 +116,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                         titleFieldFocused = false
                                     }
                             } else {
-                                Text(wallpaperViewModel.currentWallpaper.project.title.isEmpty ? L("未命名") : wallpaperViewModel.currentWallpaper.project.title)
+                                Text(wallpaperViewModel.previewWallpaper.project.title.isEmpty ? L("未命名") : wallpaperViewModel.previewWallpaper.project.title)
                                     .frame(minWidth: 50)
                                     .id("title")
                                     .lineLimit(1)
@@ -145,19 +158,20 @@ struct WallpaperPreview: SubviewOfContentView {
                         .help(L(isCurrentFavorite ? "取消收藏" : "加入收藏"))
                     }
                     HStack {
-                        Text(wallpaperViewModel.currentWallpaper.isPreset
-                            ? (wallpaperViewModel.currentWallpaper.presetStatusDescription.map { L("预设 · %@", $0) }
-                                ?? L("预设 · %@", wallpaperViewModel.currentWallpaper.kind.displayName))
-                            : wallpaperViewModel.currentWallpaper.kind.displayName)
-                        Text(sizeText)
+                        Text(wallpaperViewModel.previewWallpaper.isPreset
+                            ? (wallpaperViewModel.previewWallpaper.presetStatusDescription.map { L("预设 · %@", $0) }
+                                ?? L("预设 · %@", wallpaperViewModel.previewWallpaper.kind.displayName))
+                            : wallpaperViewModel.previewWallpaper.kind.displayName)
+                        WallpaperSizeLabel(directory: wallpaperViewModel.previewWallpaper.wallpaperDirectory,
+                                           isActive: isActive)
                     }
                     .font(.footnote)
 
-                    if wallpaperViewModel.currentWallpaper.isPreset,
-                       let dependency = wallpaperViewModel.currentWallpaper.presetDependency {
+                    if wallpaperViewModel.previewWallpaper.isPreset,
+                       let dependency = wallpaperViewModel.previewWallpaper.presetDependency {
                         Label("基础壁纸：\(dependency.rawValue)", systemImage: "square.stack.3d.up.fill")
                             .font(.caption)
-                            .foregroundStyle(wallpaperViewModel.currentWallpaper.needsPresetDependency ? .orange : .secondary)
+                            .foregroundStyle(wallpaperViewModel.previewWallpaper.needsPresetDependency ? .orange : .secondary)
                     }
                     
                     ViewThatFits(in: .horizontal) {
@@ -186,7 +200,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                     
                                     guard !newTag.isEmpty else { return }
                                     
-                                    let current = wallpaperViewModel.currentWallpaper
+                                    let current = wallpaperViewModel.previewWallpaper
                                     var tags = current.project.tags ?? []
                                     
                                     tags = Array(Set(tags))
@@ -208,30 +222,36 @@ struct WallpaperPreview: SubviewOfContentView {
                             Spacer()
                             MirageSlider(value: Binding(
                                 get: { wallpaperViewModel.playVolume },
-                                set: { wallpaperViewModel.playVolume = $0 }), in: 0...1)
+                                set: { wallpaperViewModel.setVolume($0, for: displayKey) }), in: 0...1,
+                                onEditingChanged: { editing in
+                                    if !editing { wallpaperViewModel.flushInteractiveChanges(for: displayKey) }
+                                })
                                 .frame(width: 100)
                             Text(String(format: "%.0f", wallpaperViewModel.playVolume * 100) + "%")
                                 .frame(width: 35)
                         }
-                        if wallpaperViewModel.currentWallpaper.kind == .scene ||
-                            wallpaperViewModel.currentWallpaper.kind == .video {
+                        if wallpaperViewModel.previewWallpaper.kind == .scene ||
+                            wallpaperViewModel.previewWallpaper.kind == .video {
                             HStack {
                                 Label("速度", systemImage: "gauge.with.dots.needle.67percent")
                                 Spacer()
                                 MirageSlider(value: Binding(
                                     get: { wallpaperViewModel.playRate },
-                                    set: { wallpaperViewModel.playRate = $0 }), in: 0...2, step: 0.1)
+                                    set: { wallpaperViewModel.setSpeed($0, for: displayKey) }), in: 0...2, step: 0.1,
+                                    onEditingChanged: { editing in
+                                        if !editing { wallpaperViewModel.flushInteractiveChanges(for: displayKey) }
+                                    })
                                     .frame(width: 100)
                                 Text(String(format: "%.01fx", wallpaperViewModel.playRate))
                                 .frame(width: 35)
                             }
                         }
-                        if wallpaperViewModel.currentWallpaper.kind == .video {
+                        if wallpaperViewModel.previewWallpaper.kind == .video {
                             HStack {
                                 Label("填充模式", systemImage: "aspectratio.fill")
                                 Spacer()
                                 Picker("", selection: Binding(
-                                    get: { wallpaperViewModel.runtime.fillMode },
+                                    get: { wallpaperViewModel.controlState.fillMode },
                                     set: { wallpaperViewModel.setFillMode($0) })) {
                                     ForEach(FillMode.allCases) { Text($0.displayName).tag($0) }
                                 }
@@ -240,9 +260,15 @@ struct WallpaperPreview: SubviewOfContentView {
                         }
                     }
 
+                    if wallpaperViewModel.previewWallpaper.kind == .scene ||
+                        wallpaperViewModel.previewWallpaper.kind == .video {
+                        sectionHeader("画面位置")
+                        positionControls
+                    }
+
                     sectionHeader("壁纸属性")
-                    PropertyEditor(wallpaper: wallpaperViewModel.currentWallpaper)
-                        .environmentObject(wallpaperViewModel)
+                    PropertyEditor(wallpaper: wallpaperViewModel.previewWallpaper, isActive: isActive)
+                        .environment(wallpaperViewModel)
 
                     sectionHeader("壁纸")
                     VStack(spacing: 3) {
@@ -280,7 +306,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                 Label("导入", systemImage: "folder.fill").frame(maxWidth: .infinity)
                             }
                             Button {
-                                PresetManager.shared.exportPreset(for: wallpaperViewModel.currentWallpaper,
+                                PresetManager.shared.exportPreset(for: wallpaperViewModel.previewWallpaper,
                                                                   runtime: wallpaperViewModel.runtime)
                             } label: {
                                 Label("导出", systemImage: "square.and.arrow.down.fill").frame(maxWidth: .infinity)
@@ -296,18 +322,15 @@ struct WallpaperPreview: SubviewOfContentView {
                         .tint(.red)
                     }
                 }
-                .blur(radius: wallpaperViewModel.currentWallpaper.project == .invalid ? 16.0 : 0)
+                .blur(radius: wallpaperViewModel.previewWallpaper.project == .invalid ? 16.0 : 0)
                 .overlay {
-                    if wallpaperViewModel.currentWallpaper.project == .invalid {
+                    if wallpaperViewModel.previewWallpaper.project == .invalid {
                         Text("请选择一个有效的壁纸")
                     }
                 }
-                .disabled(wallpaperViewModel.currentWallpaper.project == .invalid ? true : false)
-                .animation(.default, value: wallpaperViewModel.currentWallpaper.project)
+                .disabled(wallpaperViewModel.previewWallpaper.project == .invalid ||
+                          wallpaperViewModel.previewWallpaper.id != wallpaperViewModel.currentWallpaper.id)
                 .padding([.horizontal, .top])
-            }
-            .task(id: wallpaperViewModel.currentWallpaper.id) {
-                recomputeSize(for: wallpaperViewModel.currentWallpaper)
             }
 
             HStack {
@@ -326,18 +349,19 @@ struct WallpaperPreview: SubviewOfContentView {
             }
             .padding()
         }
-        .onAppear {
-            workshopViewModel.loadInstalledMetadata(for: wallpaperViewModel.currentWallpaper)
-            recomputeSize(for: wallpaperViewModel.currentWallpaper)
+        .task(id: isActive ? wallpaperViewModel.previewWallpaper.id : nil) {
+            guard isActive else { return }
+            workshopViewModel.loadInstalledMetadata(for: wallpaperViewModel.previewWallpaper)
         }
-        .onChange(of: wallpaperViewModel.currentWallpaper.id) { _, _ in
-            workshopViewModel.loadInstalledMetadata(for: wallpaperViewModel.currentWallpaper)
-            recomputeSize(for: wallpaperViewModel.currentWallpaper)
+        .onChange(of: wallpaperViewModel.previewWallpaper.id) { _, _ in
+            isEditingId = ""
+            newTag = ""
+            titleFieldFocused = false
         }
         .confirmationDialog(
             "取消订阅",
             isPresented: $isConfirmingUnsubscribe,
-            presenting: workshopViewModel.installedWorkshopItem(for: wallpaperViewModel.currentWallpaper)
+            presenting: workshopViewModel.installedWorkshopItem(for: wallpaperViewModel.previewWallpaper)
         ) { item in
             Button("取消订阅", role: .destructive) {
                 workshopViewModel.unsubscribe(item)
@@ -348,9 +372,73 @@ struct WallpaperPreview: SubviewOfContentView {
         }
     }
 
+    private var positionControls: some View {
+        let availability = wallpaperViewModel.positionAvailability
+        let cover = wallpaperViewModel.controlState.fillMode == .cover
+        return VStack(spacing: 12) {
+            positionRow("水平位置（X）", horizontal: true, enabled: cover && availability.x)
+            positionRow("垂直位置（Y）", horizontal: false, enabled: cover && availability.y)
+            if !cover {
+                Text("位置调整适用于填充模式")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if !availability.known {
+                Text("壁纸运行后可调整画面位置")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("仅可调整被裁切的方向，50% 为居中")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Button("恢复居中") {
+                wallpaperViewModel.setPosition(.center)
+            }
+            .disabled(wallpaperViewModel.controlState.position == .center)
+        }
+        .id("\(wallpaperViewModel.selectedDisplayKey.rawValue):\(wallpaperViewModel.previewWallpaper.id)")
+    }
+
+    private func positionRow(_ title: LocalizedStringKey, horizontal: Bool,
+                             enabled: Bool) -> some View {
+        let displayKey = wallpaperViewModel.selectedDisplayKey
+        let value = Binding<Double>(
+            get: {
+                let position = wallpaperViewModel.controlState.position
+                return horizontal ? position.x : position.y
+            },
+            set: { value in
+                let position = wallpaperViewModel.controlState.position
+                wallpaperViewModel.setPosition(WallpaperPosition(
+                    x: horizontal ? value : position.x,
+                    y: horizontal ? position.y : value), for: displayKey)
+            })
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(value.wrappedValue, format: .percent.precision(.fractionLength(1)))
+                    .monospacedDigit()
+            }
+            MirageSlider(value: value, in: 0...1, step: 0.001, onEditingChanged: { editing in
+                if !editing { wallpaperViewModel.flushInteractiveChanges(for: displayKey) }
+            })
+                .accessibilityLabel(Text(title))
+                .accessibilityValue(Text(value.wrappedValue, format: .percent.precision(.fractionLength(1))))
+                .accessibilityAdjustableAction { direction in
+                    guard enabled else { return }
+                    switch direction {
+                    case .increment: value.wrappedValue = min(1, value.wrappedValue + 0.01)
+                    case .decrement: value.wrappedValue = max(0, value.wrappedValue - 0.01)
+                    @unknown default: break
+                    }
+                }
+        }
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .help(L(horizontal ? "选择壁纸从左到右的展示区域" : "选择壁纸从上到下的展示区域"))
+    }
+
     @ViewBuilder
     private var workshopActions: some View {
-        if let item = workshopViewModel.installedWorkshopItem(for: wallpaperViewModel.currentWallpaper) {
+        if let item = workshopViewModel.installedWorkshopItem(for: wallpaperViewModel.previewWallpaper) {
             let id = item.publishedFileId
             let state = workshopViewModel.subscriptionState(for: id)
             let isChecking = workshopViewModel.checkingSubscriptionIDs.contains(id)
@@ -462,14 +550,14 @@ struct WallpaperPreview: SubviewOfContentView {
     }
 
     private var currentWorkshopID: String? {
-        wallpaperViewModel.currentWallpaper.steamFavoriteWorkshopID()
+        wallpaperViewModel.previewWallpaper.steamFavoriteWorkshopID()
     }
 
     private var isCurrentFavorite: Bool {
         if let currentWorkshopID {
             return workshopViewModel.isWorkshopFavorite(currentWorkshopID)
         }
-        return FavoritesManager.shared.isFavorite(wallpaperViewModel.currentWallpaper.id)
+        return FavoritesManager.shared.isFavorite(wallpaperViewModel.previewWallpaper.id)
     }
 
     private var isChangingCurrentFavorite: Bool {
@@ -480,13 +568,13 @@ struct WallpaperPreview: SubviewOfContentView {
         if let currentWorkshopID {
             workshopViewModel.toggleWorkshopFavorite(workshopId: currentWorkshopID)
         } else {
-            FavoritesManager.shared.toggle(wallpaperViewModel.currentWallpaper.id)
+            FavoritesManager.shared.toggle(wallpaperViewModel.previewWallpaper.id)
             NotificationCenter.default.post(name: .favoritesChanged, object: nil)
         }
     }
 
     private var authorSection: some View {
-        let wallpaper = wallpaperViewModel.currentWallpaper
+        let wallpaper = wallpaperViewModel.previewWallpaper
         let creator = workshopViewModel.installedCreator(for: wallpaper)
         let name = workshopViewModel.installedAuthorName(for: wallpaper) ?? L("佚名作者")
         return Button {
@@ -531,7 +619,7 @@ struct WallpaperPreview: SubviewOfContentView {
 
     var tags: some View {
         HStack {
-            if let tags = wallpaperViewModel.currentWallpaper.project.tags {
+            if let tags = wallpaperViewModel.previewWallpaper.project.tags {
                 ForEach(tags, id: \.self) { tag in
                     Text(tag)
                         .padding(5)
@@ -545,7 +633,7 @@ struct WallpaperPreview: SubviewOfContentView {
                         .overlay(alignment: .topTrailing) {
                             if hoveredTag == tag {
                                 Button {
-                                    let current = wallpaperViewModel.currentWallpaper
+                                    let current = wallpaperViewModel.previewWallpaper
                                     guard var tags = current.project.tags else { return }
                                     
                                     tags = Array(Set(tags))

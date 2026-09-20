@@ -34,8 +34,12 @@ PassInvalidationFlags CopyPass::finalizeResourceRequests(Scene& scene) {
     }
     auto dst_request = refresh(m_desc.dst);
     if (m_desc.dst_matches_src && m_desc.src_request) {
-        dst_request       = *m_desc.src_request;
-        dst_request->name = m_desc.dst;
+        dst_request          = *m_desc.src_request;
+        dst_request->name    = m_desc.dst;
+        dst_request->persist = false;
+        if (dst_request->cache_key && scene.renderTargets.contains(m_desc.dst))
+            dst_request->cache_key->image_usage =
+                RenderTargetImageUsage(scene.renderTargets.at(m_desc.dst));
     }
     if (dst_request && SetTextureRequestIfChanged(m_desc.dst_request, std::move(dst_request))) {
         flags |= ToPassInvalidationFlags(PassInvalidation::Resources);
@@ -157,7 +161,7 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
         VkImageMemoryBarrier out_bar {
             .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext            = nullptr,
-            .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+            .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
             .dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
             .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
             .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -165,7 +169,7 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
             .subresourceRange = srang,
         };
 
-        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                             VK_PIPELINE_STAGE_TRANSFER_BIT,
                             VK_DEPENDENCY_BY_REGION_BIT,
                             {},

@@ -106,6 +106,13 @@ void SceneUniformUpdater::FrameBegin() {
 
 void SceneUniformUpdater::FrameEnd() {}
 
+bool SceneUniformUpdater::RequiresContinuousFrames() const {
+    if (m_dynamic_uniforms || m_parallax.enable || m_cameraShake.enable) return true;
+    for (const auto& [node, data] : m_nodeDataMap)
+        if (data.puppet_layer) return true;
+    return false;
+}
+
 void SceneUniformUpdater::MouseInput(double x, double y) {
     using namespace std::chrono;
 
@@ -179,16 +186,52 @@ void SceneUniformUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp& 
         value.has_mipmap     = existsOp(WE_GLTEX_MIPMAPINFO_NAMES[index]);
         return index + 1;
     });
+    m_dynamic_uniforms |=
+        info.has_TIME || info.has_FRAMETIME || info.has_DAYTIME || info.has_DAYTIME_LEGACY ||
+        info.has_POINTERPOSITION || info.has_POINTERPOSITIONLAST || info.has_PARALLAXPOSITION ||
+        info.has_BONES || info.has_BONESALPHA || info.has_audio_16_l || info.has_audio_16_r ||
+        info.has_audio_32_l || info.has_audio_32_r || info.has_audio_64_l || info.has_audio_64_r;
 }
 
 std::optional<SceneNodeRenderTransform>
 SceneUniformUpdater::NodeRenderTransform(SceneNode* pNode, SceneRenderViewKind render_view) {
+    return NodeTransform(pNode, render_view, false, true);
+}
+
+std::optional<SceneNodeRenderTransform>
+SceneUniformUpdater::NodeScreenTransform(SceneNode* pNode, SceneRenderViewKind render_view) {
+    const bool offset_in_hit_center = pNode != nullptr && pNode->HasHitCenter();
+    return NodeTransform(pNode, render_view, true, ! offset_in_hit_center);
+}
+
+std::optional<SceneNodeRenderTransform>
+SceneUniformUpdater::NodeTransform(SceneNode* pNode, SceneRenderViewKind render_view,
+                                   bool screen_camera, bool apply_geometry_transform) {
     if (pNode == nullptr) return std::nullopt;
     pNode->UpdateTrans();
 
     SceneCamera*     camera { nullptr };
     std::string_view cam_name = pNode->Camera();
-    if (! pNode->Camera().empty()) {
+    if (screen_camera) {
+        SceneCamera* perspective { nullptr };
+        if (auto it = m_scene->cameras.find("global_perspective"); it != m_scene->cameras.end())
+            perspective = it->second.get();
+        SceneCamera* own { nullptr };
+        if (! cam_name.empty()) {
+            if (auto it = m_scene->cameras.find(std::string(cam_name));
+                it != m_scene->cameras.end())
+                own = it->second.get();
+        }
+        if (own != nullptr && (own == m_scene->activeCamera || own == perspective)) {
+            camera = own;
+        } else if (pNode->Perspective() && perspective != nullptr) {
+            camera   = perspective;
+            cam_name = "global_perspective";
+        } else {
+            camera   = m_scene->activeCamera;
+            cam_name = {};
+        }
+    } else if (! pNode->Camera().empty()) {
         auto it = m_scene->cameras.find(std::string(cam_name));
         if (it != m_scene->cameras.end()) camera = it->second.get();
     } else if (pNode->Perspective()) {
@@ -221,10 +264,11 @@ SceneUniformUpdater::NodeRenderTransform(SceneNode* pNode, SceneRenderViewKind r
     auto node_data_it = m_nodeDataMap.find(pNode);
     const bool has_node_data = node_data_it != m_nodeDataMap.end();
     const auto* node_data = has_node_data ? std::addressof(node_data_it->second) : nullptr;
-    Matrix4d model = has_node_data && node_data->vertices_in_world_space
+    Matrix4d model = has_node_data && node_data->vertices_in_world_space && ! screen_camera
                          ? Matrix4d::Identity()
                          : pNode->ModelTrans();
-    if (has_node_data && cam_name != "effect" && ! node_data->vertices_in_world_space) {
+    if (has_node_data && cam_name != "effect" &&
+        (screen_camera || ! node_data->vertices_in_world_space)) {
         auto camera_node = camera->GetAttachedNode();
         const bool layer_local_effect_source =
             camera->HasImgEffect() && camera_node.is_some() &&
@@ -263,8 +307,10 @@ SceneUniformUpdater::NodeRenderTransform(SceneNode* pNode, SceneRenderViewKind r
         }
     }
 
-    model *= pNode->GeometryTransform();
-    if (pNode->Mesh()) model *= pNode->Mesh()->GeometryTransform();
+    if (apply_geometry_transform) {
+        model *= pNode->GeometryTransform();
+        if (pNode->Mesh()) model *= pNode->Mesh()->GeometryTransform();
+    }
     return SceneNodeRenderTransform {
         .model                 = model,
         .view_projection       = view_projection,
@@ -397,9 +443,12 @@ void SceneUniformUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites
             if (reqMVPI) updateOp(G_MVPI, ShaderValue::fromMatrix(mvpTrans.inverse()));
         }
         if (reqEffectModel) {
+            const bool composites_to_screen =
+                cam_name.empty() && camera == m_scene->activeCamera;
             Matrix4d layerModel  = modelTrans;
             Matrix4d effectModel = modelTrans;
-            if (hasNodeData && nodeDataPtr->effect_projection_node != nullptr) {
+            if (! composites_to_screen && hasNodeData &&
+                nodeDataPtr->effect_projection_node != nullptr) {
                 const auto& nodeData = *nodeDataPtr;
                 auto*       source   = nodeData.effect_projection_node;
                 source->UpdateTrans();
@@ -421,9 +470,14 @@ void SceneUniformUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites
             if (info.has_EFFECTMODELMATRIX)
                 updateOp(G_EFFECTMODELMATRIX, ShaderValue::fromMatrix(effectModel));
             if (reqEMVP || reqEMVPI) {
-                SceneCamera* effect_camera = m_scene->activeCamera ? m_scene->activeCamera : camera;
-                const Matrix4d effect_mvp =
-                    effect_camera->GetViewProjectionMatrix(render_view) * effectModel;
+                const Matrix4d effect_mvp = composites_to_screen
+                                                ? viewProTrans * effectModel
+                                                : m_scene->activeCamera
+                                                      ? m_scene->activeCamera->GetViewProjectionMatrix(
+                                                            render_view) *
+                                                            effectModel
+                                                      : camera->GetViewProjectionMatrix(render_view) *
+                                                            effectModel;
                 if (reqEMVP) updateOp(G_EMVP, ShaderValue::fromMatrix(effect_mvp));
                 if (reqEMVPI)
                     updateOp(G_EFFECTMODELVIEWPROJECTIONMATRIXINVERSE,

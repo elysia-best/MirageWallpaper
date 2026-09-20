@@ -22,6 +22,7 @@ public:
         RenderItemId    render_item;
         SceneRenderViewKind render_view { SceneRenderViewKind::Primary };
         SceneRenderAlphaMode alpha_mode { SceneRenderAlphaMode::Composite };
+        bool                 hide_when_node_invisible { false };
         // Which submesh of node->Mesh() this pass renders. SceneToRenderGraph
         // emits one pass per (node, submesh).
         uint32_t                           submesh_index { 0 };
@@ -36,6 +37,8 @@ public:
         // vulkan texs
         std::vector<ImageSlotsRef> vk_textures;
         std::vector<i32>           vk_tex_binding;
+        std::vector<VkDescriptorImageInfo> descriptor_images;
+        std::vector<VkWriteDescriptorSet>  descriptor_writes;
         ImageParameters            vk_output;
         // MSAA twin (color attachment) when output RT has sample_count>1.
         // Empty handle means no MSAA; framebuffer attaches only vk_output.
@@ -83,6 +86,7 @@ public:
 
     PassInvalidationFlags                     finalizeResourceRequests(Scene&) override;
     std::optional<RenderItemId>               renderItemId() const override;
+    std::optional<SceneDrawItemId>            sceneDrawItemId() const override;
     std::optional<PipelineCacheKey>           pipelineCacheKey() const override;
     bool                                      pipelineCacheHit() const override;
     uint64_t                                  pipelineCacheObservedCount() const override;
@@ -109,6 +113,8 @@ public:
     void beginRenderScope(RenderingResources&) override;
     void recordRenderScopeDraw(RenderingResources&) override;
     void endRenderScope(RenderingResources&) override;
+
+    const Desc& desc() const noexcept { return m_desc; }
 
 private:
     Desc m_desc;

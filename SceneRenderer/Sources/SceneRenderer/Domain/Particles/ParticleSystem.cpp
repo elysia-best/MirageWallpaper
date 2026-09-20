@@ -357,7 +357,8 @@ void ParticleSubSystem::SimulateInstance(
     if (m_spawn_type == SpawnType::STATIC_CONTROLPOINT &&
         m_parent_controlpoint_start_index.has_value() && bounded_data.parent != nullptr &&
         bounded_data.parent_subsystem != nullptr) {
-        std::vector<usize> ordered;
+        static thread_local std::vector<usize> ordered;
+        ordered.clear();
         const auto parent_particles = bounded_data.parent->Particles();
         ordered.reserve(parent_particles.size());
         for (usize index = 0; index < parent_particles.size(); ++index)
@@ -557,9 +558,10 @@ void ParticleSubSystem::Advance(double frame_time, bool update_mesh) {
     }
     if (m_uses_mouse_controlpoint) {
         const auto pointer = m_sys.scene.pointerPosition;
+        const auto canvas = m_sys.scene.CursorPositionOnCanvas(pointer[0], pointer[1]);
         const Eigen::Vector3d mouse_world {
-            static_cast<double>(pointer[0]) * static_cast<double>(m_sys.scene.ortho[0]),
-            (1.0 - static_cast<double>(pointer[1])) * static_cast<double>(m_sys.scene.ortho[1]),
+            canvas ? (*canvas)[0] : static_cast<double>(pointer[0]) * static_cast<double>(m_sys.scene.ortho[0]),
+            canvas ? (*canvas)[1] : (1.0 - static_cast<double>(pointer[1])) * static_cast<double>(m_sys.scene.ortho[1]),
             0.0,
         };
         const Eigen::Vector4d mouse_local =

@@ -111,12 +111,12 @@ private:
 };
 
 struct ExtraInfo {
-    rg::RenderGraph*                  rgraph { nullptr };
-    Scene*                            scene { nullptr };
-    Set<std::string>                  depth_initialized_outputs {};
-    std::optional<rg::TextureNodeRef> mip_framebuffer_snapshot;
-    const RenderSceneSnapshot*        render_scene { nullptr };
-    GraphLinkFinalizer                link_finalizer;
+    rg::RenderGraph*                rgraph { nullptr };
+    Scene*                          scene { nullptr };
+    Set<std::string>                depth_initialized_outputs {};
+    Map<usize, rg::TextureNodeRef>  mip_framebuffer_snapshots {};
+    const RenderSceneSnapshot*      render_scene { nullptr };
+    GraphLinkFinalizer              link_finalizer;
 };
 
 static std::optional<vulkan::TextureRequest> BuildGraphTextureRequest(ExtraInfo&       extra,
@@ -200,8 +200,9 @@ static rg::TextureNodeRef AddCopyPass(ExtraInfo& extra, rg::TextureNodeRef in,
             FillCopyTextureRequests(extra, pdesc);
             pdesc.dst_matches_src = ! out_desc.has_value();
             if (pdesc.dst_matches_src && pdesc.src_request) {
-                pdesc.dst_request       = *pdesc.src_request;
-                pdesc.dst_request->name = desc.key;
+                pdesc.dst_request          = *pdesc.src_request;
+                pdesc.dst_request->name    = desc.key;
+                pdesc.dst_request->persist = false;
             }
         });
     return copy;
@@ -232,6 +233,8 @@ void GraphLinkFinalizer::apply(ExtraInfo& extra) {
             input.binding.name    = copy_desc.key;
             input.desc            = std::move(copy_desc);
             input.binding.request = BuildGraphTextureRequest(extra, input.binding.name);
+            // Every consumer refers to this same finalized source version.
+            output_it->second = input;
         }
 
         if (! extra.rgraph->readTexture(consumer.pass_id, input.ref)) {
@@ -245,16 +248,20 @@ void GraphLinkFinalizer::apply(ExtraInfo& extra) {
 }
 
 static rg::TextureNodeRef AddMipFramebufferCopy(ExtraInfo& extra, rg::RenderGraphBuilder& builder) {
-    if (extra.mip_framebuffer_snapshot) {
-        return *extra.mip_framebuffer_snapshot;
+    auto  source  = builder.createTexture(MakeTextureDesc(SpecTex_Default));
+    usize version = 0;
+    if (auto state = builder.textureState(source)) version = state->version;
+
+    if (auto it = extra.mip_framebuffer_snapshots.find(version);
+        it != extra.mip_framebuffer_snapshots.end()) {
+        return it->second;
     }
 
-    auto source                    = builder.createTexture(MakeTextureDesc(SpecTex_Default));
-    auto copy_desc                 = rg::TextureDesc { .name = WE_MIP_MAPPED_FRAME_BUFFER.data(),
-                                                       .key  = WE_MIP_MAPPED_FRAME_BUFFER.data(),
-                                                       .kind = rg::TextureKind::Temp };
-    auto snapshot                  = AddCopyPass(extra, source, copy_desc);
-    extra.mip_framebuffer_snapshot = snapshot;
+    auto copy_desc = rg::TextureDesc { .name = WE_MIP_MAPPED_FRAME_BUFFER.data(),
+                                       .key  = WE_MIP_MAPPED_FRAME_BUFFER.data(),
+                                       .kind = rg::TextureKind::Temp };
+    auto snapshot  = AddCopyPass(extra, source, copy_desc);
+    extra.mip_framebuffer_snapshots.emplace(version, snapshot);
     return snapshot;
 }
 
@@ -350,6 +357,9 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                 pdesc.submesh_index = smi;
                 pdesc.render_view   = render_view;
                 pdesc.alpha_mode    = alpha_mode;
+                pdesc.hide_when_node_invisible =
+                    alpha_mode == SceneRenderAlphaMode::Composite &&
+                    pass_output == SpecTex_Default;
                 if (auto node_id = scene.ResourceIndex().nodeId(*node)) {
                     if (auto draw_item = scene.ResourceIndex().drawItemFor(*node_id, smi)) {
                         pdesc.draw_item = *draw_item;
@@ -591,6 +601,7 @@ std::unique_ptr<rg::RenderGraph> sr::sceneToRenderGraph(Scene&                  
     // Each step is either a CustomShaderPass (built on the synthetic node's
     // mesh+material) or a CopyPass (RT-to-RT blit).
     for (auto& pp : scene.post_processes) {
+        if (! pp || ! pp->enabled) continue;
         for (auto& step : pp->steps) {
             if (auto* sp = std::get_if<ScenePostProcessPass>(&step)) {
                 std::string_view target =

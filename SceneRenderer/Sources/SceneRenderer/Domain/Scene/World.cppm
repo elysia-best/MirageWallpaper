@@ -212,6 +212,11 @@ struct SceneRenderTarget {
     // Later graph versions of this RT keep earlier color content. Use this
     // for composition targets, not transient effect outputs.
     bool preserve_on_write { false };
+    bool hdr_format { false };
+    bool inherit_scene_format { true };
+    // Derived by the renderer from graph accesses; conservative before planning.
+    bool transfer_source { true };
+    bool transfer_destination { true };
 
     i32 PhysicalWidth() const { return physical_width > 0 ? physical_width : width; }
     i32 PhysicalHeight() const { return physical_height > 0 ? physical_height : height; }
@@ -953,6 +958,10 @@ public:
     }
     void SetAspect(double aspect) { m_aspect = aspect; }
     void SetFov(double value) { m_fov = value; }
+    void SetProjectionOffset(double x, double y) {
+        m_projection_offset = { std::isfinite(x) ? x : 0.0, std::isfinite(y) ? y : 0.0 };
+    }
+    std::array<double, 2> ProjectionOffset() const { return m_projection_offset; }
 
     // Explicit eye/center/up view, used by perspective scenes (general
     // isOrtho==false) whose camera is given in WE world units rather than the
@@ -996,6 +1005,7 @@ public:
         m_nearClip         = cam.m_nearClip;
         m_farClip          = cam.m_farClip;
         m_fov              = cam.m_fov;
+        m_projection_offset = cam.m_projection_offset;
         m_perspective      = cam.m_perspective;
         m_allowCameraShake = cam.m_allowCameraShake;
         m_lookat           = cam.m_lookat;
@@ -1020,6 +1030,7 @@ private:
     explicit SceneCamera(PerspectiveTag, double aspect, double near, double far, double fov)
         : m_aspect(aspect), m_nearClip(near), m_farClip(far), m_fov(fov), m_perspective(true) {}
     void            CalculateViewProjectionMatrix();
+    Eigen::Matrix4d ProjectionMatrix() const;
     Eigen::Matrix4d CalculateReflectionViewProjectionMatrix();
 
     double m_width { 1.0f };
@@ -1028,6 +1039,7 @@ private:
     double m_nearClip { 0.01f };
     double m_farClip { 1000.0f };
     double m_fov { 45.0f };
+    std::array<double, 2> m_projection_offset {};
     bool   m_perspective { false };
     bool   m_allowCameraShake { true };
 
@@ -1300,6 +1312,13 @@ public:
     // reading `thisLayer.size` then fall back to the legacy 100×100 stub.
     const auto& Size() const { return m_size; }
     void        SetSize(Eigen::Vector2f v) { m_size = v; }
+
+    const auto& HitCenter() const { return m_hit_center; }
+    bool        HasHitCenter() const { return m_has_hit_center; }
+    void        SetHitCenter(Eigen::Vector2f v) {
+        m_hit_center     = v;
+        m_has_hit_center = true;
+    }
     const auto& GeometryTransform() const { return m_geometry_transform; }
     void        SetGeometryTransform(Eigen::Matrix4d transform) {
         m_geometry_transform = std::move(transform);
@@ -1374,6 +1393,7 @@ public:
                ! m_field_animation_playbacks.empty();
     }
     void SetAlphaSource(SceneNode* node) { m_alpha_source = node; }
+    SceneNode* AlphaSource() const { return m_alpha_source; }
 
     const std::string& VisibleUserKey() const { return m_visible_user_binding.key; }
     void               SetVisibleUserKey(std::string k) {
@@ -1585,6 +1605,8 @@ private:
     Eigen::Vector3f m_rotation { 0.0f, 0.0f, 0.0f };
     Eigen::Matrix4d m_local_frame { Eigen::Matrix4d::Identity() };
     Eigen::Vector2f m_size { 0.0f, 0.0f };
+    Eigen::Vector2f m_hit_center { 0.0f, 0.0f };
+    bool            m_has_hit_center { false };
     Eigen::Matrix4d m_geometry_transform { Eigen::Matrix4d::Identity() };
 
     bool                               m_visible { true };
@@ -1834,6 +1856,7 @@ struct ScenePostProcess {
     using Step = std::variant<ScenePostProcessPass, ScenePostProcessCopy>;
     std::string       name;
     std::vector<Step> steps;
+    bool              enabled { true };
 };
 
 // SceneLight + SceneLightType live in the `sr.scene:lighting` partition
@@ -2476,6 +2499,7 @@ public:
                                 SceneRenderViewKind  = SceneRenderViewKind::Primary,
                                 SceneRenderAlphaMode = SceneRenderAlphaMode::Composite) = 0;
     virtual void FrameEnd()                                                        = 0;
+    virtual bool RequiresContinuousFrames() const { return true; }
 
     virtual void MouseInput(double x, double y)                     = 0;
     virtual void SetTexelSize(float x, float y)                     = 0;
@@ -2503,6 +2527,7 @@ public:
     virtual bool                   Contains(const std::string&) const = 0;
     virtual std::shared_ptr<Image> Parse(const std::string&)       = 0;
     virtual ImageHeader            ParseHeader(const std::string&) = 0;
+    virtual void                   ReleaseSyntheticImage(std::string_view) {}
 };
 
 struct SceneMaterialId {
@@ -2853,6 +2878,18 @@ public:
     Map<std::string, std::vector<std::function<void(const std::string&)>>> text_user_index;
     Map<std::string, std::vector<std::function<void(double)>>>             pointsize_user_index;
 
+    struct NodeScaleUserBinding {
+        rstd::sync::Arc<SceneNode> node;
+        Eigen::Vector3f            authored { Eigen::Vector3f::Ones() };
+        std::function<void()>      on_changed;
+    };
+    Map<std::string, std::vector<NodeScaleUserBinding>> node_scale_user_index;
+
+    Map<std::string, std::vector<std::function<void(float)>>> text_maxwidth_user_index;
+
+    Map<std::string, std::vector<std::weak_ptr<struct ScenePostProcess>>>
+        post_process_enable_user_index;
+
     // user-property key → setter closures for text layers whose `color` /
     // `alpha` field was authored as `{user:"<key>"}`. Text color/alpha are
     // baked into glyph vertex colors by the layouter (not a node uniform), so
@@ -2877,10 +2914,23 @@ public:
         return out;
     }
 
+    struct MaterialSolidColorNeutralization {
+        rstd::sync::Arc<SceneNode> node;
+        Eigen::Vector3f            authored_color { Eigen::Vector3f::Zero() };
+    };
+
     struct MaterialTextureUserBinding {
-        std::shared_ptr<SceneMaterial> material;
-        uint32_t                       slot { 0 };
-        std::string                    fallback;
+        enum class Kind
+        {
+            SceneTexture,
+            System,
+            UserShortcut,
+        };
+        std::shared_ptr<SceneMaterial>                  material;
+        uint32_t                                        slot { 0 };
+        std::string                                     fallback;
+        Kind                                            kind { Kind::SceneTexture };
+        std::optional<MaterialSolidColorNeutralization> solid_color;
     };
     Map<std::string, std::vector<MaterialTextureUserBinding>> material_texture_user_index;
 
@@ -2949,6 +2999,8 @@ public:
     bool uses_audio_spectrum { false };
     bool fog_distance_enabled { false };
     bool fog_height_enabled { false };
+    bool hdr_enabled { false };
+    bool hdr_render_targets { false };
 
     SceneMesh default_effect_mesh;
 
@@ -2970,6 +3022,7 @@ public:
     void SetViewportScale(float scale) {
         viewport_scale = std::isfinite(scale) && scale > 0.0f ? scale : 1.0f;
     }
+    bool HasViewportScaleAnimation() const { return ! m_viewport_scale_curve.Empty(); }
     void SetViewportScaleAnimation(SceneAnimationCurve curve) {
         m_viewport_scale_curve = std::move(curve);
     }
@@ -3004,9 +3057,11 @@ public:
     void        TickCameraPaths();
     std::optional<SceneCameraTransforms> ActiveCameraTransforms() const;
     bool SetActiveCameraTransforms(const SceneCameraTransforms& transforms);
+    std::optional<std::array<double, 2>> CursorPositionOnCanvas(double x, double y) const;
     void        TickMaterialShaderAnimations();
     void        CaptureCameraPathViewports();
     void        EnablePlanarReflection();
+    void        EnsurePlanarReflectionRenderTarget();
     bool        PlanarReflectionEnabled() const { return m_planar_reflection_enabled; }
     std::string EnsureLinkRenderTarget(WallpaperLayerId source_layer, const SceneNode& source_node);
     bool        EnsureTextureDescriptor(std::string_view key);
@@ -3034,6 +3089,8 @@ public:
         return it->second;
     }
     bool                                 SetNodeVisible(SceneNode& node, bool visible);
+    void RegisterPuppetAnimationVisibilityBinding(
+        std::string key, std::function<void(const Json&)> setter);
     std::vector<SceneMeshDirtyEvent>     ConsumePreparedMeshDirtyEvents();
     std::vector<SceneMaterialDirtyEvent> ConsumePreparedMaterialDirtyEvents();
     void                                 ClearUserPropertyDiagnostics(std::string_view key);
@@ -3058,6 +3115,7 @@ public:
 
 private:
     Map<std::string, std::vector<std::function<void(std::string_view)>>> m_text_user_index;
+    Map<std::string, std::vector<std::function<void(const Json&)>>> puppet_animation_visibility_index;
 
     void RebuildElidableLayerIds();
 

@@ -195,6 +195,11 @@ do_clean() {
 }
 
 do_configure() {
+    FFMPEG_ARCH="$(uname -m)"
+    FFMPEG_PREFIX="${MIRAGE_FFMPEG_DIR:-$PROJECT_DIR/../Mirage/build/ffmpeg/$FFMPEG_ARCH}"
+    "$PROJECT_DIR/../scripts/build_ffmpeg.sh" "$FFMPEG_ARCH"
+    [[ -f "$FFMPEG_PREFIX/lib/pkgconfig/libavcodec.pc" ]] || die "bundled FFmpeg missing at $FFMPEG_PREFIX (run scripts/build_ffmpeg.sh)"
+    export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     info "configuring preset: $PRESET"
     info "  project:  $PROJECT_DIR"
     info "  build dir:$BUILD_DIR"
@@ -203,7 +208,7 @@ do_configure() {
 }
 
 do_build() {
-    [[ -f "$BUILD_DIR/CMakeCache.txt" ]] || do_configure
+    do_configure
     info "building preset: $PRESET (jobs=$JOBS)"
     local build_args=(--build "$BUILD_DIR" --parallel "$JOBS")
     local native_args=()
@@ -246,7 +251,7 @@ case "$ACTION" in
     clean)     do_clean ;;
     configure) do_configure ;;
     build)     do_build; report ;;
-    all)       do_configure; do_build; report ;;
+    all)       do_build; report ;;
 esac
 
 good "done."

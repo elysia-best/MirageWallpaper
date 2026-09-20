@@ -61,6 +61,9 @@ struct RenderInitInfo {
     MetalFrameCB metal_frame_callback;
     RenderFailureCB failure_callback;
     ExSwapchainFactory ex_swapchain_factory;
+    // Hosts enabling this must request frames after activation, resize and capture.
+    bool                              allow_on_demand { false };
+    std::function<void(bool running)> frame_activity_callback;
 };
 
 std::unique_ptr<rg::RenderGraph> sceneToRenderGraph(Scene&);
@@ -99,6 +102,8 @@ struct PreparedPassDiagnostic {
 };
 
 void UpdateCameraFillModeForExtent(Scene&, sr::FillMode, unsigned width, unsigned height);
+std::array<bool, 2> UpdateCameraPositionForExtent(Scene&, sr::FillMode, WallpaperPosition,
+                                                 unsigned width, unsigned height);
 std::array<i32, 2> ProjectedLayerPhysicalExtent(Scene&, SceneNode&, unsigned width, unsigned height);
 
 class VulkanRender {
@@ -135,6 +140,7 @@ public:
     // SceneMesh set survives.
     void evictUnusedMeshes();
     void UpdateCameraFillMode(Scene&, sr::FillMode);
+    std::array<bool, 2> UpdateCameraPosition(Scene&, sr::FillMode, WallpaperPosition);
 
     bool onSwapchainReady(unsigned width, unsigned height);
 

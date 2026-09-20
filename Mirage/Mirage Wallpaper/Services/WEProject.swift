@@ -80,6 +80,93 @@ enum WEPropertyValue: Codable, Equatable, Hashable {
     }
 }
 
+enum WallpaperPropertyEncoding {
+    static func value(_ property: WEProjectProperty) -> Any {
+        switch property.propertyType {
+        case .color:
+            return ["type": "color", "value": property.value.stringValue]
+        case .bool:
+            return property.value.boolValue
+        case .slider:
+            return property.value.doubleValue
+        case .scenetexture, .file:
+            return ["type": "scenetexture", "value": property.value.stringValue]
+        case .combo:
+            return property.value.jsonObjectValue
+        case .usershortcut:
+            var result: [String: Any] = ["type": "usershortcut", "value": property.value.stringValue]
+            if let icon = property.mirageShortcutIcon { result["icon"] = icon }
+            return result
+        default:
+            return property.value.stringValue
+        }
+    }
+
+    static func values(_ properties: [String: WEProjectProperty]) -> [String: Any] {
+        properties.mapValues(value)
+    }
+}
+
+struct WallpaperRenderSnapshot: Codable, Equatable, Sendable {
+    static let configurationSession = UUID().uuidString
+    var rawProperties: [String: AnyCodableValue]
+    var fillMode: String
+    var position: WallpaperPosition
+    var speed: Float
+    var scriptStorage: [String: String]?
+
+    init(runtime: WallpaperRuntimeState, properties: [String: WEProjectProperty],
+         scriptStorage: [String: String]? = nil) {
+        rawProperties = WallpaperPropertyEncoding.values(properties).mapValues(AnyCodableValue.init)
+        fillMode = runtime.fillMode.rawValue
+        position = runtime.position
+        speed = runtime.speed.isFinite && runtime.speed > 0 ? runtime.speed : 1
+        self.scriptStorage = scriptStorage
+    }
+
+    func properties(for wallpaper: WEWallpaper) -> [String: WEProjectProperty] {
+        var result = wallpaper.project.general?.properties?.items ?? [:]
+        for (key, encoded) in rawProperties {
+            guard var property = result[key] else { continue }
+            var value = encoded
+            if case .object(let descriptor) = encoded {
+                value = descriptor["value"] ?? .null
+                if case .string(let icon) = descriptor["icon"] { property.mirageShortcutIcon = icon }
+            }
+            switch value {
+            case .string(let text): property.value = .string(text)
+            case .bool(let flag): property.value = .bool(flag)
+            case .number(let number): property.value = .number(number)
+            default: continue
+            }
+            result[key] = property
+        }
+        return result
+    }
+
+    var dictionary: [String: Any] {
+        var result: [String: Any] = [
+            "rawProperties": rawProperties.mapValues(\.foundationValue),
+            "fillMode": fillMode, "position": position.dictionary, "speed": speed
+        ]
+        if let scriptStorage { result["scriptStorage"] = scriptStorage }
+        return result
+    }
+
+    static func storedScriptStorage(for wallpaper: WEWallpaper) -> [String: String] {
+        guard wallpaper.kind == .scene else { return [:] }
+        let id = wallpaper.resolvedEntryURL.deletingLastPathComponent().lastPathComponent
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Application Support/Mirage/SceneStorage")
+            .appending(path: "\(id).json")
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= 8 * 1024 * 1024,
+              let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return snapshot
+    }
+}
+
 // MARK: - 属性选项
 
 struct WEProjectPropertyOption: Codable, Equatable, Hashable {
@@ -137,6 +224,7 @@ struct WEProjectProperty: Codable, Equatable, Hashable {
     var fraction: Bool?
     var mode: String?
     var isPresetOnly: Bool
+    var mirageShortcutIcon: String?
 
     var text: String?
     var type: String
@@ -163,6 +251,7 @@ struct WEProjectProperty: Codable, Equatable, Hashable {
     enum CodingKeys: String, CodingKey {
         case condition, index, options, order, min, max, step, fraction, mode, text, type, value
         case isPresetOnly = "_miragePresetOnly"
+        case mirageShortcutIcon = "_mirageShortcutIcon"
     }
 
     init(from decoder: Decoder) throws {
@@ -177,6 +266,7 @@ struct WEProjectProperty: Codable, Equatable, Hashable {
         self.fraction = try? c.decode(Bool.self, forKey: .fraction)
         self.mode = try? c.decode(String.self, forKey: .mode)
         self.isPresetOnly = (try? c.decode(Bool.self, forKey: .isPresetOnly)) ?? false
+        self.mirageShortcutIcon = try? c.decode(String.self, forKey: .mirageShortcutIcon)
         self.text = try? c.decode(String.self, forKey: .text)
         self.type = (try? c.decode(String.self, forKey: .type)) ?? "text"
         self.value = (try? c.decode(WEPropertyValue.self, forKey: .value)) ?? .string("")
@@ -548,6 +638,7 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable, Equatable, Hashable
     var project: WEProject
     var presetDependency: WorkshopId?
     var presetStatus: WEPresetStatus
+    private(set) var presentationIsValid = false
 
     var id: String { wallpaperDirectory.path(percentEncoded: false) }
 
@@ -600,18 +691,7 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable, Equatable, Hashable
     }
 
     var wallpaperSize: Int {
-        let path = wallpaperDirectory.path(percentEncoded: false)
-        Self.sizeCacheLock.lock()
-        if let cached = Self.sizeCache[path] {
-            Self.sizeCacheLock.unlock()
-            return cached
-        }
-        Self.sizeCacheLock.unlock()
-        let size = (try? wallpaperDirectory.directoryTotalAllocatedSize(includingSubfolders: true)) ?? 0
-        Self.sizeCacheLock.lock()
-        Self.sizeCache[path] = size
-        Self.sizeCacheLock.unlock()
-        return size
+        WallpaperSizeCache.shared.size(at: wallpaperDirectory)
     }
 
     init(using project: WEProject, where url: URL, renderDirectory: URL? = nil,
@@ -623,6 +703,7 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable, Equatable, Hashable
         self.project = project
         self.presetDependency = presetDependency
         self.presetStatus = presetStatus
+        self.presentationIsValid = isValid
     }
 
     init?(rawValue: String) {
@@ -638,13 +719,8 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable, Equatable, Hashable
         case presetDependency, presetStatus
     }
 
-    nonisolated(unsafe) static var sizeCache: [String: Int] = [:]
-    static let sizeCacheLock = NSLock()
-
     static func invalidateSizeCache() {
-        sizeCacheLock.lock()
-        sizeCache.removeAll()
-        sizeCacheLock.unlock()
+        WallpaperSizeCache.shared.invalidate()
     }
 
     init(from decoder: Decoder) throws {
@@ -655,6 +731,7 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable, Equatable, Hashable
         self.project = try c.decode(WEProject.self, forKey: .project)
         self.presetDependency = try? c.decode(WorkshopId.self, forKey: .presetDependency)
         self.presetStatus = (try? c.decode(WEPresetStatus.self, forKey: .presetStatus)) ?? .notPreset
+        self.presentationIsValid = isValid
     }
 
     func encode(to encoder: Encoder) throws {
@@ -669,6 +746,13 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable, Equatable, Hashable
 
     static func == (lhs: WEWallpaper, rhs: WEWallpaper) -> Bool {
         lhs.wallpaperDirectory == rhs.wallpaperDirectory && lhs.project == rhs.project
+    }
+
+    func hasSamePresentation(as other: WEWallpaper) -> Bool {
+        self == other && renderDirectory == other.renderDirectory &&
+            assetOverlayDirectories == other.assetOverlayDirectories &&
+            presetDependency == other.presetDependency && presetStatus == other.presetStatus &&
+            presentationIsValid == other.presentationIsValid
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(wallpaperDirectory) }
@@ -767,13 +851,19 @@ extension URL {
         return try checkResourceIsReachable()
     }
 
-    func directoryTotalAllocatedSize(includingSubfolders: Bool = false) throws -> Int? {
+    func directoryTotalAllocatedSize(includingSubfolders: Bool = false,
+                                     isCancelled: () -> Bool = { false }) throws -> Int? {
+        guard !isCancelled() else { return nil }
         guard try isDirectoryAndReachable() else { return nil }
         if includingSubfolders {
-            guard let urls = FileManager.default.enumerator(at: self, includingPropertiesForKeys: nil)?.allObjects as? [URL] else { return nil }
-            return try urls.lazy.reduce(0) {
-                (try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize ?? 0) + $0
+            guard let enumerator = FileManager.default.enumerator(at: self,
+                includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) else { return nil }
+            var total = 0
+            for case let url as URL in enumerator {
+                guard !isCancelled() else { return nil }
+                total += try url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize ?? 0
             }
+            return isCancelled() ? nil : total
         }
         return try FileManager.default.contentsOfDirectory(at: self, includingPropertiesForKeys: nil).lazy.reduce(0) {
             (try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize ?? 0) + $0

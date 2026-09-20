@@ -13,26 +13,17 @@ import UniformTypeIdentifiers
 // Faithful Wallpaper Engine customization sidebar: every property type,
 // condition-driven show/hide, official localization, and real HTML labels.
 struct PropertyEditor: View {
-    @EnvironmentObject var wallpaperViewModel: WallpaperViewModel
+    @Environment(WallpaperViewModel.self) var wallpaperViewModel
     let wallpaper: WEWallpaper
+    var isActive = true
 
     @StateObject private var conditions = ConditionStore()
 
-    private var allProperties: [String: WEProjectProperty] {
-        wallpaper.project.general?.properties?.items ?? [:]
-    }
-
-    private var sortedProperties: [(key: String, property: WEProjectProperty)] {
-        (wallpaper.project.general?.properties?.sorted ?? []).filter { !$0.property.isPresetOnly }
-    }
-
-    private var visibleProperties: [(key: String, property: WEProjectProperty)] {
-        sortedProperties.filter { conditions.isVisible($0.property.condition) }
-    }
-
     var body: some View {
+        @Bindable var wallpaperViewModel = wallpaperViewModel
+        let model = wallpaperViewModel.propertyModel
         Group {
-            if sortedProperties.isEmpty {
+            if model.rows.isEmpty {
                 HStack {
                     Text("此壁纸没有可调节的属性。")
                         .font(.footnote)
@@ -40,58 +31,122 @@ struct PropertyEditor: View {
                     Spacer()
                 }
             } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(visibleProperties, id: \.key) { entry in
-                        PropertyRow(wallpaper: wallpaper, key: entry.key,
-                                    property: entry.property, conditions: conditions)
-                            .environmentObject(wallpaperViewModel)
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(model.rows.filter { conditions.isVisible($0.property.condition) }) { entry in
+                        PropertyRow(wallpaper: wallpaper, key: entry.id,
+                                    property: entry.property, valueState: entry.state,
+                                    displayKey: wallpaperViewModel.selectedDisplayKey, conditions: conditions)
+                            .environment(wallpaperViewModel)
                     }
                 }
             }
         }
-        .onAppear { refreshConditions() }
-        .onChange(of: wallpaperViewModel.runtime.propertyOverrides) { _, _ in refreshConditions() }
-        .onChange(of: wallpaper.id) { _, _ in refreshConditions() }
-    }
-
-    private func refreshConditions() {
-        conditions.update(properties: allProperties,
-                          overrides: wallpaperViewModel.runtime.propertyOverrides)
+        .background {
+            PropertyConditionObserver(model: model, identity: wallpaper.id,
+                                      conditions: conditions, isActive: isActive)
+        }
+        .environment(\.mirageContentActive, isActive)
     }
 }
 
-// Wraps the evaluator so value changes re-run condition visibility.
-final class ConditionStore: ObservableObject {
-    private let evaluator = WEConditionEvaluator()
-    @Published private(set) var generation = 0
+private struct PropertyConditionObserver: View {
+    let model: WallpaperPropertyModel
+    let identity: String
+    let conditions: ConditionStore
+    let isActive: Bool
 
-    // Order matters: updateContext also drops the evaluator's cached verdicts,
-    // so the generation bump that follows re-renders against fresh results.
-    func update(properties: [String: WEProjectProperty], overrides: [String: WEPropertyValue]) {
-        evaluator.updateContext(properties: properties, overrides: overrides)
-        generation &+= 1
+    var body: some View {
+        Color.clear
+        .onAppear { refreshConditions() }
+        .onChange(of: isActive ? model.overrides : [:]) { _, _ in refreshConditions() }
+        .onChange(of: identity) { _, _ in refreshConditions() }
+        .onChange(of: model.properties) { _, _ in refreshConditions() }
+        .onChange(of: isActive) { _, active in
+            if active { refreshConditions() } else { conditions.cancel() }
+        }
+        .onDisappear { conditions.cancel() }
     }
 
-    // Called once per row and once per combo option on every body pass; within
-    // one generation the evaluator answers repeats from its cache instead of
-    // re-entering JavaScriptCore.
+    private func refreshConditions() {
+        guard isActive else { return }
+        conditions.update(identity: identity, properties: model.properties, overrides: model.overrides)
+    }
+}
+
+final class ConditionStore: ObservableObject {
+    private let evaluator = WEConditionEvaluator()
+    @Published private(set) var verdicts: [String: Bool] = [:]
+    private var identity: String?
+    private var lastProperties: [String: WEProjectProperty]?
+    private var lastOverrides: [String: WEPropertyValue]?
+    private var expressions: [String] = []
+
+    func update(identity: String, properties: [String: WEProjectProperty],
+                overrides: [String: WEPropertyValue]) {
+        guard self.identity != identity || lastProperties != properties || lastOverrides != overrides else {
+            return
+        }
+        if self.identity != identity {
+            evaluator.cancel()
+            verdicts = [:]
+        }
+        self.identity = identity
+        if lastProperties != properties {
+            var unique = Set<String>()
+            for property in properties.values {
+                for expression in [property.condition] + (property.options ?? []).map(\.condition) {
+                    if let expression, !expression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        unique.insert(expression)
+                    }
+                }
+            }
+            expressions = unique.sorted()
+        }
+        lastProperties = properties
+        lastOverrides = overrides
+        guard !expressions.isEmpty else {
+            evaluator.cancel()
+            if !verdicts.isEmpty { verdicts = [:] }
+            return
+        }
+        evaluator.evaluate(identity: identity, conditions: expressions,
+                           properties: properties, overrides: overrides) { [weak self] result in
+            guard let self, self.identity == identity, self.verdicts != result else { return }
+            self.verdicts = result
+        }
+    }
+
     func isVisible(_ condition: String?) -> Bool {
-        _ = generation // establish dependency
-        return evaluator.evaluate(condition)
+        guard let condition else { return true }
+        return verdicts[condition] ?? true
+    }
+
+    func cancel() {
+        evaluator.cancel()
+        lastProperties = nil
+        lastOverrides = nil
     }
 }
 
 // MARK: - Property row
 
 struct PropertyRow: View {
-    @EnvironmentObject var wallpaperViewModel: WallpaperViewModel
+    @Environment(WallpaperViewModel.self) var wallpaperViewModel
     let wallpaper: WEWallpaper
     let key: String
     let property: WEProjectProperty
+    let valueState: WallpaperPropertyValue
+    let displayKey: DisplayKey
     @ObservedObject var conditions: ConditionStore
+    @State private var pickerError: String?
 
     private var currentValue: WEPropertyValue {
-        wallpaperViewModel.runtime.propertyOverrides[key] ?? property.value
+        valueState.value
+    }
+
+    private func setValue(_ value: WEPropertyValue) {
+        guard wallpaperViewModel.state(for: displayKey)?.wallpaper.id == wallpaper.id else { return }
+        wallpaperViewModel.setProperty(key: key, value: value, for: displayKey)
     }
 
     private var rawText: String { property.displayText(fallbackKey: key) }
@@ -111,11 +166,13 @@ struct PropertyRow: View {
     }
 
     var body: some View {
-        switch property.propertyType {
+        @Bindable var wallpaperViewModel = wallpaperViewModel
+        Group {
+            switch property.propertyType {
         case .bool:
             Toggle(isOn: Binding(
                 get: { currentValue.boolValue },
-                set: { wallpaperViewModel.setProperty(key: key, value: .bool($0)) })) {
+                set: { setValue(.bool($0)) })) {
                 labelView()
             }
 
@@ -133,15 +190,18 @@ struct PropertyRow: View {
                         get: { currentValue.doubleValue },
                         set: { newVal in
                             let v = (property.fraction == true) ? newVal : newVal.rounded()
-                            wallpaperViewModel.setProperty(key: key, value: .number(v))
+                            setValue(.number(v))
                         }),
-                    in: sliderRange)
+                    in: sliderRange,
+                    onEditingChanged: { editing in
+                        if !editing { wallpaperViewModel.flushInteractiveChanges(for: displayKey) }
+                    })
             }
 
         case .color:
             ColorPicker(selection: Binding(
                 get: { Self.parseColor(currentValue.stringValue) },
-                set: { wallpaperViewModel.setProperty(key: key, value: .string(Self.encodeColor($0))) }),
+                set: { setValue(.string(Self.encodeColor($0))) }),
                 supportsOpacity: false) {
                 labelView(lineLimit: 2)
             }
@@ -152,7 +212,7 @@ struct PropertyRow: View {
                 Spacer()
                 Picker("", selection: Binding(
                     get: { property.normalizedComboValue(currentValue) },
-                    set: { wallpaperViewModel.setProperty(key: key, value: $0) })) {
+                    set: { setValue($0) })) {
                     ForEach(visibleOptions, id: \.value) { opt in
                         Text(WELocalization.resolve(opt.label)).tag(opt.value)
                     }
@@ -166,7 +226,7 @@ struct PropertyRow: View {
                 labelView(lineLimit: 2)
                 TextField("", text: Binding(
                     get: { currentValue.stringValue },
-                    set: { wallpaperViewModel.setProperty(key: key, value: .string($0)) }))
+                    set: { setValue(.string($0)) }))
                     .textFieldStyle(.roundedBorder)
             }
 
@@ -202,13 +262,29 @@ struct PropertyRow: View {
                 Spacer()
                 TextField("快捷方式", text: Binding(
                     get: { currentValue.stringValue },
-                    set: { wallpaperViewModel.setProperty(key: key, value: .string($0)) }))
+                    set: { setValue(.string($0)) }))
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 170)
+                Button {
+                    pickUserShortcut()
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.borderless)
+                .help(L("选择快捷方式"))
             }
 
         case .unknown:
             EmptyView()
+            }
+        }
+        .alert(L("无法使用所选文件"), isPresented: Binding(
+            get: { pickerError != nil },
+            set: { if !$0 { pickerError = nil } }
+        )) {
+            Button(L("好"), role: .cancel) { pickerError = nil }
+        } message: {
+            Text(pickerError ?? "")
         }
     }
 
@@ -234,7 +310,7 @@ struct PropertyRow: View {
                 Spacer()
                 if !displayPath.isEmpty {
                     Button {
-                        wallpaperViewModel.setProperty(key: key, value: .string(""))
+                        setValue(.string(""))
                     } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
@@ -259,7 +335,27 @@ struct PropertyRow: View {
             panel.allowedContentTypes = [.image] // scenetexture: images only
         }
         if panel.runModal() == .OK, let url = panel.url {
-            wallpaperViewModel.setProperty(key: key, value: .string(url.path))
+            if property.propertyType == .scenetexture {
+                do {
+                    let cached = try UserTextureCache.shared.importImage(at: url)
+                    setValue(.string(cached.path))
+                } catch {
+                    pickerError = error.localizedDescription
+                }
+            } else {
+                setValue(.string(url.path))
+            }
+        }
+    }
+
+    private func pickUserShortcut() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.treatsFilePackagesAsDirectories = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            setValue(.string(url.standardizedFileURL.path))
         }
     }
 

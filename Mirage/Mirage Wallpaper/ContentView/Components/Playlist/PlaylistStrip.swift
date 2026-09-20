@@ -9,16 +9,18 @@ import UniformTypeIdentifiers
 
 struct PlaylistStrip: View {
     @ObservedObject var manager: PlaylistManager
-    @ObservedObject var wallpaperViewModel: WallpaperViewModel
+    @Bindable var wallpaperViewModel: WallpaperViewModel
+    @Bindable var contentViewModel: ContentViewModel
     let screen: Int
     @Binding var selectedItemID: String?
+    var isActive = true
 
     private var items: [PlaylistItem] {
         manager.current(on: screen).items
     }
 
     private var libraryByID: [String: WEWallpaper] {
-        Dictionary(uniqueKeysWithValues: AppDelegate.shared.contentViewModel.wallpapers.map { ($0.id, $0) })
+        contentViewModel.wallpapersByID
     }
 
     private var playingID: String? {
@@ -39,6 +41,7 @@ struct PlaylistStrip: View {
                                 wallpaper: libraryByID[item.wallpaperID],
                                 isPlaying: playingID == item.wallpaperID,
                                 isSelected: selectedItemID == item.wallpaperID,
+                                isActive: isActive,
                                 onTap: { tap(item) },
                                 onRemove: { manager.remove(itemID: item.wallpaperID, from: screen) }
                             )
@@ -66,7 +69,7 @@ struct PlaylistStrip: View {
 
     private func tap(_ item: PlaylistItem) {
         selectedItemID = item.wallpaperID
-        guard let wallpaper = libraryByID[item.wallpaperID], wallpaper.isValid else { return }
+        guard let wallpaper = libraryByID[item.wallpaperID], wallpaper.presentationIsValid else { return }
         // Via requestApply so an unconfirmed web wallpaper gets the trust sheet
         // on every screen, not just the main one.
         if let key = DisplayRegistry.shared.key(forScreenIndex: screen) {
@@ -98,15 +101,17 @@ private struct PlaylistThumb: View {
     let wallpaper: WEWallpaper?
     let isPlaying: Bool
     let isSelected: Bool
+    let isActive: Bool
     let onTap: () -> Void
     let onRemove: () -> Void
 
-    @EnvironmentObject private var globalSettingsViewModel: GlobalSettingsViewModel
+    @Environment(GlobalSettingsViewModel.self) private var globalSettingsViewModel
     @State private var hovering = false
 
     private let side: CGFloat = 72
 
     var body: some View {
+        @Bindable var globalSettingsViewModel = globalSettingsViewModel
         VStack(spacing: 4) {
             ZStack(alignment: .bottomLeading) {
                 thumbnail
@@ -170,12 +175,12 @@ private struct PlaylistThumb: View {
     @ViewBuilder
     private var thumbnail: some View {
         if let wallpaper, !wallpaper.project.preview.isEmpty {
-            GifImage(
-                contentsOf: wallpaper.previewURL,
-                animates: hovering || isPlaying ||
-                    globalSettingsViewModel.settings.animatedPreviewPlaybackMode == .visible
+            WorkshopImage(
+                wallpaper: wallpaper, contentMode: .fit,
+                isAnimating: isActive && (hovering || isPlaying ||
+                    globalSettingsViewModel.animatedPreviewPlaybackMode == .visible),
+                isLoadingEnabled: isActive
             )
-                .resizable()
                 .aspectRatio(1.0, contentMode: .fit)
         } else {
             ZStack {

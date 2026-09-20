@@ -27,6 +27,9 @@ struct DesktopCallbacks {
     void (*mouse_button)(int button, int down, void* userdata) { nullptr };
     void (*mouse_enter)(int entered, void* userdata) { nullptr };
     void (*closed)(void* userdata) { nullptr };
+    // macOS asks the runtime for a frame when an on-demand window becomes
+    // visible or changes geometry; protocol hosts leave this callback unset.
+    void (*redraw_requested)(void* userdata) { nullptr };
     void (*first_frame_presented)(void* userdata) { nullptr };
     void (*activated)(void* userdata) { nullptr };
     // macOS-only confirmations: activation_failed fires after a failed
@@ -57,6 +60,7 @@ inline void* DesktopCreate(const DesktopConfig* config, DesktopCallbacks callbac
         .mouse_button = callbacks.mouse_button,
         .mouse_enter  = callbacks.mouse_enter,
         .closed       = callbacks.closed,
+        .redraw_requested = callbacks.redraw_requested,
         .first_frame_presented = callbacks.first_frame_presented,
         .activated    = callbacks.activated,
         .activation_failed = callbacks.activation_failed,
@@ -71,6 +75,9 @@ inline void DesktopStop(void* handle) { SceneRendererMacDesktopStop(handle); }
 inline void DesktopWake(void* handle) { SceneRendererMacDesktopWake(handle); }
 inline void DesktopActivate(void* handle) { SceneRendererMacDesktopActivate(handle); }
 inline void DesktopDeactivate(void* handle) { SceneRendererMacDesktopDeactivate(handle); }
+inline void DesktopSetPaused(void* handle, bool paused) {
+    SceneRendererMacDesktopSetPaused(handle, paused);
+}
 inline void* DesktopMetalLayer(void* handle) { return SceneRendererMacDesktopMetalLayer(handle); }
 inline bool DesktopPrepareMetalFX(void* handle) { return SceneRendererMacDesktopPrepareMetalFX(handle); }
 inline void DesktopPresentMetalFrame(void* handle, void* texture, void* command_queue,
