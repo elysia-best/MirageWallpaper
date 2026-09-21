@@ -195,11 +195,16 @@ do_clean() {
 }
 
 do_configure() {
-    FFMPEG_ARCH="$(uname -m)"
-    FFMPEG_PREFIX="${MIRAGE_FFMPEG_DIR:-$PROJECT_DIR/../Mirage/build/ffmpeg/$FFMPEG_ARCH}"
-    "$PROJECT_DIR/../scripts/build_ffmpeg.sh" "$FFMPEG_ARCH"
-    [[ -f "$FFMPEG_PREFIX/lib/pkgconfig/libavcodec.pc" ]] || die "bundled FFmpeg missing at $FFMPEG_PREFIX (run scripts/build_ffmpeg.sh)"
-    export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    if [[ "$SYSTEM_NAME" == "Darwin" ]]; then
+        # Apple ships the pinned decoder build because SceneRenderer must use
+        # the same FFmpeg ABI as the app bundle. Linux packaging instead
+        # declares system libav development packages and CMake validates them.
+        FFMPEG_ARCH="$(uname -m)"
+        FFMPEG_PREFIX="${MIRAGE_FFMPEG_DIR:-$PROJECT_DIR/../Mirage/build/ffmpeg/$FFMPEG_ARCH}"
+        "$PROJECT_DIR/../scripts/build_ffmpeg.sh" "$FFMPEG_ARCH"
+        [[ -f "$FFMPEG_PREFIX/lib/pkgconfig/libavcodec.pc" ]] || die "bundled FFmpeg missing at $FFMPEG_PREFIX (run scripts/build_ffmpeg.sh)"
+        export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    fi
     info "configuring preset: $PRESET"
     info "  project:  $PROJECT_DIR"
     info "  build dir:$BUILD_DIR"

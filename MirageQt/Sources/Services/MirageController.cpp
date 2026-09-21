@@ -101,6 +101,20 @@ MirageController::MirageController(QObject* parent)
     connect(&m_renderer, &RendererController::rendererMessage, this, &MirageController::setStatusMessage);
     connect(&m_renderer, &RendererController::rendererStateChanged,
             this, [this] { refreshDisplayStates(); emit displaysChanged(); });
+    connect(&m_renderer, &RendererController::positionAvailabilityChanged,
+            this, [this](int screen, bool, bool) {
+                if (m_renderer.wallpaperIdOnScreen(screen) == m_selectedWallpaperId) {
+                    emit selectedRuntimeChanged();
+                }
+            });
+    connect(&m_renderer, &RendererController::scriptStorageChanged,
+            this, [this](const QString& wallpaperId,
+                         const QHash<QString, QString>& values) {
+                const Wallpaper item = wallpaper(wallpaperId);
+                if (item.isValid()) m_runtimeStore.setScriptStorage(item, values);
+            });
+    connect(&m_renderer, &RendererController::snapshotFinished,
+            this, &MirageController::sceneSnapshotFinished);
     connect(qGuiApp, &QGuiApplication::screenAdded, this, [this](QScreen*) {
         emit displaysChanged();
     });
@@ -377,6 +391,26 @@ QString MirageController::selectedFillMode() const {
     return m_playback.selectedFillMode();
 }
 
+double MirageController::selectedPositionX() const {
+    return m_playback.selectedPosition().x();
+}
+
+double MirageController::selectedPositionY() const {
+    return m_playback.selectedPosition().y();
+}
+
+bool MirageController::positionAvailabilityKnown() const {
+    return m_playback.selectedPositionAvailability().known;
+}
+
+bool MirageController::positionXAvailable() const {
+    return m_playback.selectedPositionAvailability().x;
+}
+
+bool MirageController::positionYAvailable() const {
+    return m_playback.selectedPositionAvailability().y;
+}
+
 void MirageController::reloadWallpapers() {
     m_allWallpapers = m_library.loadAll();
     refreshWallpapersCache();
@@ -610,6 +644,10 @@ void MirageController::setSelectedProperty(const QString& key, const QVariant& v
 
 void MirageController::resetSelectedProperties() {
     m_playback.resetSelectedProperties();
+}
+
+QString MirageController::requestSceneSnapshot(int screenIndex, const QString& path) {
+    return m_renderer.requestSnapshot(screenIndex, path);
 }
 
 void MirageController::completeFirstLaunch(bool hideUntilNextUpdate) {
@@ -888,6 +926,16 @@ void MirageController::setSelectedSpeed(double speed) {
 
 void MirageController::setSelectedFillMode(const QString& mode) {
     m_playback.setSelectedFillMode(mode);
+}
+
+void MirageController::setSelectedPositionX(double x) {
+    const QPointF current = m_playback.selectedPosition();
+    m_playback.setSelectedPosition(QPointF(x, current.y()));
+}
+
+void MirageController::setSelectedPositionY(double y) {
+    const QPointF current = m_playback.selectedPosition();
+    m_playback.setSelectedPosition(QPointF(current.x(), y));
 }
 
 Wallpaper MirageController::wallpaper(const QString& id) const {

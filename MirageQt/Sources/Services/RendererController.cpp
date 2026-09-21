@@ -5,6 +5,17 @@
 #include "Services/DisplayBrokerService.h"
 
 #include <QCoreApplication>
+#include <QBuffer>
+#include <QCryptographicHash>
+#include <QDBusConnection>
+#include <QDBusConnectionInterface>
+#include <QDBusInterface>
+#include <QDBusObjectPath>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
+#include <QDBusReply>
+#include <QDBusVariant>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -12,12 +23,23 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QGuiApplication>
+#include <QImage>
+#include <QImageReader>
 #include <QScreen>
+#include <QSaveFile>
+#include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QUrl>
 #include <QUuid>
 
 #include <functional>
+#include <optional>
+#include <array>
+#include <cmath>
 
 namespace Mirage {
 namespace {
@@ -65,16 +87,177 @@ QJsonValue propertyWireValue(const ProjectProperty& property) {
     return property.stringValue();
 }
 
+std::optional<QString> MprisString(const QVariantMap& values, const QString& key) {
+    const auto value = values.constFind(key);
+    if (value == values.constEnd()) return std::nullopt;
+    if (value->metaType().id() != QMetaType::QString) {
+        qWarning() << "[MPRIS] Property has non-string type:" << key << value->metaType().name();
+        return std::nullopt;
+    }
+    return value->toString();
+}
+
+std::optional<QStringList> MprisStringList(const QVariantMap& values, const QString& key) {
+    const auto value = values.constFind(key);
+    if (value == values.constEnd()) return std::nullopt;
+    if (value->metaType().id() != QMetaType::QStringList) {
+        qWarning() << "[MPRIS] Property has non-string-list type:" << key
+                   << value->metaType().name();
+        return std::nullopt;
+    }
+    return value->toStringList();
+}
+
+std::optional<qint64> MprisInt64(const QVariantMap& values, const QString& key) {
+    const auto value = values.constFind(key);
+    if (value == values.constEnd()) return std::nullopt;
+    if (value->metaType().id() != QMetaType::LongLong) {
+        qWarning() << "[MPRIS] Property has non-int64 type:" << key << value->metaType().name();
+        return std::nullopt;
+    }
+    return value->toLongLong();
+}
+
+QJsonArray MprisPalette(const QImage& source) {
+    if (source.isNull()) return QJsonArray();
+    const QImage image = source.scaled(32, 32, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                             .convertToFormat(QImage::Format_RGBA8888);
+    QHash<int, std::array<double, 5>> buckets;
+    for (int y = 0; y < image.height(); ++y) {
+        const uchar* row = image.constScanLine(y);
+        for (int x = 0; x < image.width(); ++x) {
+            const uchar* pixel = row + x * 4;
+            if (pixel[3] <= 96U) continue;
+            const double red = static_cast<double>(pixel[0]) / 255.0;
+            const double green = static_cast<double>(pixel[1]) / 255.0;
+            const double blue = static_cast<double>(pixel[2]) / 255.0;
+            const int key = (static_cast<int>(red * 15.0) << 8) |
+                            (static_cast<int>(green * 15.0) << 4) |
+                            static_cast<int>(blue * 15.0);
+            std::array<double, 5>& bucket = buckets[key];
+            bucket[0] += 1.0;
+            bucket[1] += red;
+            bucket[2] += green;
+            bucket[3] += blue;
+            bucket[4] += 0.35 + std::max({red, green, blue}) - std::min({red, green, blue});
+        }
+    }
+    QList<std::array<double, 5>> ranked = buckets.values();
+    std::sort(ranked.begin(), ranked.end(), [](const std::array<double, 5>& lhs,
+                                                const std::array<double, 5>& rhs) {
+        return lhs[4] > rhs[4];
+    });
+    QList<std::array<double, 3>> selected;
+    for (const std::array<double, 5>& bucket : ranked) {
+        const std::array<double, 3> color {
+            bucket[1] / bucket[0], bucket[2] / bucket[0], bucket[3] / bucket[0],
+        };
+        bool distinct = true;
+        for (const std::array<double, 3>& existing : selected) {
+            const double red = existing[0] - color[0];
+            const double green = existing[1] - color[1];
+            const double blue = existing[2] - color[2];
+            if (std::sqrt(red * red + green * green + blue * blue) <= 0.16) {
+                distinct = false;
+                break;
+            }
+        }
+        if (distinct) selected.append(color);
+        if (selected.size() == 3) break;
+    }
+    if (selected.isEmpty()) return QJsonArray();
+    while (selected.size() < 3) {
+        const double factor = selected.size() == 1 ? 1.25 : 0.65;
+        const std::array<double, 3>& primary = selected.first();
+        selected.append({std::clamp(primary[0] * factor, 0.0, 1.0),
+                         std::clamp(primary[1] * factor, 0.0, 1.0),
+                         std::clamp(primary[2] * factor, 0.0, 1.0)});
+    }
+    const std::array<double, 3>& primary = selected.first();
+    const double luminance = primary[0] * 0.2126 + primary[1] * 0.7152 + primary[2] * 0.0722;
+    const std::array<double, 3> text = luminance > 0.5
+                                           ? std::array<double, 3>{0.0, 0.0, 0.0}
+                                           : std::array<double, 3>{1.0, 1.0, 1.0};
+    const std::array<double, 3> contrast = luminance > 0.35
+                                               ? std::array<double, 3>{0.0, 0.0, 0.0}
+                                               : std::array<double, 3>{1.0, 1.0, 1.0};
+    selected.append(text);
+    selected.append(contrast);
+    QJsonArray palette;
+    for (const std::array<double, 3>& color : selected) {
+        palette.append(QJsonArray{color[0], color[1], color[2]});
+    }
+    return palette;
+}
+
 } // namespace
 
 RendererController::RendererController(GlobalSettingsService* settings, QObject* parent)
     : QObject(parent)
     , m_settings(settings) {
     qRegisterMetaType<Mirage::FillMode>();
+    m_networkAccess = new QNetworkAccessManager(this);
+    m_mprisPositionTimer = new QTimer(this);
+    m_mprisPositionTimer->setInterval(1000);
+    connect(m_mprisPositionTimer, &QTimer::timeout, this, [this] {
+        if (!m_mprisMonitoring || m_selectedMprisService.isEmpty()) return;
+        auto* properties = new QDBusInterface(
+            m_selectedMprisService, QStringLiteral("/org/mpris/MediaPlayer2"),
+            QStringLiteral("org.freedesktop.DBus.Properties"),
+            QDBusConnection::sessionBus(), this);
+        QDBusPendingCall call = properties->asyncCall(
+            QStringLiteral("Get"), QStringLiteral("org.mpris.MediaPlayer2.Player"),
+            QStringLiteral("Position"));
+        auto* watcher = new QDBusPendingCallWatcher(call, properties);
+        connect(watcher, &QDBusPendingCallWatcher::finished, this,
+                [this, properties](QDBusPendingCallWatcher* completed) {
+            const QDBusPendingReply<QDBusVariant> reply = *completed;
+            const QString service = properties->service();
+            completed->deleteLater();
+            properties->deleteLater();
+            if (reply.isError() || !m_mprisPlayers.contains(service)) {
+                if (reply.isError()) {
+                    qWarning() << "[MPRIS] Position query failed:" << service
+                               << reply.error().message();
+                }
+                return;
+            }
+            const QVariant value = reply.value().variant();
+            if (value.metaType().id() != QMetaType::LongLong) {
+                qWarning() << "[MPRIS] Position has non-int64 type:" << value.metaType().name();
+                return;
+            }
+            m_mprisPlayers[service].positionUs = value.toLongLong();
+            publishMprisStatus();
+        });
+    });
+
+    QDBusConnectionInterface* bus = QDBusConnection::sessionBus().interface();
+    if (bus != nullptr) {
+        connect(bus, &QDBusConnectionInterface::serviceRegistered, this,
+                [this](const QString& service) {
+            if (m_mprisMonitoring && service.startsWith(QStringLiteral("org.mpris.MediaPlayer2."))) {
+                refreshMprisPlayer(service);
+            }
+        });
+        connect(bus, &QDBusConnectionInterface::serviceUnregistered, this,
+                [this](const QString& service) {
+            if (!service.startsWith(QStringLiteral("org.mpris.MediaPlayer2."))) return;
+            m_mprisPlayers.remove(service);
+            publishMprisStatus();
+        });
+    }
+    const bool connected = QDBusConnection::sessionBus().connect(
+        QString(), QStringLiteral("/org/mpris/MediaPlayer2"),
+        QStringLiteral("org.freedesktop.DBus.Properties"),
+        QStringLiteral("PropertiesChanged"), this,
+        SLOT(onMprisPropertiesChanged(QString,QVariantMap,QStringList)));
+    if (!connected) qWarning() << "[MPRIS] Cannot subscribe to PropertiesChanged";
 }
 
 RendererController::~RendererController() {
     stopAll();
+    updateMprisMonitoring();
 }
 
 void RendererController::setWallpaperTrustChecker(const std::function<bool(const Wallpaper&)>& checker) {
@@ -138,6 +321,7 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
         m_pendingRenders.insert(screenIndex, PendingRender{wallpaper, options});
         if (!running->stopping) {
             running->stopping = true;
+            updateMprisMonitoring();
             qWarning() << "[Switch] Sending SIGTERM to PID" << running->process->processId();
             // 立即发送 SIGTERM，不再尝试优雅退出
             running->process->terminate();
@@ -173,15 +357,83 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
              << "--fps" << QString::number(options.fps)
              << "--render-scale" << number(options.renderScale)
              << "--msaa" << QString::number(options.msaaSamples)
+             << "--fill" << fillModeKey(options.fillMode)
+             << "--position-x" << number(options.position.x())
+             << "--position-y" << number(options.position.y())
              << "--control-stdin";
         if (options.muted) args << "--muted";
         if (options.loadFromMemory) args << "--load-from-memory";
         if (!options.enableSpectrum) args << "--no-spectrum";
         const QString propsFile = writeUserPropertiesFile(options.userProperties, wallpaper);
+        // A non-empty property set must reach SceneWallpaper atomically. An
+        // empty path in this case means serialization failed, not that the
+        // renderer may start with authored defaults.
+        if (!options.userProperties.isEmpty() && propsFile.isEmpty()) {
+            if (error) *error = QStringLiteral("无法写入场景用户属性临时文件");
+            delete running;
+            process->deleteLater();
+            return false;
+        }
         if (!propsFile.isEmpty()) {
             args << "--user-properties" << propsFile;
             running->tempFiles << propsFile;
         }
+        QJsonObject storage;
+        for (auto it = options.scriptStorage.constBegin(); it != options.scriptStorage.constEnd(); ++it) {
+            storage.insert(it.key(), it.value());
+        }
+        const QJsonObject runtime {
+            {QStringLiteral("speed"), options.speed},
+            {QStringLiteral("scriptStorage"), storage},
+        };
+        const QString runtimePath = QDir::temp().filePath(
+            QStringLiteral("mirageqt_runtime_%1.json").arg(
+                QUuid::createUuid().toString(QUuid::WithoutBraces)));
+        QFile runtimeFile(runtimePath);
+        if (!runtimeFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            if (error) *error = runtimeFile.errorString();
+            // Properties were registered before the runtime snapshot because
+            // SceneWallpaper consumes both files as one startup transaction.
+            for (const QString& temp : running->tempFiles) {
+                if (QFileInfo::exists(temp) && !QFile::remove(temp)) {
+                    qWarning() << "[Render] Cannot remove temporary file" << temp;
+                }
+            }
+            delete running;
+            process->deleteLater();
+            return false;
+        }
+        const QByteArray runtimeData = QJsonDocument(runtime).toJson(QJsonDocument::Compact);
+        if (runtimeFile.write(runtimeData) != runtimeData.size()) {
+            if (error) *error = runtimeFile.errorString();
+            runtimeFile.close();
+            const bool removed = QFile::remove(runtimePath);
+            if (!removed) qWarning() << "[Render] Cannot remove incomplete runtime file" << runtimePath;
+            for (const QString& temp : running->tempFiles) {
+                if (QFileInfo::exists(temp) && !QFile::remove(temp)) {
+                    qWarning() << "[Render] Cannot remove temporary file" << temp;
+                }
+            }
+            delete running;
+            process->deleteLater();
+            return false;
+        }
+        runtimeFile.close();
+        if (runtimeFile.error() != QFileDevice::NoError) {
+            if (error) *error = runtimeFile.errorString();
+            const bool removed = QFile::remove(runtimePath);
+            if (!removed) qWarning() << "[Render] Cannot remove failed runtime file" << runtimePath;
+            for (const QString& temp : running->tempFiles) {
+                if (QFileInfo::exists(temp) && !QFile::remove(temp)) {
+                    qWarning() << "[Render] Cannot remove temporary file" << temp;
+                }
+            }
+            delete running;
+            process->deleteLater();
+            return false;
+        }
+        args << "--runtime" << runtimePath;
+        running->tempFiles << runtimePath;
         break;
     }
     case WallpaperKind::Video:
@@ -237,10 +489,22 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
                                            m_pendingRenders.contains(screen);
                 PendingRender pending;
                 if (launchPending) pending = m_pendingRenders.take(screen);
-                for (const QString& temp : running->tempFiles) QFile::remove(temp);
+                const QStringList snapshotTokens = m_snapshotRequests.keys();
+                for (const QString& token : snapshotTokens) {
+                    if (m_snapshotRequests.value(token).process == running->process) {
+                        completeSnapshot(token, running->process, false,
+                                         QStringLiteral("渲染器已退出"));
+                    }
+                }
+                for (const QString& temp : running->tempFiles) {
+                    if (QFileInfo::exists(temp) && !QFile::remove(temp)) {
+                        qWarning() << "[Render] Cannot remove temporary file" << temp;
+                    }
+                }
                 running->process->deleteLater();
                 delete running;
                 if (wasCurrent) emit rendererStateChanged();
+                updateMprisMonitoring();
                 if (launchPending) {
                     // 给 broker 100ms 时间完成旧 producer 清理，避免新 producer
                     // 连接时遇到 MD_ERR_STATE 或重复注册错误。
@@ -271,7 +535,11 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
 
     if (!process->waitForStarted(5000)) {
         const QString message = process->errorString();
-        for (const QString& temp : running->tempFiles) QFile::remove(temp);
+        for (const QString& temp : running->tempFiles) {
+            if (QFileInfo::exists(temp) && !QFile::remove(temp)) {
+                qWarning() << "[Render] Cannot remove temporary file" << temp;
+            }
+        }
         m_running.remove(screenIndex);
         delete running;
         process->deleteLater();
@@ -298,6 +566,7 @@ bool RendererController::render(const Wallpaper& wallpaper, int screenIndex, con
     }
 
     emit rendererStateChanged();
+    updateMprisMonitoring();
     return true;
 }
 
@@ -310,6 +579,7 @@ void RendererController::stop(int screenIndex) {
     running->stopping = true;
     sendCommand(running, QJsonObject{{"cmd", "quit"}});
     running->process->closeWriteChannel();
+    updateMprisMonitoring();
 
     // Escalating shutdown: "quit" first, then terminate() at 1.5 s and
     // kill() at 3 s. Both timers no-op once the process has exited.
@@ -346,6 +616,39 @@ bool RendererController::isRunningOnScreen(int screenIndex) const {
 QString RendererController::wallpaperIdOnScreen(int screenIndex) const {
     const RunningProcess* running = m_running.value(screenIndex);
     return running != nullptr && !running->stopping ? running->wallpaper.id() : QString();
+}
+
+PositionAvailability RendererController::positionAvailabilityForWallpaper(
+    const QString& wallpaperId) const {
+    for (const RunningProcess* running : m_running) {
+        if (!running->stopping && running->wallpaper.id() == wallpaperId &&
+            running->positionAvailability.known) {
+            return running->positionAvailability;
+        }
+    }
+    return PositionAvailability();
+}
+
+QString RendererController::requestSnapshot(int screenIndex, const QString& path) {
+    RunningProcess* running = m_running.value(screenIndex);
+    if (path.isEmpty() || running == nullptr || running->stopping ||
+        running->wallpaper.kind() != WallpaperKind::Scene) {
+        emit snapshotFinished(QString(), screenIndex, path, false,
+                              QStringLiteral("目标显示器没有活动的场景壁纸"));
+        return QString();
+    }
+    const QString token = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_snapshotRequests.insert(token, SnapshotRequest{screenIndex, path, running->process});
+    sendCommand(running, QJsonObject{
+        {QStringLiteral("cmd"), QStringLiteral("snapshot")},
+        {QStringLiteral("path"), path},
+        {QStringLiteral("token"), token},
+    });
+    QTimer::singleShot(8000, this, [this, token, process = QPointer<QProcess>(running->process)] {
+        if (!m_snapshotRequests.contains(token)) return;
+        completeSnapshot(token, process.data(), false, QStringLiteral("截图请求超时"));
+    });
+    return token;
 }
 
 QString RendererController::fillModeKey(FillMode mode) {
@@ -418,6 +721,17 @@ void RendererController::setFillMode(FillMode mode, int screenIndex) {
     });
 }
 
+void RendererController::setPosition(const QPointF& position, int screenIndex) {
+    forEachTarget(screenIndex, [&](RunningProcess* running) {
+        if (running->wallpaper.kind() != WallpaperKind::Scene) return;
+        sendCommand(running, QJsonObject{
+            {QStringLiteral("cmd"), QStringLiteral("position")},
+            {QStringLiteral("x"), position.x()},
+            {QStringLiteral("y"), position.y()},
+        });
+    });
+}
+
 void RendererController::setProperty(const QString& key, const ProjectProperty& property, int screenIndex) {
     forEachTarget(screenIndex, [&](RunningProcess* running) {
         sendCommand(running, propertyCommand(key, property));
@@ -486,7 +800,23 @@ QString RendererController::writeUserPropertiesFile(const QHash<QString, Project
                                                    .arg(qHash(wallpaper.id())));
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return {};
-    file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+    const QByteArray data = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    if (file.write(data) != data.size()) {
+        qWarning() << "[Render] Cannot write user-properties file" << path << file.errorString();
+        file.close();
+        if (QFileInfo::exists(path) && !QFile::remove(path)) {
+            qWarning() << "[Render] Cannot remove incomplete user-properties file" << path;
+        }
+        return {};
+    }
+    file.close();
+    if (file.error() != QFileDevice::NoError) {
+        qWarning() << "[Render] Cannot close user-properties file" << path << file.errorString();
+        if (QFileInfo::exists(path) && !QFile::remove(path)) {
+            qWarning() << "[Render] Cannot remove failed user-properties file" << path;
+        }
+        return {};
+    }
     return path;
 }
 
@@ -509,7 +839,12 @@ void RendererController::sendCommand(RunningProcess* running, const QJsonObject&
     if (!running || running->process->state() == QProcess::NotRunning) return;
     QByteArray line = QJsonDocument(command).toJson(QJsonDocument::Compact);
     line.push_back('\n');
-    running->process->write(line);
+    const qint64 accepted = running->process->write(line);
+    if (accepted != line.size()) {
+        writeRendererDiagnostic(running->screenIndex,
+                                QStringLiteral("控制命令写入失败：%1")
+                                    .arg(running->process->errorString()));
+    }
 }
 
 void RendererController::forEachTarget(int screenIndex, const std::function<void(RunningProcess*)>& body) {
@@ -518,6 +853,339 @@ void RendererController::forEachTarget(int screenIndex, const std::function<void
         return;
     }
     for (RunningProcess* running : m_running) body(running);
+}
+
+void RendererController::updateMprisMonitoring() {
+    bool needed = false;
+    for (const RunningProcess* running : m_running) {
+        if (!running->stopping && running->wallpaper.kind() == WallpaperKind::Scene) {
+            needed = true;
+            break;
+        }
+    }
+    if (needed == m_mprisMonitoring) {
+        if (needed) publishMprisStatus();
+        return;
+    }
+
+    m_mprisMonitoring = needed;
+    if (!needed) {
+        m_mprisPositionTimer->stop();
+        if (m_artworkReply != nullptr) {
+            m_artworkReply->abort();
+            m_artworkReply = nullptr;
+        }
+        m_mprisPlayers.clear();
+        m_selectedMprisService.clear();
+        m_mediaIdentity.clear();
+        m_artworkSource.clear();
+        m_artworkPath.clear();
+        m_previousArtworkPath.clear();
+        m_artworkPalette = QJsonArray();
+        return;
+    }
+
+    QDBusConnectionInterface* bus = QDBusConnection::sessionBus().interface();
+    if (bus == nullptr) {
+        qWarning() << "[MPRIS] Session bus interface is unavailable";
+        return;
+    }
+    const QDBusReply<QStringList> names = bus->registeredServiceNames();
+    if (!names.isValid()) {
+        qWarning() << "[MPRIS] Cannot enumerate players:" << names.error().message();
+        return;
+    }
+    for (const QString& service : names.value()) {
+        if (service.startsWith(QStringLiteral("org.mpris.MediaPlayer2."))) {
+            refreshMprisPlayer(service);
+        }
+    }
+    m_mprisPositionTimer->start();
+    publishMprisStatus();
+}
+
+void RendererController::refreshMprisPlayer(const QString& service) {
+    if (!m_mprisMonitoring || !service.startsWith(QStringLiteral("org.mpris.MediaPlayer2."))) {
+        return;
+    }
+    auto* properties = new QDBusInterface(
+        service, QStringLiteral("/org/mpris/MediaPlayer2"),
+        QStringLiteral("org.freedesktop.DBus.Properties"),
+        QDBusConnection::sessionBus(), this);
+    QDBusPendingCall call = properties->asyncCall(
+        QStringLiteral("GetAll"), QStringLiteral("org.mpris.MediaPlayer2.Player"));
+    auto* watcher = new QDBusPendingCallWatcher(call, properties);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this,
+            [this, properties, service](QDBusPendingCallWatcher* completed) {
+        const QDBusPendingReply<QVariantMap> reply = *completed;
+        completed->deleteLater();
+        properties->deleteLater();
+        if (!m_mprisMonitoring) return;
+        if (reply.isError()) {
+            qWarning() << "[MPRIS] GetAll failed:" << service << reply.error().message();
+            return;
+        }
+        QDBusConnectionInterface* bus = QDBusConnection::sessionBus().interface();
+        if (bus == nullptr) {
+            qWarning() << "[MPRIS] Session bus disappeared while reading" << service;
+            return;
+        }
+        const QDBusReply<QString> ownerReply = bus->serviceOwner(service);
+        if (!ownerReply.isValid()) {
+            qWarning() << "[MPRIS] Cannot resolve service owner:" << service
+                       << ownerReply.error().message();
+            return;
+        }
+
+        const QVariantMap propertiesMap = reply.value();
+        MprisPlayer player;
+        player.service = service;
+        player.owner = ownerReply.value();
+        const std::optional<QString> playbackStatus =
+            MprisString(propertiesMap, QStringLiteral("PlaybackStatus"));
+        const std::optional<qint64> position =
+            MprisInt64(propertiesMap, QStringLiteral("Position"));
+        // PlaybackStatus and Position are required Player properties. A
+        // malformed implementation is excluded instead of publishing an
+        // invented stopped state or timestamp.
+        if (!playbackStatus.has_value() || !position.has_value()) {
+            qWarning() << "[MPRIS] Player omitted required properties:" << service;
+            return;
+        }
+        player.playbackStatus = *playbackStatus;
+        player.positionUs = *position;
+        player.updatedOrder = ++m_mprisUpdateOrder;
+
+        const auto metadataValue = propertiesMap.constFind(QStringLiteral("Metadata"));
+        if (metadataValue != propertiesMap.constEnd()) {
+            const QVariantMap metadata = qdbus_cast<QVariantMap>(*metadataValue);
+            if (const std::optional<QString> title =
+                    MprisString(metadata, QStringLiteral("xesam:title")); title.has_value()) {
+                player.title = *title;
+            }
+            if (const std::optional<QStringList> artist =
+                    MprisStringList(metadata, QStringLiteral("xesam:artist")); artist.has_value()) {
+                player.artist = artist->join(QStringLiteral(", "));
+            }
+            if (const std::optional<QString> album =
+                    MprisString(metadata, QStringLiteral("xesam:album")); album.has_value()) {
+                player.album = *album;
+            }
+            if (const std::optional<QStringList> albumArtist =
+                    MprisStringList(metadata, QStringLiteral("xesam:albumArtist"));
+                albumArtist.has_value()) {
+                player.albumArtist = albumArtist->join(QStringLiteral(", "));
+            }
+            if (const std::optional<QString> artUrl =
+                    MprisString(metadata, QStringLiteral("mpris:artUrl")); artUrl.has_value()) {
+                player.artUrl = *artUrl;
+            }
+            const auto trackId = metadata.constFind(QStringLiteral("mpris:trackid"));
+            if (trackId != metadata.constEnd()) {
+                if (trackId->metaType().id() != qMetaTypeId<QDBusObjectPath>()) {
+                    qWarning() << "[MPRIS] Property has non-object-path type: mpris:trackid"
+                               << trackId->metaType().name();
+                } else {
+                    player.trackId = trackId->value<QDBusObjectPath>().path();
+                }
+            }
+            if (const std::optional<qint64> duration =
+                    MprisInt64(metadata, QStringLiteral("mpris:length")); duration.has_value()) {
+                player.durationUs = *duration;
+            }
+        }
+        m_mprisPlayers.insert(service, player);
+        publishMprisStatus();
+    });
+}
+
+void RendererController::onMprisPropertiesChanged(
+    const QString& interfaceName, const QVariantMap& changedProperties,
+    const QStringList& invalidatedProperties) {
+    if (!m_mprisMonitoring ||
+        interfaceName != QStringLiteral("org.mpris.MediaPlayer2.Player") ||
+        (changedProperties.isEmpty() && invalidatedProperties.isEmpty())) {
+        return;
+    }
+    const QString owner = message().service();
+    for (const MprisPlayer& player : m_mprisPlayers) {
+        if (player.owner == owner) refreshMprisPlayer(player.service);
+    }
+}
+
+void RendererController::publishMprisStatus() {
+    if (!m_mprisMonitoring) return;
+
+    const MprisPlayer* selected = nullptr;
+    for (const MprisPlayer& player : m_mprisPlayers) {
+        if (player.title.isEmpty()) continue;
+        if (selected == nullptr) {
+            selected = &player;
+            continue;
+        }
+        const bool playing = player.playbackStatus == QStringLiteral("Playing");
+        const bool selectedPlaying = selected->playbackStatus == QStringLiteral("Playing");
+        if ((playing && !selectedPlaying) ||
+            (playing == selectedPlaying && player.updatedOrder > selected->updatedOrder)) {
+            selected = &player;
+        }
+    }
+
+    QJsonObject data;
+    if (selected == nullptr) {
+        m_selectedMprisService.clear();
+        const QString previous = m_artworkPath;
+        m_mediaIdentity.clear();
+        m_artworkSource.clear();
+        m_artworkPath.clear();
+        m_previousArtworkPath.clear();
+        m_artworkPalette = QJsonArray();
+        data = QJsonObject{
+            {QStringLiteral("state"), 0},
+            {QStringLiteral("title"), QString()},
+            {QStringLiteral("artist"), QString()},
+            {QStringLiteral("album"), QString()},
+            {QStringLiteral("albumArtist"), QString()},
+            {QStringLiteral("position"), 0.0},
+            {QStringLiteral("duration"), 0.0},
+            {QStringLiteral("artURL"), QString()},
+            {QStringLiteral("previousArtURL"), previous},
+        };
+    } else {
+        m_selectedMprisService = selected->service;
+        const QString identity = QStringList{
+            selected->service, selected->trackId, selected->title,
+            selected->artist, selected->album, selected->albumArtist,
+        }.join(QChar(0x1f));
+        if (identity != m_mediaIdentity) {
+            if (!m_artworkPath.isEmpty()) m_previousArtworkPath = m_artworkPath;
+            m_artworkPath.clear();
+            m_artworkPalette = QJsonArray();
+            m_artworkSource.clear();
+            m_mediaIdentity = identity;
+            if (m_artworkReply != nullptr) {
+                m_artworkReply->abort();
+                m_artworkReply = nullptr;
+            }
+        }
+
+        if (!selected->artUrl.isEmpty() && selected->artUrl != m_artworkSource) {
+            const QUrl artworkUrl(selected->artUrl);
+            const QString scheme = artworkUrl.scheme().toLower();
+            m_artworkSource = selected->artUrl;
+            if (artworkUrl.isValid() && scheme == QStringLiteral("file")) {
+                const QString path = artworkUrl.toLocalFile();
+                const QImage image(path);
+                const QJsonArray palette = MprisPalette(image);
+                if (!image.isNull() && palette.size() == 5) {
+                    if (!m_artworkPath.isEmpty() && m_artworkPath != path) {
+                        m_previousArtworkPath = m_artworkPath;
+                    }
+                    m_artworkPath = path;
+                    m_artworkPalette = palette;
+                } else {
+                    qWarning() << "[MPRIS] Cannot decode local artwork:" << path;
+                }
+            } else if (artworkUrl.isValid() &&
+                       (scheme == QStringLiteral("http") || scheme == QStringLiteral("https"))) {
+                QNetworkRequest request(artworkUrl);
+                request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                                     QNetworkRequest::NoLessSafeRedirectPolicy);
+                QNetworkReply* reply = m_networkAccess->get(request);
+                m_artworkReply = reply;
+                const QString requestedIdentity = m_mediaIdentity;
+                const QString requestedSource = m_artworkSource;
+                connect(reply, &QNetworkReply::finished, this,
+                        [this, reply, requestedIdentity, requestedSource] {
+                    if (m_artworkReply == reply) m_artworkReply = nullptr;
+                    const QNetworkReply::NetworkError networkError = reply->error();
+                    const QByteArray data = reply->readAll();
+                    const QString contentType = reply->header(
+                        QNetworkRequest::ContentTypeHeader).toString().section(';', 0, 0).toLower();
+                    reply->deleteLater();
+                    if (requestedIdentity != m_mediaIdentity || requestedSource != m_artworkSource) {
+                        return;
+                    }
+                    if (networkError != QNetworkReply::NoError) {
+                        qWarning() << "[MPRIS] Artwork download failed:" << requestedSource
+                                   << networkError;
+                        return;
+                    }
+                    QString extension;
+                    if (contentType == QStringLiteral("image/png")) extension = QStringLiteral("png");
+                    else if (contentType == QStringLiteral("image/jpeg")) extension = QStringLiteral("jpg");
+                    else {
+                        qWarning() << "[MPRIS] Unsupported artwork content type:" << contentType;
+                        return;
+                    }
+                    QImage image;
+                    if (!image.loadFromData(data)) {
+                        qWarning() << "[MPRIS] Cannot decode downloaded artwork:" << requestedSource;
+                        return;
+                    }
+                    const QJsonArray palette = MprisPalette(image);
+                    if (palette.size() != 5) {
+                        qWarning() << "[MPRIS] Cannot derive artwork palette:" << requestedSource;
+                        return;
+                    }
+                    const QString directory = QDir(
+                        QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+                                                  .filePath(QStringLiteral("NowPlaying"));
+                    if (!QDir().mkpath(directory)) {
+                        qWarning() << "[MPRIS] Cannot create artwork cache:" << directory;
+                        return;
+                    }
+                    const QString digest = QString::fromLatin1(
+                        QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
+                    const QString path = QDir(directory).filePath(digest + QLatin1Char('.') + extension);
+                    if (!QFileInfo::exists(path)) {
+                        QSaveFile file(path);
+                        if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() ||
+                            !file.commit()) {
+                            qWarning() << "[MPRIS] Cannot persist artwork:" << path
+                                       << file.errorString();
+                            return;
+                        }
+                    }
+                    if (!m_artworkPath.isEmpty() && m_artworkPath != path) {
+                        m_previousArtworkPath = m_artworkPath;
+                    }
+                    m_artworkPath = path;
+                    m_artworkPalette = palette;
+                    publishMprisStatus();
+                });
+            } else {
+                qWarning() << "[MPRIS] Rejected artwork URL:" << selected->artUrl;
+            }
+        }
+
+        data = QJsonObject{
+            {QStringLiteral("state"), selected->playbackStatus == QStringLiteral("Playing") ? 1 : 2},
+            {QStringLiteral("title"), selected->title},
+            {QStringLiteral("artist"), selected->artist},
+            {QStringLiteral("album"), selected->album},
+            {QStringLiteral("albumArtist"), selected->albumArtist},
+            {QStringLiteral("position"), static_cast<double>(selected->positionUs) / 1000000.0},
+            {QStringLiteral("duration"), static_cast<double>(selected->durationUs) / 1000000.0},
+            {QStringLiteral("artURL"), m_artworkPath},
+            {QStringLiteral("previousArtURL"), m_previousArtworkPath},
+        };
+        if (m_artworkPalette.size() == 5) {
+            data.insert(QStringLiteral("primaryColor"), m_artworkPalette.at(0));
+            data.insert(QStringLiteral("secondaryColor"), m_artworkPalette.at(1));
+            data.insert(QStringLiteral("tertiaryColor"), m_artworkPalette.at(2));
+            data.insert(QStringLiteral("textColor"), m_artworkPalette.at(3));
+            data.insert(QStringLiteral("highContrastColor"), m_artworkPalette.at(4));
+        }
+    }
+
+    forEachTarget(-1, [this, &data](RunningProcess* running) {
+        if (running->wallpaper.kind() != WallpaperKind::Scene) return;
+        sendCommand(running, QJsonObject{
+            {QStringLiteral("cmd"), QStringLiteral("mediaStatus")},
+            {QStringLiteral("data"), data},
+        });
+    });
 }
 
 void RendererController::consumeStdout(RunningProcess* running, const QByteArray& chunk) {
@@ -532,10 +1200,111 @@ void RendererController::consumeStdout(RunningProcess* running, const QByteArray
         const auto doc = QJsonDocument::fromJson(line);
         if (!doc.isObject()) continue;
         const QJsonObject object = doc.object();
-        if (object.value(QStringLiteral("event")).toString() == QStringLiteral("video-did-end")) {
+        const QString event = object.value(QStringLiteral("event")).toString();
+        if (event == QStringLiteral("video-did-end")) {
             emit videoDidEnd(running->screenIndex);
+        } else if (event == QStringLiteral("first-frame-presented")) {
+            emit firstFramePresented(running->screenIndex);
+            const QString token = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            sendCommand(running, QJsonObject{
+                {QStringLiteral("cmd"), QStringLiteral("exportScriptStorage")},
+                {QStringLiteral("token"), token},
+            });
+        } else if (event == QStringLiteral("renderer-error")) {
+            emit rendererMessage(QStringLiteral("场景渲染器发生不可恢复的 Vulkan 错误"));
+            running->process->terminate();
+        } else if (event == QStringLiteral("position-availability")) {
+            const QJsonValue x = object.value(QStringLiteral("x"));
+            const QJsonValue y = object.value(QStringLiteral("y"));
+            if (!x.isBool() || !y.isBool()) {
+                writeRendererDiagnostic(running->screenIndex,
+                                        QStringLiteral("无效的 position-availability 事件"));
+                continue;
+            }
+            running->positionAvailability = PositionAvailability{true, x.toBool(), y.toBool()};
+            emit positionAvailabilityChanged(running->screenIndex, x.toBool(), y.toBool());
+        } else if (event == QStringLiteral("audio-demand")) {
+            const QJsonValue needed = object.value(QStringLiteral("needed"));
+            if (!needed.isBool()) {
+                writeRendererDiagnostic(running->screenIndex,
+                                        QStringLiteral("无效的 audio-demand 事件"));
+                continue;
+            }
+            running->audioDemanded = needed.toBool();
+        } else if (event == QStringLiteral("script-storage")) {
+            const QJsonValue valuesValue = object.value(QStringLiteral("values"));
+            if (!valuesValue.isObject()) {
+                writeRendererDiagnostic(running->screenIndex,
+                                        QStringLiteral("无效的 script-storage 事件"));
+                continue;
+            }
+            const QJsonObject valuesObject = valuesValue.toObject();
+            if (valuesObject.size() > 1024) {
+                writeRendererDiagnostic(running->screenIndex,
+                                        QStringLiteral("脚本存储超过 1024 项限制"));
+                continue;
+            }
+            QHash<QString, QString> values;
+            bool valid = true;
+            for (auto it = valuesObject.constBegin(); it != valuesObject.constEnd(); ++it) {
+                if (!it.value().isString()) {
+                    valid = false;
+                    break;
+                }
+                values.insert(it.key(), it.value().toString());
+            }
+            if (!valid) {
+                writeRendererDiagnostic(running->screenIndex,
+                                        QStringLiteral("脚本存储包含非字符串值"));
+                continue;
+            }
+            emit scriptStorageChanged(running->wallpaper.id(), values);
+        } else if (event == QStringLiteral("snapshot-done")) {
+            const QJsonValue tokenValue = object.value(QStringLiteral("token"));
+            const QJsonValue okValue = object.value(QStringLiteral("ok"));
+            if (!tokenValue.isString() || !okValue.isBool()) {
+                writeRendererDiagnostic(running->screenIndex,
+                                        QStringLiteral("无效的 snapshot-done 事件"));
+                continue;
+            }
+            completeSnapshot(tokenValue.toString(), running->process, okValue.toBool(),
+                             okValue.toBool() ? QString() : QStringLiteral("渲染器截图失败"));
+        } else if (event == QStringLiteral("open-shortcut")) {
+            const QJsonValue targetValue = object.value(QStringLiteral("value"));
+            if (!targetValue.isString()) {
+                writeRendererDiagnostic(running->screenIndex,
+                                        QStringLiteral("无效的 open-shortcut 事件"));
+                continue;
+            }
+            const QString target = targetValue.toString();
+            const QFileInfo localFile(target);
+            bool opened = false;
+            if (localFile.exists()) {
+                opened = QDesktopServices::openUrl(QUrl::fromLocalFile(localFile.absoluteFilePath()));
+            } else {
+                const QUrl url(target);
+                const QString scheme = url.scheme().toLower();
+                if (url.isValid() && (scheme == QStringLiteral("http") ||
+                                      scheme == QStringLiteral("https") ||
+                                      scheme == QStringLiteral("mailto"))) {
+                    opened = QDesktopServices::openUrl(url);
+                }
+            }
+            if (!opened) {
+                writeRendererDiagnostic(running->screenIndex,
+                                        QStringLiteral("已拒绝或无法打开用户快捷方式"));
+            }
         }
     }
+}
+
+void RendererController::completeSnapshot(const QString& token, QProcess* source, bool success,
+                                          const QString& error) {
+    const auto request = m_snapshotRequests.constFind(token);
+    if (request == m_snapshotRequests.constEnd() || request->process != source) return;
+    const SnapshotRequest completed = request.value();
+    m_snapshotRequests.erase(request);
+    emit snapshotFinished(token, completed.screenIndex, completed.path, success, error);
 }
 
 } // namespace Mirage

@@ -155,4 +155,17 @@ if(SCENERENDERER_BUILD_ENGINE AND SCENERENDERER_BUILD_TESTS)
     target_link_libraries(SceneRendererPuppetAlphaTests PRIVATE SceneRenderer::Import)
     set_property(TARGET SceneRendererPuppetAlphaTests PROPERTY CXX_SCAN_FOR_MODULES ON)
     add_test(NAME SceneRendererPuppetAlpha COMMAND SceneRendererPuppetAlphaTests)
+
+    if(UNIX AND NOT APPLE)
+        # Exercises the Linux platform implementation without Vulkan: the test
+        # supplies the engine's documented live-frame callback symbol and
+        # verifies the PNG bytes written by WriteSceneSnapshot.
+        find_package(PNG REQUIRED)
+        add_executable(SceneRendererSnapshotTests
+            Tests/SceneSnapshotRegression.cpp
+            Tools/SceneWallpaper/SceneSnapshot.cpp)
+        target_include_directories(SceneRendererSnapshotTests PRIVATE Tools/SceneWallpaper)
+        target_link_libraries(SceneRendererSnapshotTests PRIVATE PNG::PNG Threads::Threads)
+        add_test(NAME SceneRendererSnapshot COMMAND SceneRendererSnapshotTests)
+    endif()
 endif()

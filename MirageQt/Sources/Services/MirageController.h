@@ -106,6 +106,11 @@ class MirageController : public QObject {
     Q_PROPERTY(double selectedVolume READ selectedVolume WRITE setSelectedVolume NOTIFY selectedRuntimeChanged)
     Q_PROPERTY(double selectedSpeed READ selectedSpeed WRITE setSelectedSpeed NOTIFY selectedRuntimeChanged)
     Q_PROPERTY(QString selectedFillMode READ selectedFillMode WRITE setSelectedFillMode NOTIFY selectedRuntimeChanged)
+    Q_PROPERTY(double selectedPositionX READ selectedPositionX WRITE setSelectedPositionX NOTIFY selectedRuntimeChanged)
+    Q_PROPERTY(double selectedPositionY READ selectedPositionY WRITE setSelectedPositionY NOTIFY selectedRuntimeChanged)
+    Q_PROPERTY(bool positionAvailabilityKnown READ positionAvailabilityKnown NOTIFY selectedRuntimeChanged)
+    Q_PROPERTY(bool positionXAvailable READ positionXAvailable NOTIFY selectedRuntimeChanged)
+    Q_PROPERTY(bool positionYAvailable READ positionYAvailable NOTIFY selectedRuntimeChanged)
     Q_PROPERTY(QString wallpaperAssignmentDisplayId READ wallpaperAssignmentDisplayId NOTIFY wallpaperAssignmentChanged)
     Q_PROPERTY(bool showOnStart READ showOnStart WRITE setShowOnStart NOTIFY showOnStartChanged)
 
@@ -162,6 +167,11 @@ public:
     double selectedVolume() const;
     double selectedSpeed() const;
     QString selectedFillMode() const;
+    double selectedPositionX() const;
+    double selectedPositionY() const;
+    bool positionAvailabilityKnown() const;
+    bool positionXAvailable() const;
+    bool positionYAvailable() const;
     QString wallpaperAssignmentDisplayId() const { return m_wallpaperAssignmentDisplayId; }
     bool showOnStart() const;
 
@@ -195,6 +205,12 @@ public:
     Q_INVOKABLE void updatePlaylistSettings(const QVariantMap& values);
     Q_INVOKABLE void setSelectedProperty(const QString& key, const QVariant& value);
     Q_INVOKABLE void resetSelectedProperties();
+    // GUI-thread QML API. Requests a PNG from the active Scene renderer on
+    // `screenIndex`; `path` is a non-empty caller-owned local filesystem path.
+    // Returns a UUID token, or an empty string when no matching renderer exists.
+    // Completion is asynchronous through sceneSnapshotFinished and never runs
+    // on a renderer or DBus worker thread.
+    Q_INVOKABLE QString requestSceneSnapshot(int screenIndex, const QString& path);
     Q_INVOKABLE void completeFirstLaunch(bool hideUntilNextUpdate);
     Q_INVOKABLE void loadDiscover();
     Q_INVOKABLE void refreshDiscover();
@@ -254,6 +270,8 @@ public slots:
     void setSelectedVolume(double volume);
     void setSelectedSpeed(double speed);
     void setSelectedFillMode(const QString& mode);
+    void setSelectedPositionX(double x);
+    void setSelectedPositionY(double y);
     // 桌面窗口事实（由 main.cpp 从 DisplayBrokerService 接入），转发给
     // PlaybackController 按播放规则驱动渲染器。
     void handleWindowState(const QString& stableId, quint32 flags);
@@ -282,6 +300,10 @@ signals:
     void wallpaperAssignmentChanged();
     void showOnStartChanged();
     void playbackPausedChanged(bool paused);
+    // QML completion for requestSceneSnapshot. `path` remains owned by the
+    // caller; success means the renderer closed a complete PNG at that path.
+    void sceneSnapshotFinished(const QString& token, int screenIndex, const QString& path,
+                               bool success, const QString& error);
 
 private:
     Wallpaper wallpaper(const QString& id) const;

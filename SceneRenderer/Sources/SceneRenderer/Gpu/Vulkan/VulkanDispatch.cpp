@@ -113,6 +113,7 @@ bool Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdPushConstants);
     X(vkCmdPushDescriptorSetKHR);
     X(vkCmdPushDescriptorSetWithTemplateKHR);
+    X(vkCmdResetQueryPool);
     X(vkCmdSetBlendConstants);
     X(vkCmdSetDepthBias);
     X(vkCmdSetDepthBounds);
@@ -122,6 +123,7 @@ bool Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdSetStencilReference);
     X(vkCmdSetStencilWriteMask);
     X(vkCmdSetViewport);
+    X(vkCmdWriteTimestamp);
     X(vkCmdWaitEvents);
     X(vkCmdSetLineWidth);
     X(vkCmdResolveImage);

@@ -106,6 +106,8 @@ RenderOptions PlaybackController::renderOptionsFor(const Wallpaper& item) const 
     options.muted = runtime.muted || settings.globalMuted || runtime.volume <= 0.0;
     options.speed = runtime.speed;
     options.fillMode = runtime.fillMode;
+    options.position = runtime.position;
+    options.scriptStorage = runtime.scriptStorage;
     options.enableSpectrum = settings.enableSpectrum;
     options.loadFromMemory = settings.wallpaperLoadSource == QStringLiteral("memory");
     options.userProperties = m_runtimeStore->effectiveProperties(item, runtime);
@@ -180,6 +182,15 @@ QString PlaybackController::selectedFillMode() const {
     const Wallpaper item = m_owner->wallpaper(m_owner->m_selectedWallpaperId);
     if (!item.isValid()) return QStringLiteral("cover");
     return RendererController::fillModeKey(m_runtimeStore->loadRuntime(item).fillMode);
+}
+
+QPointF PlaybackController::selectedPosition() const {
+    const Wallpaper item = m_owner->wallpaper(m_owner->m_selectedWallpaperId);
+    return item.isValid() ? m_runtimeStore->loadRuntime(item).position : QPointF(0.5, 0.5);
+}
+
+PositionAvailability PlaybackController::selectedPositionAvailability() const {
+    return m_renderer->positionAvailabilityForWallpaper(m_owner->m_selectedWallpaperId);
 }
 
 void PlaybackController::apply(const Wallpaper& item, bool allScreens) {
@@ -408,6 +419,18 @@ void PlaybackController::setSelectedFillMode(const QString& mode) {
         : mode == QStringLiteral("stretch") ? FillMode::Stretch : FillMode::Cover;
     m_runtimeStore->setFillMode(item, fillMode);
     m_renderer->setFillMode(fillMode);
+    emit m_owner->selectedRuntimeChanged();
+}
+
+void PlaybackController::setSelectedPosition(const QPointF& position) {
+    const Wallpaper item = m_owner->wallpaper(m_owner->m_selectedWallpaperId);
+    if (!item.isValid() || item.kind() != WallpaperKind::Scene) return;
+    m_runtimeStore->setPosition(item, position);
+    for (const int screen : m_renderer->activeScreens()) {
+        if (m_playlist->currentWallpaper(screen).id() == item.id()) {
+            m_renderer->setPosition(position, screen);
+        }
+    }
     emit m_owner->selectedRuntimeChanged();
 }
 

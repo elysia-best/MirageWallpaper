@@ -324,7 +324,11 @@ FluWindow {
             Item { Layout.fillWidth: true }
             FluFilledButton {
                 text: setup.currentStep === 2 ? qsTr("完成") : qsTr("下一步")
-                enabled: setup.canProceed && !setupModel.busy
+                // Automatic session restoration may still be running while the
+                // welcome page is shown; it must not block entering the login
+                // step. The login-step guard remains enforced by canProceed.
+                enabled: setup.currentStep === 0
+                         || (setup.canProceed && !setupModel.busy)
                 onClicked: {
                     if (setup.currentStep === 2) {
                         setupModel.completeSetup();

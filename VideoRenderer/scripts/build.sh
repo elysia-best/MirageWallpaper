@@ -70,7 +70,8 @@ command -v cmake >/dev/null || die "cmake not found"
 command -v ninja >/dev/null || die "ninja not found"
 command -v pkg-config >/dev/null || die "pkg-config not found"
 
-case "$(uname -s)" in
+SYSTEM_NAME="$(uname -s)"
+case "$SYSTEM_NAME" in
     Darwin)
         xcrun --find clang >/dev/null 2>&1 || die "Xcode CLT not found: xcode-select --install"
         DEFAULT_JOBS="$(sysctl -n hw.logicalcpu 2>/dev/null || echo 8)"
@@ -91,11 +92,15 @@ do_clean() {
 }
 
 do_configure() {
-    FFMPEG_ARCH="$(uname -m)"
-    FFMPEG_PREFIX="${MIRAGE_FFMPEG_DIR:-$PROJECT_DIR/../Mirage/build/ffmpeg/$FFMPEG_ARCH}"
-    "$PROJECT_DIR/../scripts/build_ffmpeg.sh" "$FFMPEG_ARCH"
-    [[ -f "$FFMPEG_PREFIX/lib/pkgconfig/libavcodec.pc" ]] || die "bundled FFmpeg missing at $FFMPEG_PREFIX (run scripts/build_ffmpeg.sh)"
-    export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    if [[ "$SYSTEM_NAME" == "Darwin" ]]; then
+        # The Apple transcoder is linked to the pinned decoder bundle. Linux
+        # uses the libmpv backend and must not invoke the macOS-only xcrun flow.
+        FFMPEG_ARCH="$(uname -m)"
+        FFMPEG_PREFIX="${MIRAGE_FFMPEG_DIR:-$PROJECT_DIR/../Mirage/build/ffmpeg/$FFMPEG_ARCH}"
+        "$PROJECT_DIR/../scripts/build_ffmpeg.sh" "$FFMPEG_ARCH"
+        [[ -f "$FFMPEG_PREFIX/lib/pkgconfig/libavcodec.pc" ]] || die "bundled FFmpeg missing at $FFMPEG_PREFIX (run scripts/build_ffmpeg.sh)"
+        export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    fi
     info "configuring preset: $PRESET"
     cmake -U '*VR_AV*' -U '*VR_SW*' --preset "$PRESET"
 }

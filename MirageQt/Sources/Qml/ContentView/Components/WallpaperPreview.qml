@@ -136,6 +136,7 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         visible: mirage.selectedWallpaper.kind === "video"
+                 || mirage.selectedWallpaper.kind === "scene"
         FluText {
             text: "填充模式"
         }
@@ -144,6 +145,66 @@ ColumnLayout {
             model: ["cover", "contain", "stretch"]
             currentIndex: Math.max(0, model.indexOf(mirage.selectedFillMode))
             onActivated: mirage.selectedFillMode = currentText
+        }
+    }
+    ColumnLayout {
+        Layout.fillWidth: true
+        visible: mirage.selectedWallpaper.kind === "scene"
+        spacing: 8
+
+        // SceneRenderer reports which cover axis is actually cropped for the
+        // current output. The values are normalized doubles in [0, 1].
+        RowLayout {
+            Layout.fillWidth: true
+            enabled: mirage.selectedFillMode === "cover" && mirage.positionXAvailable
+            FluText {
+                text: "水平位置"
+            }
+            FluSlider {
+                Layout.fillWidth: true
+                from: 0
+                to: 1
+                stepSize: 0.001
+                value: mirage.selectedPositionX
+                onMoved: mirage.selectedPositionX = value
+            }
+            FluText {
+                Layout.preferredWidth: 44
+                horizontalAlignment: Text.AlignRight
+                text: Math.round(mirage.selectedPositionX * 100) + "%"
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            enabled: mirage.selectedFillMode === "cover" && mirage.positionYAvailable
+            FluText {
+                text: "垂直位置"
+            }
+            FluSlider {
+                Layout.fillWidth: true
+                from: 0
+                to: 1
+                stepSize: 0.001
+                value: mirage.selectedPositionY
+                onMoved: mirage.selectedPositionY = value
+            }
+            FluText {
+                Layout.preferredWidth: 44
+                horizontalAlignment: Text.AlignRight
+                text: Math.round(mirage.selectedPositionY * 100) + "%"
+            }
+        }
+        // FluIconButton owns the Fluent icon and exposes `text` as both its
+        // hover tooltip and accessible name; FluButton is text-only here.
+        FluIconButton {
+            Layout.alignment: Qt.AlignRight
+            text: "恢复居中"
+            iconSource: FluentIcons.Refresh
+            enabled: mirage.selectedPositionX !== 0.5 || mirage.selectedPositionY !== 0.5
+            onClicked: {
+                mirage.selectedPositionX = 0.5;
+                mirage.selectedPositionY = 0.5;
+            }
         }
     }
 

@@ -41,6 +41,7 @@
 #include <vector>
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
 #include <poll.h>
+#include <sys/prctl.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
 #endif
@@ -91,6 +92,25 @@ void InstallCrashHandler() {
     signal(SIGILL,  CrashHandler);
     signal(SIGFPE,  CrashHandler);
 }
+#if defined(SCENERENDERER_MIRAGE_DISPLAY)
+// SceneWallpaper is owned by the MirageQt process. PR_SET_PDEATHSIG covers
+// crashes and SIGKILL without a polling thread; the second getppid check closes
+// the kernel-documented race where the parent exits immediately before prctl.
+bool InstallParentDeathGuard() {
+    const pid_t parent = ::getppid();
+    if (parent <= 1) return true;
+    if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0) {
+        std::cerr << "SceneWallpaper: cannot register parent-death signal: "
+                  << std::strerror(errno) << '\n';
+        return false;
+    }
+    if (::getppid() != parent) {
+        std::cerr << "SceneWallpaper: parent exited during startup\n";
+        return false;
+    }
+    return true;
+}
+#endif
 #if defined(__APPLE__)
 // Terminate when the parent dies.
 //
@@ -802,6 +822,10 @@ public:
         if (m_callbacks.activated != nullptr) m_callbacks.activated(m_callbacks.userdata);
     }
 
+    void notifyDeactivated() {
+        if (m_callbacks.deactivated != nullptr) m_callbacks.deactivated(m_callbacks.userdata);
+    }
+
 private:
     static void OnConnected(void* opaque, std::uint64_t, std::uint64_t) {
         auto* self = static_cast<MirageProtocolHost*>(opaque);
@@ -816,12 +840,20 @@ private:
     static void OnOutputConfig(void* opaque, const md_producer_config_t* config) {
         auto* self = static_cast<MirageProtocolHost*>(opaque);
         if (config == nullptr) return;
+        bool had_config = false;
         {
             std::lock_guard lock(self->m_state_mutex);
+            had_config = self->m_config_version != 0U;
             self->m_config = *config;
             ++self->m_config_version;
         }
         self->m_state_cv.notify_all();
+        // A static scene may have stopped its frame timer. The new output
+        // extent still needs one frame so the export pool and crop state are
+        // rebuilt for the consumer configuration.
+        if (had_config && self->m_callbacks.redraw_requested != nullptr) {
+            self->m_callbacks.redraw_requested(self->m_callbacks.userdata);
+        }
     }
 
     static void OnRetire(void* opaque, std::uint64_t generation) {
@@ -1274,6 +1306,7 @@ int main(int argc, char** argv) {
         std::cerr << "--display-socket is required with --display-output-id\n";
         return 1;
     }
+    if (!InstallParentDeathGuard()) return 1;
 #endif
 
 #if defined(__APPLE__)
@@ -1413,7 +1446,6 @@ int main(int argc, char** argv) {
         if (auto speed = runtime.get("speed"); speed.is_some())
             config.speed = static_cast<float>((*speed)->as_f64().unwrap());
         config.script_storage_snapshot = "{}";
-        config.script_storage_callback = {};
         if (auto storage = runtime.get("scriptStorage"); storage.is_some() && (*storage)->is_object())
             config.script_storage_snapshot = sr::Dump(**storage);
     }
@@ -1455,7 +1487,6 @@ int main(int argc, char** argv) {
     info.width              = ClampRenderExtent(render_width, 1920);
     info.height             = ClampRenderExtent(render_height, 1080);
     info.msaa_samples       = options.msaa;
-    info.allow_on_demand         = true;
     info.frame_activity_callback = [&state](bool running) {
         sr::host::DesktopSetPaused(state.desktop, ! running);
     };
@@ -1467,7 +1498,15 @@ int main(int argc, char** argv) {
     info.width           = ClampRenderExtent(render_width, 1920);
     info.height          = ClampRenderExtent(render_height, 1080);
     info.msaa_samples    = options.msaa;
-#if defined(__APPLE__)
+    // Both native and protocol hosts explicitly wake frames after activation,
+    // output reconfiguration and capture, so static scenes can stop rendering.
+    info.allow_on_demand = true;
+#if defined(SCENERENDERER_MIRAGE_DISPLAY)
+    info.failure_callback = [&state, host](VkResult) {
+        EmitLifecycleEvent(&state, "renderer-error");
+        host->stop();
+    };
+#elif defined(__APPLE__)
     info.failure_callback = [&state](VkResult) {
         EmitLifecycleEvent(&state, "renderer-error");
         sr::host::DesktopStop(state.desktop);
@@ -1559,14 +1598,32 @@ int main(int argc, char** argv) {
     if (options.control_stdin) {
 #if defined(SCENERENDERER_MIRAGE_DISPLAY)
         MirageProtocolHost* host = protocol_host.get();
-        control.emplace(wallpaper,
-                        [host]() { host->stop(); },
-                        [host]() { host->notifyActivated(); });
+        control.emplace(
+            wallpaper,
+            [host]() { host->stop(); },
+            [host, &wallpaper]() {
+                wallpaper.requestFrame();
+                host->notifyActivated();
+            },
+            [host]() { host->notifyDeactivated(); },
+            [&wallpaper](const std::string& path, const std::string& token) {
+                const bool ok = !path.empty() && mirage::WriteSceneSnapshot(
+                    path, 4.0, [&wallpaper] { wallpaper.requestFrame(); });
+                EmitSnapshotDone(token, ok);
+            },
+            [&wallpaper](const std::string& token) {
+                wallpaper.exportScriptStorage([token](std::string snapshot) {
+                    std::lock_guard lock(LifecycleOutputMutex());
+                    std::cout << "{\"event\":\"script-storage\",\"token\":\""
+                              << JsonEscaped(token) << "\",\"values\":" << snapshot
+                              << "}\n" << std::flush;
+                });
+            });
 #else
         void* desktop_handle = desktop.get();
-        // 参数顺序（见 ControlChannel.h）：window_flags 在第 4 位、on_deactivate
-        // 与 on_snapshot 在后；非协议路径不提供窗口状态，snapshot 处理器按
-        // 位置放到 on_snapshot（第 6 位）。
+        // Native and protocol hosts use the same quit/activate/deactivate/
+        // snapshot/storage callback order. Capture stays platform-guarded
+        // because its encoder is supplied by the native host implementation.
         control.emplace(
             wallpaper,
             [desktop_handle]() { sr::host::DesktopStop(desktop_handle); },

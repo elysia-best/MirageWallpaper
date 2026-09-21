@@ -1,6 +1,5 @@
-// WallpaperRuntimeStore — per-wallpaper playback state (volume, speed, fill
-// mode, property overrides) persisted to QSettings; the shared source of truth
-// for the UI and the renderer processes.
+// WallpaperRuntimeStore — per-wallpaper playback state persisted to QSettings;
+// the shared source of truth for the UI and renderer processes.
 
 #pragma once
 
@@ -10,6 +9,7 @@
 #include <QDateTime>
 #include <QHash>
 #include <QObject>
+#include <QPointF>
 #include <QTimer>
 #include <QVariant>
 
@@ -20,6 +20,11 @@ struct WallpaperRuntimeState {
     double speed = 1.0;
     bool muted = false;
     FillMode fillMode = FillMode::Cover;
+    // Normalized crop anchor. Both components are finite and within [0, 1].
+    QPointF position {0.5, 0.5};
+    // Scene-script localStorage snapshot. Keys and values follow the renderer's
+    // fixed string-to-string protocol and are capped at 1024 entries.
+    QHash<QString, QString> scriptStorage;
     QHash<QString, QVariant> propertyOverrides;
 };
 
@@ -42,6 +47,9 @@ public:
     void setSpeed(const Wallpaper& wallpaper, double speed);
     void setMuted(const Wallpaper& wallpaper, bool muted);
     void setFillMode(const Wallpaper& wallpaper, FillMode mode);
+    void setPosition(const Wallpaper& wallpaper, const QPointF& position);
+    void setScriptStorage(const Wallpaper& wallpaper,
+                          const QHash<QString, QString>& scriptStorage);
 
 signals:
     void runtimeChanged(const QString& wallpaperId, const Mirage::WallpaperRuntimeState& state);

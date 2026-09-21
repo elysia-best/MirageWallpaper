@@ -205,6 +205,12 @@ if(MIRAGEQT_BUILD_TESTS)
         COMMAND MirageQtPlaylistManagerPersistenceTests)
     set_tests_properties(MirageQtPlaylistManagerPersistence PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(MirageQtWallpaperRuntimeStoreTests
+        Tests/WallpaperRuntimeStoreTests.cpp)
+    target_link_libraries(MirageQtWallpaperRuntimeStoreTests PRIVATE
+        MirageQtCore
+        Qt6::Test)
+    add_test(NAME MirageQtWallpaperRuntimeStore COMMAND MirageQtWallpaperRuntimeStoreTests)
 endif()
 
 set_target_properties(MirageQt PROPERTIES

@@ -48,7 +48,11 @@ if(APPLE)
         $<$<COMPILE_LANGUAGE:OBJCXX>:-Wno-deprecated-enum-enum-conversion>)
 elseif(UNIX AND NOT APPLE)
     # Linux has no native window host: display is handled by the mirage-display
-    # protocol producer linked below.
+    # protocol producer. PNG is limited to the live-frame snapshot path and does
+    # not add an image dependency to the renderer libraries themselves.
+    find_package(PNG REQUIRED)
+    target_sources(SceneWallpaper PRIVATE SceneSnapshot.cpp)
+    target_link_libraries(SceneWallpaper PRIVATE PNG::PNG)
 else()
     message(FATAL_ERROR "No SceneWallpaper host backend enabled for this platform")
 endif()

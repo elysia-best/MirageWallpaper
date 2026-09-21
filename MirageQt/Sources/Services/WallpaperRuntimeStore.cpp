@@ -9,6 +9,8 @@
 #include <QSet>
 #include <QSettings>
 
+#include <cmath>
+
 namespace Mirage {
 namespace {
 
@@ -33,6 +35,16 @@ QJsonObject runtimeToJson(const WallpaperRuntimeState& state) {
     object.insert(QStringLiteral("speed"), state.speed);
     object.insert(QStringLiteral("muted"), state.muted);
     object.insert(QStringLiteral("fillMode"), fillModeToString(state.fillMode));
+    object.insert(QStringLiteral("position"), QJsonObject{
+        {QStringLiteral("x"), state.position.x()},
+        {QStringLiteral("y"), state.position.y()},
+    });
+
+    QJsonObject scriptStorage;
+    for (auto it = state.scriptStorage.constBegin(); it != state.scriptStorage.constEnd(); ++it) {
+        scriptStorage.insert(it.key(), it.value());
+    }
+    object.insert(QStringLiteral("scriptStorage"), scriptStorage);
 
     QJsonObject overrides;
     for (auto it = state.propertyOverrides.constBegin(); it != state.propertyOverrides.constEnd(); ++it) {
@@ -48,6 +60,32 @@ WallpaperRuntimeState runtimeFromJson(const QJsonObject& object) {
     state.speed = object.value(QStringLiteral("speed")).toDouble(1.0);
     state.muted = object.value(QStringLiteral("muted")).toBool(false);
     state.fillMode = fillModeFromString(object.value(QStringLiteral("fillMode")).toString());
+    if (object.contains(QStringLiteral("position"))) {
+        const QJsonObject position = object.value(QStringLiteral("position")).toObject();
+        const QJsonValue x = position.value(QStringLiteral("x"));
+        const QJsonValue y = position.value(QStringLiteral("y"));
+        if (x.isDouble() && y.isDouble() && std::isfinite(x.toDouble()) &&
+            std::isfinite(y.toDouble()) && x.toDouble() >= 0.0 && x.toDouble() <= 1.0 &&
+            y.toDouble() >= 0.0 && y.toDouble() <= 1.0) {
+            state.position = QPointF(x.toDouble(), y.toDouble());
+        }
+    }
+
+    const QJsonObject scriptStorage = object.value(QStringLiteral("scriptStorage")).toObject();
+    if (scriptStorage.size() <= 1024) {
+        bool valid = true;
+        for (auto it = scriptStorage.constBegin(); it != scriptStorage.constEnd(); ++it) {
+            if (!it.value().isString()) {
+                valid = false;
+                break;
+            }
+        }
+        if (valid) {
+            for (auto it = scriptStorage.constBegin(); it != scriptStorage.constEnd(); ++it) {
+                state.scriptStorage.insert(it.key(), it.value().toString());
+            }
+        }
+    }
 
     const QJsonObject overrides = object.value(QStringLiteral("propertyOverrides")).toObject();
     for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
@@ -196,6 +234,30 @@ void WallpaperRuntimeStore::setMuted(const Wallpaper& wallpaper, bool muted) {
 void WallpaperRuntimeStore::setFillMode(const Wallpaper& wallpaper, FillMode mode) {
     WallpaperRuntimeState state = loadRuntime(wallpaper);
     state.fillMode = mode;
+    setRuntime(wallpaper, state, true);
+}
+
+void WallpaperRuntimeStore::setPosition(const Wallpaper& wallpaper, const QPointF& position) {
+    if (!std::isfinite(position.x()) || !std::isfinite(position.y()) ||
+        position.x() < 0.0 || position.x() > 1.0 ||
+        position.y() < 0.0 || position.y() > 1.0) {
+        qWarning() << "[Runtime] Rejected invalid crop position for wallpaper" << wallpaper.id();
+        return;
+    }
+    WallpaperRuntimeState state = loadRuntime(wallpaper);
+    state.position = position;
+    setRuntime(wallpaper, state, true);
+}
+
+void WallpaperRuntimeStore::setScriptStorage(
+    const Wallpaper& wallpaper, const QHash<QString, QString>& scriptStorage) {
+    if (scriptStorage.size() > 1024) {
+        qWarning() << "[Runtime] Rejected script storage with" << scriptStorage.size()
+                   << "entries for wallpaper" << wallpaper.id();
+        return;
+    }
+    WallpaperRuntimeState state = loadRuntime(wallpaper);
+    state.scriptStorage = scriptStorage;
     setRuntime(wallpaper, state, true);
 }
 

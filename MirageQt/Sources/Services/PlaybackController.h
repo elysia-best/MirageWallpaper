@@ -37,6 +37,8 @@ public:
     double selectedVolume() const;
     double selectedSpeed() const;
     QString selectedFillMode() const;
+    QPointF selectedPosition() const;
+    PositionAvailability selectedPositionAvailability() const;
 
     void apply(const Wallpaper& item, bool allScreens);
     void applySelectedToScreen(int screen);
@@ -49,6 +51,7 @@ public:
     void setSelectedVolume(double volume);
     void setSelectedSpeed(double speed);
     void setSelectedFillMode(const QString& mode);
+    void setSelectedPosition(const QPointF& position);
     void setSelectedProperty(const QString& key, const QVariant& value);
     void resetSelectedProperties();
     void previewFps(int fps);

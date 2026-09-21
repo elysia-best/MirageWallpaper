@@ -82,6 +82,12 @@ Vector2f ShakeOffset(float x, float roughness) {
 } // namespace
 
 void SceneUniformUpdater::FrameBegin() {
+    // Transform values depend on the current frame's animation, pointer and
+    // camera state.  Clear only this short-lived cache; persistent node
+    // transforms continue to use SceneNode's existing dirty propagation.
+    m_frame_transform_cache.clear();
+    m_frame_view_projection_cache.clear();
+    m_frame_camera_position_cache.clear();
     /*
         using namespace std::chrono;
         auto nowTime = system_clock::to_time_t(system_clock::now());
@@ -131,6 +137,44 @@ void SceneUniformUpdater::MouseInput(double x, double y) {
 
     m_last_mouse_input_time = now_time;
     m_hasMouseInput          = true;
+}
+
+Matrix4d SceneUniformUpdater::FrameViewProjection(SceneCamera* camera,
+                                                  SceneRenderViewKind view) {
+    const auto cache_key = std::make_pair(camera, view);
+    if (auto cached = m_frame_view_projection_cache.find(cache_key);
+        cached != m_frame_view_projection_cache.end()) {
+        return cached->second;
+    }
+
+    Matrix4d result = camera->GetViewProjectionMatrix(view);
+    if (m_cameraShake.enable && camera == m_scene->activeCamera && camera->AllowCameraShake() &&
+        m_cameraShake.amplitude > 0.0f && m_cameraShake.speed > 0.0f) {
+        const float base_extent = static_cast<float>(std::min(m_scene->ortho[0], m_scene->ortho[1]));
+        const float scale = m_cameraShake.amplitude * base_extent * 0.01f;
+        const float t = static_cast<float>(m_scene->elapsingTime) * m_cameraShake.speed * 2.0f;
+        const Vector2f offset = ShakeOffset(t, m_cameraShake.roughness);
+        const Vector3d shake {
+            static_cast<double>(offset.x() * scale),
+            static_cast<double>(offset.y() * scale),
+            0.0,
+        };
+        result = result * Affine3d(Translation3d(shake)).matrix();
+    }
+    m_frame_view_projection_cache.emplace(cache_key, result);
+    return result;
+}
+
+Vector3d SceneUniformUpdater::FrameCameraPosition(SceneCamera* camera,
+                                                  SceneRenderViewKind view) {
+    const auto cache_key = std::make_pair(camera, view);
+    if (auto cached = m_frame_camera_position_cache.find(cache_key);
+        cached != m_frame_camera_position_cache.end()) {
+        return cached->second;
+    }
+    const Vector3d result = camera->GetPosition(view);
+    m_frame_camera_position_cache.emplace(cache_key, result);
+    return result;
 }
 
 void SceneUniformUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp& existsOp) {
@@ -208,6 +252,14 @@ std::optional<SceneNodeRenderTransform>
 SceneUniformUpdater::NodeTransform(SceneNode* pNode, SceneRenderViewKind render_view,
                                    bool screen_camera, bool apply_geometry_transform) {
     if (pNode == nullptr) return std::nullopt;
+
+    const auto cache_key =
+        std::make_tuple(pNode, render_view, screen_camera, apply_geometry_transform);
+    if (auto cached = m_frame_transform_cache.find(cache_key);
+        cached != m_frame_transform_cache.end()) {
+        return cached->second;
+    }
+
     pNode->UpdateTrans();
 
     SceneCamera*     camera { nullptr };
@@ -243,23 +295,7 @@ SceneUniformUpdater::NodeTransform(SceneNode* pNode, SceneRenderViewKind render_
     }
     if (camera == nullptr) return std::nullopt;
 
-    Matrix4d view_projection = camera->GetViewProjectionMatrix(render_view);
-    if (m_cameraShake.enable && camera == m_scene->activeCamera && camera->AllowCameraShake() &&
-        m_cameraShake.amplitude > 0.0f && m_cameraShake.speed > 0.0f) {
-        const float base_extent =
-            static_cast<float>(std::min(m_scene->ortho[0], m_scene->ortho[1]));
-        const float scale = m_cameraShake.amplitude * base_extent * 0.01f;
-        const float t =
-            static_cast<float>(m_scene->elapsingTime) * m_cameraShake.speed * 2.0f;
-        auto offset = ShakeOffset(t, m_cameraShake.roughness);
-        Vector3d shake {
-            static_cast<double>(offset.x() * scale),
-            static_cast<double>(offset.y() * scale),
-            0.0,
-        };
-        view_projection =
-            view_projection * Affine3d(Translation3d(shake)).matrix();
-    }
+    Matrix4d view_projection = FrameViewProjection(camera, render_view);
 
     auto node_data_it = m_nodeDataMap.find(pNode);
     const bool has_node_data = node_data_it != m_nodeDataMap.end();
@@ -297,7 +333,7 @@ SceneUniformUpdater::NodeTransform(SceneNode* pNode, SceneRenderViewKind render_
                 Scaling(1.0f, -1.0f) *
                 (Vector2f { 0.5f, 0.5f } - Vector2f(&m_parallaxMousePos[0]));
             mouse = mouse.cwiseProduct(ortho) * m_parallax.mouseinfluence;
-            Vector3f camera_position = camera->GetPosition(render_view).cast<float>();
+            Vector3f camera_position = FrameCameraPosition(camera, render_view).cast<float>();
             Vector2f offset =
                 (node_position.head<2>() - camera_position.head<2>() + mouse)
                     .cwiseProduct(depth) *
@@ -311,11 +347,13 @@ SceneUniformUpdater::NodeTransform(SceneNode* pNode, SceneRenderViewKind render_
         model *= pNode->GeometryTransform();
         if (pNode->Mesh()) model *= pNode->Mesh()->GeometryTransform();
     }
-    return SceneNodeRenderTransform {
+    SceneNodeRenderTransform result {
         .model                 = model,
         .view_projection       = view_projection,
         .model_view_projection = view_projection * model,
     };
+    m_frame_transform_cache.emplace(cache_key, result);
+    return result;
 }
 
 void SceneUniformUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites,
@@ -419,7 +457,7 @@ void SceneUniformUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites
         if (nodeDataPtr->eye_position_override.has_value()) {
             updateOp(G_EYEPOSITION, *nodeDataPtr->eye_position_override);
         } else if (nodeDataPtr->use_camera_eye_position || camera->IsPerspective()) {
-            const auto eye = camera->GetPosition(render_view).cast<float>();
+            const auto eye = FrameCameraPosition(camera, render_view).cast<float>();
             updateOp(G_EYEPOSITION, std::array<float, 3> { eye.x(), eye.y(), eye.z() });
         }
     }
@@ -473,10 +511,9 @@ void SceneUniformUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites
                 const Matrix4d effect_mvp = composites_to_screen
                                                 ? viewProTrans * effectModel
                                                 : m_scene->activeCamera
-                                                      ? m_scene->activeCamera->GetViewProjectionMatrix(
-                                                            render_view) *
-                                                            effectModel
-                                                      : camera->GetViewProjectionMatrix(render_view) *
+                                                      ? FrameViewProjection(m_scene->activeCamera,
+                                                                            render_view) * effectModel
+                                                      : FrameViewProjection(camera, render_view) *
                                                             effectModel;
                 if (reqEMVP) updateOp(G_EMVP, ShaderValue::fromMatrix(effect_mvp));
                 if (reqEMVPI)

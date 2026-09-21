@@ -860,6 +860,9 @@ struct VulkanRender::Impl {
     bool                       waitForPendingUploads();
     bool                       prepareForResourceMutation();
     void                       finishMeshUpload();
+    void                       initializeGpuTiming();
+    void                       destroyGpuTiming();
+    void                       readGpuTiming();
     void                       fail(VkResult);
     void                       evictUnusedMeshes();
 
@@ -909,6 +912,18 @@ struct VulkanRender::Impl {
     std::vector<vvk::Semaphore> m_sem_swap_finish_per_image;
 
     RenderProgram m_program;
+
+    // Optional per-frame GPU timestamps.  The query pool is created only when
+    // SCENERENDERER_GPU_TIMINGS_DIR is set, so normal rendering pays no query
+    // recording or readback cost.  Results are consumed after the frame fence
+    // signals, which keeps diagnostics from introducing a GPU wait.
+    std::string  m_gpu_timing_directory;
+    VkQueryPool  m_gpu_timing_pool { VK_NULL_HANDLE };
+    float        m_gpu_timestamp_period { 0.0f };
+    uint64_t     m_gpu_timing_frame { 0 };
+    bool         m_gpu_timing_enabled { false };
+    bool         m_gpu_timing_pending { false };
+    bool         m_gpu_timing_labels { false };
 };
 
 VulkanRender::VulkanRender(): pImpl(std::make_unique<Impl>()) {}
@@ -1295,7 +1310,77 @@ bool VulkanRender::Impl::initRes() {
     }
     if (! CreateRenderingResource(m_rendering_resources)) return false;
 
+    initializeGpuTiming();
+
     return true;
+}
+
+void VulkanRender::Impl::initializeGpuTiming() {
+    const char* directory = std::getenv("SCENERENDERER_GPU_TIMINGS_DIR");
+    if (directory == nullptr || directory[0] == '\0' || ! m_device) return;
+
+    m_gpu_timing_directory = directory;
+    m_gpu_timestamp_period = m_device->limits().timestampPeriod;
+    if (m_gpu_timestamp_period <= 0.0f) {
+        rstd_warn("GPU timing disabled: Vulkan timestamp period is invalid");
+        m_gpu_timing_directory.clear();
+        return;
+    }
+
+    const VkQueryPoolCreateInfo info {
+        .sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .pNext      = nullptr,
+        .queryType  = VK_QUERY_TYPE_TIMESTAMP,
+        .queryCount = 2,
+    };
+    const VkResult result = m_device->handle().Dispatch().vkCreateQueryPool(
+        *m_device->handle(), &info, nullptr, &m_gpu_timing_pool);
+    if (result != VK_SUCCESS) {
+        rstd_warn("GPU timing disabled: query pool creation failed ({})", vvk::ToString(result));
+        m_gpu_timing_directory.clear();
+        m_gpu_timing_pool = VK_NULL_HANDLE;
+        return;
+    }
+
+    m_gpu_timing_enabled = true;
+    m_gpu_timing_labels = m_device->supportExt(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+}
+
+void VulkanRender::Impl::destroyGpuTiming() {
+    if (m_gpu_timing_pool == VK_NULL_HANDLE || ! m_device || ! m_device->handle()) return;
+    m_device->handle().Dispatch().vkDestroyQueryPool(*m_device->handle(), m_gpu_timing_pool, nullptr);
+    m_gpu_timing_pool = VK_NULL_HANDLE;
+    m_gpu_timing_enabled = false;
+    m_gpu_timing_pending = false;
+}
+
+void VulkanRender::Impl::readGpuTiming() {
+    if (! m_gpu_timing_enabled || ! m_gpu_timing_pending || ! m_device) return;
+
+    std::array<uint64_t, 2> timestamps {};
+    const VkResult result = m_device->handle().Dispatch().vkGetQueryPoolResults(
+        *m_device->handle(), m_gpu_timing_pool, 0, 2, sizeof(timestamps), timestamps.data(),
+        sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+    if (result != VK_SUCCESS) {
+        rstd_warn("GPU timing read failed for frame {} ({})", m_gpu_timing_frame,
+                  vvk::ToString(result));
+        m_gpu_timing_pending = false;
+        return;
+    }
+
+    const double gpu_nanoseconds =
+        static_cast<double>(timestamps[1] - timestamps[0]) * m_gpu_timestamp_period;
+    std::ofstream output(m_gpu_timing_directory + "/frame-" +
+                         std::to_string(m_gpu_timing_frame) + ".json");
+    if (! output) {
+        rstd_warn("GPU timing output could not be opened for frame {}", m_gpu_timing_frame);
+        m_gpu_timing_pending = false;
+        return;
+    }
+    output << "{\"frame\":" << m_gpu_timing_frame
+           << ",\"timestamp_period_ns\":" << m_gpu_timestamp_period
+           << ",\"render_graph_ns\":" << gpu_nanoseconds << "}\n";
+    m_gpu_timing_pending = false;
 }
 
 void VulkanRender::Impl::destroy() {
@@ -1303,11 +1388,15 @@ void VulkanRender::Impl::destroy() {
     if (m_device && m_device->handle()) {
         if (! m_skip_wait_idle) VVK_CHECK(m_device->handle().WaitIdle());
 
+        readGpuTiming();
+
         m_program.destroyPasses(*m_device, m_rendering_resources);
         ReleaseCompletedRetiredResources(m_rendering_resources);
         m_program.clear();
         m_dyn_buf->destroy();
         m_device->mesh_cache().destroy();
+
+        destroyGpuTiming();
 
         m_device->Destroy(! m_skip_wait_idle);
     }
@@ -1621,6 +1710,7 @@ bool VulkanRender::Impl::retireInFlightFrame() {
         fail(res);
         return false;
     }
+    readGpuTiming();
     m_frame_in_flight = false;
     ReleaseCompletedRetiredResources(rr);
     m_finpass->finishFrameDump(*m_device);
@@ -1702,12 +1792,26 @@ bool VulkanRender::Impl::drawFrameSwapchain() {
         fail(command_res);
         return false;
     }
+    if (m_gpu_timing_enabled) {
+        rr.command.ResetQueryPool(m_gpu_timing_pool, 0, 2);
+        rr.command.WriteTimestamp(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_gpu_timing_pool, 0);
+    }
     m_device->tex_cache().RecordPendingUploads(rr.command);
     if (! m_dyn_buf->recordUpload(rr.command)) {
         fail(VK_ERROR_INITIALIZATION_FAILED);
         return false;
     }
-    m_program.execute(*m_device, rr);
+    if (m_gpu_timing_labels) {
+        std::array<float, 4> color { 0.15f, 0.55f, 0.95f, 1.0f };
+        rr.command.BeginDebugUtilsLabelEXT("SceneRenderer RenderGraph", color);
+        m_program.execute(*m_device, rr);
+        rr.command.EndDebugUtilsLabelEXT();
+    } else {
+        m_program.execute(*m_device, rr);
+    }
+    if (m_gpu_timing_enabled) {
+        rr.command.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_gpu_timing_pool, 1);
+    }
     command_res = rr.command.End();
     if (command_res != VK_SUCCESS) {
         fail(command_res);
@@ -1784,6 +1888,10 @@ bool VulkanRender::Impl::drawFrameSwapchain() {
     // rebuild is handled — rebuilding here would tear down images this frame's
     // work may still be reading.
     m_frame_in_flight = true;
+    if (m_gpu_timing_enabled) {
+        ++m_gpu_timing_frame;
+        m_gpu_timing_pending = true;
+    }
     return true;
 }
 bool VulkanRender::Impl::drawFrameOffscreen() {
@@ -1820,13 +1928,27 @@ bool VulkanRender::Impl::drawFrameOffscreen() {
         fail(command_res);
         return false;
     }
+    if (m_gpu_timing_enabled) {
+        rr.command.ResetQueryPool(m_gpu_timing_pool, 0, 2);
+        rr.command.WriteTimestamp(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_gpu_timing_pool, 0);
+    }
     m_device->tex_cache().RecordPendingUploads(rr.command);
     if (! m_dyn_buf->recordUpload(rr.command)) {
         fail(VK_ERROR_INITIALIZATION_FAILED);
         return false;
     }
 
-    m_program.execute(*m_device, rr);
+    if (m_gpu_timing_labels) {
+        std::array<float, 4> color { 0.15f, 0.55f, 0.95f, 1.0f };
+        rr.command.BeginDebugUtilsLabelEXT("SceneRenderer RenderGraph", color);
+        m_program.execute(*m_device, rr);
+        rr.command.EndDebugUtilsLabelEXT();
+    } else {
+        m_program.execute(*m_device, rr);
+    }
+    if (m_gpu_timing_enabled) {
+        rr.command.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_gpu_timing_pool, 1);
+    }
 
     command_res = rr.command.End();
     if (command_res != VK_SUCCESS) {
