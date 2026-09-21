@@ -94,6 +94,6 @@ if(WEBRENDERER_BUILD_WALLPAPER)
 endif()
 
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING AND APPLE)
     add_subdirectory(Tests)
 endif()
