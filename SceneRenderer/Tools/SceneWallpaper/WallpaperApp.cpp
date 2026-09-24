@@ -732,10 +732,10 @@ public:
             .source = {0.0f, 0.0f, static_cast<float>(pool->width),
                        static_cast<float>(pool->height)},
             /* Source coordinates address the producer pool, but destination
-             * coordinates address output physical pixels.  Intel uses a
-             * logical-size pool below to avoid rendering Plasma's enlarged
-             * fractional-scale backing extent; the display adapter performs
-             * the one required final scale over the complete output. */
+             * coordinates address output physical pixels. The pool may be
+             * reduced by the selected render quality; Intel additionally
+             * uses logical output dimensions as its unscaled base. The
+             * display adapter performs the one final scale over the output. */
             .destination = {0.0f, 0.0f,
                             static_cast<float>(output_config.physical_width),
                             static_cast<float>(output_config.physical_height)},
@@ -1039,8 +1039,9 @@ public:
     MirageProtocolSwapchain(MirageProtocolHost& host, VkInstance instance,
                             VkPhysicalDevice physical_device, VkDevice device,
                             VkQueue queue, std::uint32_t queue_family,
-                            unsigned width, unsigned height)
-        : m_host(host), m_device(device), m_width(width), m_height(height) {
+                            unsigned width, unsigned height, double render_scale)
+        : m_host(host), m_device(device), m_width(width), m_height(height),
+          m_render_scale(render_scale) {
         VkPhysicalDeviceDrmPropertiesEXT drm {};
         drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
         VkPhysicalDeviceProperties2 properties {};
@@ -1072,6 +1073,16 @@ public:
                              "SceneWallpaper: invalid Intel logical output extent\n");
                 return;
             }
+            /* Export capability negotiation must use the same scaled extent
+             * as the pool that will actually be allocated. Querying the
+             * unscaled logical size made the render-scale setting disappear
+             * from the Intel-specific logical-pool path. */
+            const std::uint32_t query_width = std::max<std::uint32_t>(
+                1U, static_cast<std::uint32_t>(std::lround(
+                        static_cast<double>(bootstrap_config.logical_width) * m_render_scale)));
+            const std::uint32_t query_height = std::max<std::uint32_t>(
+                1U, static_cast<std::uint32_t>(std::lround(
+                        static_cast<double>(bootstrap_config.logical_height) * m_render_scale)));
             std::vector<md_format_cap_t> formats;
             const std::array<std::uint32_t, 2U> fourccs {
                 MirageDrmXbgr8888,
@@ -1080,8 +1091,8 @@ public:
             for (const std::uint32_t fourcc : fourccs) {
                 std::uint32_t count = 0U;
                 if (md_vk_query_export_format_caps(
-                        physical_device, fourcc, bootstrap_config.logical_width,
-                        bootstrap_config.logical_height, nullptr, 0U, &count) != MD_OK ||
+                        physical_device, fourcc, query_width, query_height,
+                        nullptr, 0U, &count) != MD_OK ||
                     count == 0U) {
                     continue;
                 }
@@ -1089,8 +1100,8 @@ public:
                 formats.resize(offset + count);
                 std::uint32_t written = count;
                 if (md_vk_query_export_format_caps(
-                        physical_device, fourcc, bootstrap_config.logical_width,
-                        bootstrap_config.logical_height, formats.data() + offset,
+                        physical_device, fourcc, query_width, query_height,
+                        formats.data() + offset,
                         count, &written) != MD_OK) {
                     std::fprintf(stderr,
                                  "SceneWallpaper: cannot query Intel export modifiers\n");
@@ -1215,11 +1226,22 @@ public:
 
 private:
     void rebuild(const md_producer_config_t& config) {
-        const std::uint32_t pool_width =
+        const std::uint32_t base_width =
             m_use_logical_pool ? config.logical_width : config.physical_width;
-        const std::uint32_t pool_height =
+        const std::uint32_t base_height =
             m_use_logical_pool ? config.logical_height : config.physical_height;
-        if (m_exporter == nullptr || pool_width == 0U || pool_height == 0U) return;
+        if (m_exporter == nullptr || base_width == 0U || base_height == 0U) return;
+        /* The exported pool is the renderer's real framebuffer. Applying the
+         * requested scale here is mandatory because the swapchain-ready event
+         * makes this pool extent authoritative for every scene render target.
+         * The display config maps the complete source pool onto the complete
+         * physical output, so only one final upscale is performed. */
+        const std::uint32_t pool_width = std::max<std::uint32_t>(
+            1U, static_cast<std::uint32_t>(std::lround(
+                    static_cast<double>(base_width) * m_render_scale)));
+        const std::uint32_t pool_height = std::max<std::uint32_t>(
+            1U, static_cast<std::uint32_t>(std::lround(
+                    static_cast<double>(base_height) * m_render_scale)));
         setReady(false);
         const std::uint64_t generation = m_host.nextGeneration();
         md_vk_export_pool_info_t pool_info {
@@ -1241,6 +1263,9 @@ private:
         m_width = pool_width;
         m_height = pool_height;
         m_format = md_vk_exporter_format(m_exporter);
+        std::cerr << "SceneWallpaper: render pool " << pool_width << 'x' << pool_height
+                  << " from " << base_width << 'x' << base_height
+                  << " at scale " << m_render_scale << '\n';
         setReady(true);
     }
 
@@ -1273,6 +1298,9 @@ private:
     std::uint64_t m_config_version { 0 };
     std::uint64_t m_connection_epoch { 0 };
     bool m_use_logical_pool { false };
+    // Startup render quality is stable for the lifetime of one wallpaper
+    // process and must be reapplied whenever the display broker reconfigures.
+    double m_render_scale;
     std::vector<md_format_cap_t> m_intel_export_formats;
     bool m_ready { false };
 };
@@ -1468,12 +1496,13 @@ int main(int argc, char** argv) {
     }
     MirageProtocolHost* host = protocol_host.get();
     info.ex_swapchain_factory =
-        [host](VkInstance instance, VkPhysicalDevice physical_device, VkDevice device,
-               VkQueue queue, std::uint32_t queue_family, unsigned width,
-               unsigned height) -> std::unique_ptr<sr::ExSwapchain> {
+        [host, render_scale = options.render_scale](
+            VkInstance instance, VkPhysicalDevice physical_device, VkDevice device,
+            VkQueue queue, std::uint32_t queue_family, unsigned width,
+            unsigned height) -> std::unique_ptr<sr::ExSwapchain> {
             return std::make_unique<MirageProtocolSwapchain>(
                 *host, instance, physical_device, device, queue, queue_family,
-                width, height);
+                width, height, render_scale);
         };
 #else
     const bool use_metalfx = options.metalfx &&

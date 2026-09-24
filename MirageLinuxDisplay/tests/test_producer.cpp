@@ -156,6 +156,12 @@ static void* broker_main(void* opaque) {
 
     packet = receive_opcode(fd, MD_OP_OFFER_BUFFERS);
     assert(packet.fd_count == 3);
+    md_buffer_pool_t offered_pool{};
+    assert(md_proto_decode_bind_buffers(packet.payload, packet.payload_size, &offered_pool) == 0);
+    /* A render-scale source is intentionally smaller than the output. The
+     * protocol must preserve that pool extent instead of requiring native
+     * output dimensions. */
+    assert(offered_pool.width == 960U && offered_pool.height == 540U);
     broker->saw_offer = true;
     md_packet_close_fds(&packet);
     packet = receive_opcode(fd, MD_OP_PRODUCER_SET_CONFIG);
@@ -163,6 +169,9 @@ static void* broker_main(void* opaque) {
     md_display_config_t producer_config;
     assert(md_proto_decode_config(packet.payload, packet.payload_size, &producer_config) == 0);
     assert(producer_config.clear_color[2] == 0.3f);
+    assert(producer_config.source.width == 960.0f && producer_config.source.height == 540.0f);
+    assert(producer_config.destination.width == 1920.0f &&
+           producer_config.destination.height == 1080.0f);
     broker->saw_config = true;
     md_packet_close_fds(&packet);
     packet = receive_opcode(fd, MD_OP_PRODUCER_FRAME);
@@ -288,14 +297,14 @@ int main(void) {
     md_buffer_pool_t pool{};
     pool.generation = 7;
     pool.buffer_count = 3;
-    pool.width = 1920;
-    pool.height = 1080;
+    pool.width = 960;
+    pool.height = 540;
     pool.fourcc = UINT32_C(0x34325258);
     pool.plane_count = 1;
     for (uint32_t i = 0; i < 3; ++i) {
         pool.planes[i][0].fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
-        pool.planes[i][0].stride = 7680;
-        pool.planes[i][0].size = UINT64_C(8294400);
+        pool.planes[i][0].stride = 3840;
+        pool.planes[i][0].size = UINT64_C(2073600);
         assert(pool.planes[i][0].fd >= 0);
     }
     assert(md_producer_offer_buffers(producer, &pool) == MD_OK);
@@ -303,7 +312,7 @@ int main(void) {
 
     md_display_config_t config = {
         .generation = 1,
-        .source = {.x = 0.0f, .y = 0.0f, .width = 1920.0f, .height = 1080.0f},
+        .source = {.x = 0.0f, .y = 0.0f, .width = 960.0f, .height = 540.0f},
         .destination = {.x = 0.0f, .y = 0.0f, .width = 1920.0f, .height = 1080.0f},
         .transform = MD_TRANSFORM_NORMAL,
         .clear_color = {0.1f, 0.2f, 0.3f, 1.0f},

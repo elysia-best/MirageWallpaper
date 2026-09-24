@@ -111,6 +111,14 @@ if(SCENERENDERER_BUILD_ENGINE AND SCENERENDERER_BUILD_TESTS)
     enable_testing()
     add_executable(SceneRendererPerformanceTests Tests/PerformanceRegression.cpp
         Tools/SceneWallpaper/ControlChannel.cpp)
+    if(NOT APPLE)
+        # The production Linux capture backends analyze the system monitor and
+        # therefore do not compile CoreAudio's scene-output loopback analyzer.
+        # This regression exercises that backend-independent analyzer contract
+        # directly, so provide its implementation to the Linux test target only.
+        target_sources(SceneRendererPerformanceTests PRIVATE
+            Vendor/wavsen/src/audio/audio_loopback_analyzer.cpp)
+    endif()
     target_link_libraries(SceneRendererPerformanceTests PRIVATE SceneRenderer::Engine)
     set_property(TARGET SceneRendererPerformanceTests PROPERTY CXX_SCAN_FOR_MODULES ON)
     add_test(NAME SceneRendererPerformance COMMAND SceneRendererPerformanceTests)
