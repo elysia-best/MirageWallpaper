@@ -152,12 +152,6 @@ public:
                         SceneRenderViewKind view = SceneRenderViewKind::Primary);
 
 private:
-    // Camera matrices and positions are immutable after FrameBegin's scene
-    // updates.  Keeping them for this frame avoids repeating the Eigen work
-    // for every node while preserving per-frame camera animation and shake.
-    Eigen::Matrix4d FrameViewProjection(SceneCamera* camera, SceneRenderViewKind view);
-    Eigen::Vector3d FrameCameraPosition(SceneCamera* camera, SceneRenderViewKind view);
-
     std::optional<SceneNodeRenderTransform>
     NodeTransform(SceneNode* node, SceneRenderViewKind view, bool screen_camera,
                   bool apply_geometry_transform);
@@ -203,18 +197,6 @@ private:
 
     Map<void*, SceneUniformNodeData> m_nodeDataMap;
     Map<void*, SceneUniformInfo>     m_nodeUniformInfoMap;
-
-    // Render passes can request the same node transform several times in one
-    // frame (for example through dependent render targets).  The scene has
-    // already applied all animation and script mutations before drawFrame, so
-    // retaining this frame-local value removes repeated Eigen matrix work while
-    // preserving dynamic transforms across frame boundaries.
-    Map<std::tuple<SceneNode*, SceneRenderViewKind, bool, bool>, SceneNodeRenderTransform>
-        m_frame_transform_cache;
-    Map<std::pair<SceneCamera*, SceneRenderViewKind>, Eigen::Matrix4d>
-        m_frame_view_projection_cache;
-    Map<std::pair<SceneCamera*, SceneRenderViewKind>, Eigen::Vector3d>
-        m_frame_camera_position_cache;
 };
 
 } // namespace sr
