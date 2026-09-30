@@ -548,6 +548,7 @@ std::vector<sr::SceneNode*> SpawnLayerClones(ParseContext& context, SceneNode* t
 script::ScriptScene& EnsureScriptScene(ParseContext& context) {
     if (! context.script_scene) {
         context.script_scene = std::make_unique<script::ScriptScene>();
+        if (context.offline_seed) context.script_scene->runtime().SetOfflineSeed(*context.offline_seed);
         if (context.script_storage_snapshot)
             context.script_scene->runtime().SetStorageSnapshot(*context.script_storage_snapshot);
         else if (! context.script_persistence_path.empty())
@@ -1312,17 +1313,13 @@ namespace
 // primitive: `(usize)(-1) + 1` wraps to 0 while `operator[]` still writes.
 constexpr i32 kMaxMaterialTextureSlots = static_cast<i32>(WE_GLTEX_NAMES.size());
 
-// mapRate < 1.0
-void GenCardMesh(SceneMesh& mesh, const std::array<float, 2> size,
-                 const std::array<float, 2> mapRate         = { 1.0f, 1.0f },
-                 const Vector3f&            position_offset = Vector3f::Zero()) {
+void GenCardMesh(SceneMesh& mesh, const std::array<float, 2> size, const SceneUvRect& uv,
+                 const Vector3f& position_offset = Vector3f::Zero()) {
     float left   = -(size[0] / 2.0f) + position_offset.x();
     float right  = size[0] / 2.0f + position_offset.x();
     float bottom = -(size[1] / 2.0f) + position_offset.y();
     float top    = size[1] / 2.0f + position_offset.y();
     float z      = 0.0f;
-
-    float tw = mapRate[0], th = mapRate[1];
 
     // clang-format off
 	const std::array pos = {
@@ -1332,10 +1329,10 @@ void GenCardMesh(SceneMesh& mesh, const std::array<float, 2> size,
 		right, bottom, z,
 	};
 	const std::array texCoord = {
-		0.0f, 0.0f,
-		0.0f, th,
-		tw, 0.0f,
-		tw, th,
+		uv.u_min, uv.v_min,
+		uv.u_min, uv.v_max,
+		uv.u_max, uv.v_min,
+		uv.u_max, uv.v_max,
 	};
     // clang-format on
 
@@ -1343,6 +1340,15 @@ void GenCardMesh(SceneMesh& mesh, const std::array<float, 2> size,
     vertex.SetVertex(WE_IN_POSITION, pos);
     vertex.SetVertex(WE_IN_TEXCOORD, texCoord);
     mesh.AddVertexArray(std::move(vertex));
+}
+
+void GenCardMesh(SceneMesh& mesh, const std::array<float, 2> size,
+                 const std::array<float, 2> mapRate         = { 1.0f, 1.0f },
+                 const Vector3f&            position_offset = Vector3f::Zero()) {
+    GenCardMesh(mesh,
+                size,
+                SceneUvRect { .u_max = mapRate[0], .v_max = mapRate[1] },
+                position_offset);
 }
 
 using DirectDrawQuad = std::array<std::array<float, 2>, 4>;
@@ -2280,9 +2286,13 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::Material& wpmat, Scene* pScene, S
 
             if (pScene->textures.count(name) == 0) {
                 SceneTexture stex;
-                stex.sample  = texh.sample;
-                stex.url     = name;
-                stex.isVideo = texh.type == ImageType::VIDEO;
+                stex.sample         = texh.sample;
+                stex.url            = name;
+                stex.isVideo        = texh.type == ImageType::VIDEO;
+                stex.width          = resolution[0];
+                stex.height         = resolution[1];
+                stex.content_width  = resolution[2];
+                stex.content_height = resolution[3];
                 if (texh.isSprite) {
                     stex.isSprite   = texh.isSprite;
                     stex.spriteAnim = texh.spriteAnim;
@@ -2684,7 +2694,9 @@ struct SolidColorNeutralizationSource {
 void RegisterMaterialUserTextureIndex(Scene*                                pScene,
                                       const std::shared_ptr<SceneMaterial>& stable_mat,
                                       const wpscene::Material&              fallback_material,
-                                      const SolidColorNeutralizationSource& neutralization = {}) {
+                                      const SolidColorNeutralizationSource& neutralization = {},
+                                      std::optional<Scene::MaterialTextureUserBinding::AspectFill>
+                                          aspect_fill = std::nullopt) {
     if (! pScene || ! stable_mat) return;
     for (usize i = 0; i < fallback_material.usertextures.len(); ++i) {
         auto key = UserTexturePropertyKey(fallback_material.usertextures[i]);
@@ -2708,6 +2720,7 @@ void RegisterMaterialUserTextureIndex(Scene*                                pSce
                 .authored_color = Vector3f(neutralization.color.data())
             };
         }
+        if (i == 0 && aspect_fill.has_value()) binding.aspect_fill = aspect_fill;
         pScene->material_texture_user_index[*key].push_back(std::move(binding));
     }
 }
@@ -3427,8 +3440,16 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
 
         shaderInfo.baseConstSvs = baseConstSvs;
 
+        auto source_wpmat = image_wpmat.clone();
+        if (hasEffect && has_bones &&
+            (source_wpmat.shader == "genericimage2" || source_wpmat.shader == "genericimage3" ||
+             source_wpmat.shader == "genericimage4")) {
+            source_wpmat.combos[std::string(WE_CB_LIGHTING)] = 0;
+            source_wpmat.combos[std::string(WE_CB_REFLECTION)] = 0;
+        }
+
         if (! LoadMaterial(vfs,
-                           image_wpmat,
+                           source_wpmat,
                            context.scene.get(),
                            spImgNode.as_ptr(),
                            &material,
@@ -3463,6 +3484,39 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
     auto&                      mesh          = *spMesh;
     const std::array<float, 2> mapRate       = Texture0UvScale(material, wpimgobj.nopadding);
     const Vector3f source_alignment_offset   = hasEffect ? Vector3f::Zero() : alignment_offset;
+    SceneUvRect source_uv { .u_max = mapRate[0], .v_max = mapRate[1] };
+    std::optional<Scene::MaterialTextureUserBinding::AspectFill> image_aspect_fill;
+    const bool has_image_user_texture =
+        ! puppet && ! material.hasSprite && image_user_texture_fallback.textures.size() == 1 &&
+        image_user_texture_fallback.usertextures.len() > 0 &&
+        ! image_user_texture_fallback.usertextures[0].is_null() &&
+        UserTexturePropertyKey(image_user_texture_fallback.usertextures[0]).has_value();
+    if (has_image_user_texture) {
+        SceneUvRect fallback_uv = source_uv;
+        const bool replaced = ! image_user_texture_fallback.textures.empty() &&
+                              ! image_wpmat.textures.empty() &&
+                              image_user_texture_fallback.textures[0] != image_wpmat.textures[0];
+        if (replaced && ! image_user_texture_fallback.textures[0].empty() &&
+            ! IsSpecTex(image_user_texture_fallback.textures[0])) {
+            context.scene->EnsureTextureDescriptor(image_user_texture_fallback.textures[0]);
+            auto fallback_texture =
+                context.scene->textures.find(image_user_texture_fallback.textures[0]);
+            if (fallback_texture != context.scene->textures.end())
+                fallback_uv = FullTextureUvRect(fallback_texture->second, wpimgobj.nopadding);
+        }
+        if (replaced && ! material.textures.empty()) {
+            auto current_texture = context.scene->textures.find(material.textures[0]);
+            if (current_texture != context.scene->textures.end())
+                source_uv = AspectFillTextureUvRect(
+                    current_texture->second, geometry_size, wpimgobj.nopadding);
+        }
+        image_aspect_fill = Scene::MaterialTextureUserBinding::AspectFill {
+            .mesh        = spMesh,
+            .target_size = geometry_size,
+            .fallback_uv = fallback_uv,
+            .nopadding   = wpimgobj.nopadding,
+        };
+    }
     auto           add_puppet_mask_submeshes = [&](SceneMesh& target, uint32_t first_mask_slot) {
         if (! puppet_has_masks) return;
         std::set<uint32_t> clipped_indices;
@@ -3544,13 +3598,16 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
         }
     }
     if (! puppet) {
-        GenCardMesh(mesh, { geometry_size[0], geometry_size[1] }, mapRate, source_alignment_offset);
+        GenCardMesh(mesh,
+                    { geometry_size[0], geometry_size[1] },
+                    source_uv,
+                    source_alignment_offset);
         if (parse_geometry.final_mesh != nullptr) {
             effct_final_mesh.ChangeMeshDataFrom(*parse_geometry.final_mesh);
         } else {
             GenCardMesh(effct_final_mesh,
                         { geometry_size[0], geometry_size[1] },
-                        { 1.0f, 1.0f },
+                        std::array<float, 2> { 1.0f, 1.0f },
                         Vector3f::Zero());
         }
     }
@@ -3583,7 +3640,8 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
     RegisterMaterialUserTextureIndex(context.scene.get(),
                                      mesh.MaterialSlots().back(),
                                      image_user_texture_fallback,
-                                     solid_color_neutralization);
+                                     solid_color_neutralization,
+                                     image_aspect_fill);
 
     // Later puppet meshes can carry their own materials (for example a
     // texture-channel animation overlay). Render them in the source pass so
@@ -7160,6 +7218,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view              scene_
                                             m_user_properties,
                                             m_script_persistence_path,
                                             m_script_storage_snapshot);
+    context.offline_seed = m_offline_seed;
     context.scene_has_scripts       = SceneHasScripts(json, scene_objs);
     context.scene_accesses_effects  = SceneAccessesEffects(json, scene_objs);
     context.scene_layer_text_writes = SceneWritesLayerText(json, scene_objs);

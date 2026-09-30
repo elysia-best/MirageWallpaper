@@ -214,6 +214,11 @@ Before the first run, add these Repository Secrets in **Settings → Secrets and
 ```text
 MIRAGE_STEAM_WEB_API_KEY      32-character Steam Web API key
 MIRAGE_SPARKLE_PRIVATE_KEY    Mirage's Sparkle Ed25519 private key
+APPLE_DEVELOPER_ID_APPLICATION_P12             Base64-encoded Developer ID Application P12 certificate
+APPLE_DEVELOPER_ID_APPLICATION_P12_PASSWORD    P12 certificate password
+APPLE_NOTARY_APPLE_ID                          Apple ID
+APPLE_NOTARY_PASSWORD                          Apple ID app-specific password
+APPLE_DEVELOPER_TEAM_ID                        Apple Developer Team ID
 ```
 
 If GitHub CLI is installed locally, you can run:
@@ -223,6 +228,18 @@ gh secret set MIRAGE_STEAM_WEB_API_KEY < .secrets/steam_web_api_key
 ```
 
 `MIRAGE_SPARKLE_PRIVATE_KEY` is only used by Actions to generate Ed25519-signed updates and appcasts. Never commit it. Keep the original key in a logged-in keychain and maintain an offline backup. The client only contains the public key.
+
+To compile the optional sign-in-free download component in the same Action, keep its source in a separate **private** repository and configure MirageWallpaper as follows:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| Repository variable | `MIRAGE_DIRECT_WORKSHOP_REPOSITORY` | The private component repository's `owner/name` |
+| Repository variable | `MIRAGE_DIRECT_WORKSHOP_REF` | Its full 40-character commit SHA, shared by both architecture builds |
+| Repository secret | `MIRAGE_DIRECT_WORKSHOP_DEPLOY_KEY` | An SSH deploy private key restricted to reading that repository; add its public key under the private repository's Deploy keys without write access |
+
+The private repository must contain `Service`, `Tests/Tests.csproj`, `Tests/Program.cs`, `build.sh`, and `LICENSE`. Preserve the existing public `Service/VerificationKey.cs`; do not regenerate the signing identity. Do not commit `secrets/`, the activation signing private key, or test activation codes, or supply them to Actions. The workflow fetches the pinned commit into the runner's temporary directory, tests and compiles the helper, and bundles only its `dist` binaries. Private source and compiler logs are never uploaded as artifacts. Packaging verification checks that the helper starts and rejects an invalid activation code.
+
+Leaving all three settings unset builds the standard edition. Partial configuration or a private build failure fails the job rather than silently omitting the feature. After updating the component, update `MIRAGE_DIRECT_WORKSHOP_REF` and run the Action manually or trigger the next main repository build. Changes to the private repository alone do not trigger the main workflow.
 
 The workflow writes the full Git commit and an incrementing build number from `git rev-list --count` into the App. No manual version bump is required. Only a build with a greater build number is installed, preventing a newer development build from being downgraded to an older release.
 
@@ -235,7 +252,7 @@ On the next launch after updating, Mirage also checks any installed `MirageScree
 
 GitHub Secrets prevent a key from appearing in the repository and ordinary build logs, but they cannot make a key embedded in a distributed client truly secret. Anyone capable of inspecting the App can extract it. If a non-extractable credential is required later, move the request to a controlled server that holds the key; do not rely on client-side obfuscation.
 
-The current workflow uses temporary signing and does not include Apple Developer ID signing or notarization. First-time users may need to manually allow Mirage in macOS Gatekeeper, while subsequent update authenticity is verified with the built-in Ed25519 public key.
+The workflow imports the Developer ID Application certificate into a temporary keychain, signs the complete App with Hardened Runtime and a secure timestamp, submits it to Apple for notarization, staples the ticket, and verifies its signature, ticket, and Gatekeeper acceptance before packaging. Sparkle Ed25519 signing continues to protect the authenticity of subsequent updates independently.
 
 ## Data Directories
 
@@ -307,3 +324,5 @@ Before submitting a change, verify at least that:
 ## License
 
 Mirage is released under [GPL-3.0](LICENSE). Steam service notices are stored in [`SteamService/Licenses`](SteamService/Licenses); all other third-party code and resources remain under their respective licenses. Mirage is not affiliated with or endorsed by Valve, Steam, or Wallpaper Engine.
+
+Optional sign-in-free Workshop downloads are disabled by default and require a device-specific activation code in Settings → General. This mode supports downloads only, without Steam subscriptions, favorites or comments. Its independent helper is not included in this open-source repository; builds without it retain normal Steam downloads. Release builds can supply a precompiled component using `MIRAGE_DIRECT_WORKSHOP_BUNDLE`. Do not include private source or activation signing material in this repository.

@@ -35,8 +35,7 @@ namespace
 {
 
 FieldKind GuessFieldKind(std::string_view field) {
-    // Visible/enabled-style fields: bool. Several scripts return numbers
-    // 0/1 here too; coercion table accepts both.
+    // Visible/enabled-style fields: bool.
     if (field == "visible") return FieldKind::Bool;
     // Vec3 (position-like) fields.
     if (field == "origin" || field == "scale" || field == "angles" || field == "spriteoffset")
@@ -149,8 +148,8 @@ ScriptValue CoerceReturn(JSContext* ctx, JSValue ret, FieldKind kind) {
 
     switch (kind) {
     case FieldKind::Bool: {
-        int b = JS_ToBool(ctx, ret);
-        return BoolValue { b > 0 };
+        if (! JS_IsBool(ret)) return {};
+        return BoolValue { JS_ToBool(ctx, ret) > 0 };
     }
     case FieldKind::Scalar: {
         if (JS_IsBool(ret)) {
@@ -459,6 +458,7 @@ struct AudioBufferSlot {
 
 struct EngineHostState {
     FrameInputs inputs;
+    uint32_t offline_random { 1 };
     MediaStatus media;
     bool        media_initialized { false };
     sr::Scene* scene { nullptr };
@@ -717,6 +717,7 @@ struct FieldScript::Impl {
     ScriptValue last_value;
     bool        alive { true };
     bool        error_logged { false };
+    bool        bool_return_warned { false };
     // Layer-B: the SceneNode this script's `thisLayer` resolves to. Null →
     // fall back to the generic JS stub. `wrapped_layer` caches the JSValue
     // wrapper so per-frame swap doesn't reallocate.
@@ -767,6 +768,21 @@ void FieldScript::AddAssetCloneQueue(std::string asset, std::vector<sr::SceneNod
         m_impl->clone_asset_keys[node] = asset;
         queue.push_back(node);
     }
+}
+
+namespace
+{
+
+void NoteBoolReturnMismatch(FieldKind kind, bool& warned, std::string_view sha, JSValueConst ret,
+                            const char* fn) {
+    if (kind != FieldKind::Bool || warned) return;
+    if (JS_IsUndefined(ret) || JS_IsNull(ret) || JS_IsBool(ret)) return;
+    warned = true;
+    rstd_warn("script[{}] {} returned a non-boolean for a bool property; the value was ignored",
+              sha,
+              std::string_view(fn));
+}
+
 }
 
 // ---------------------------------------------------------------------------
@@ -4303,6 +4319,43 @@ JsRuntime::~JsRuntime() {
     if (m_impl->rt) JS_FreeRuntime(m_impl->rt);
 }
 
+void JsRuntime::SetOfflineSeed(uint32_t seed) {
+    auto* ctx = m_impl->ctx;
+    m_impl->host.offline_random = seed ? seed : 1;
+    auto global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "__mirageBakeTime", JS_NewCFunction(ctx,
+        [](JSContext* c, JSValueConst, int, JSValueConst*) -> JSValue {
+            auto* host = static_cast<EngineHostState*>(JS_GetContextOpaque(c));
+            return JS_NewFloat64(c, 946728000000.0 + host->inputs.runtime * 1000.0);
+        }, "__mirageBakeTime", 0));
+    JS_SetPropertyStr(ctx, global, "__mirageBakeRandom", JS_NewCFunction(ctx,
+        [](JSContext* c, JSValueConst, int, JSValueConst*) -> JSValue {
+            auto* host = static_cast<EngineHostState*>(JS_GetContextOpaque(c));
+            auto x = host->offline_random;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            host->offline_random = x;
+            return JS_NewFloat64(c, static_cast<double>(x) / 4294967296.0);
+        }, "__mirageBakeRandom", 0));
+    const char script[] = R"JS((function(){
+        const NativeDate = Date, now = __mirageBakeTime, random = __mirageBakeRandom;
+        function BakeDate(...args) {
+            if (!new.target) return new NativeDate(now()).toString();
+            return Reflect.construct(NativeDate, args.length ? args : [now()], new.target);
+        }
+        Object.setPrototypeOf(BakeDate, NativeDate);
+        BakeDate.prototype = NativeDate.prototype;
+        BakeDate.now = now;
+        globalThis.Date = BakeDate;
+        Math.random = random;
+        globalThis.performance = {now: function(){return now() - 946728000000;}};
+        delete globalThis.__mirageBakeTime;
+        delete globalThis.__mirageBakeRandom;
+    })())JS";
+    auto result = JS_Eval(ctx, script, sizeof(script) - 1, "mirage-bake", JS_EVAL_TYPE_GLOBAL);
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, global);
+}
+
 void JsRuntime::SetFrameInputs(const FrameInputs& fi) {
     // The FrameInputs snapshot itself is read by C++ (hit testing, engine.*
     // getters), so keep storing it even after the watchdog disabled scripting.
@@ -4675,6 +4728,7 @@ void JsRuntime::TickAll() {
             JS_FreeValue(ctx, ret);
             continue;
         }
+        NoteBoolReturnMismatch(I->kind, I->bool_return_warned, I->sha, ret, "update");
         I->last_value = CoerceReturn(ctx, ret, I->kind);
         // Keep the next argument in the field's coerced shape. Vec3 scripts
         // often return a scalar for scale, but still read value.x next frame.
@@ -4790,7 +4844,18 @@ void RunFieldScriptInit(JSContext* ctx, JsRuntime::Impl* rt, FieldScript* fs) {
     JSValue arg                  = JS_DupValue(ctx, I->current_value);
     JSValue r                    = JS_Call(ctx, I->init_fn, JS_UNDEFINED, 1, &arg);
     JS_FreeValue(ctx, arg);
-    if (JS_IsException(r)) rt->LogError(ctx, I->sha, "init threw");
+    if (JS_IsException(r)) {
+        rt->LogError(ctx, I->sha, "init threw");
+    } else {
+        NoteBoolReturnMismatch(I->kind, I->bool_return_warned, I->sha, r, "init");
+        ScriptValue initial = CoerceReturn(ctx, r, I->kind);
+        if (! std::holds_alternative<std::monostate>(initial)) {
+            JSValue next = ScriptValueToJs(ctx, initial);
+            JS_FreeValue(ctx, I->current_value);
+            I->current_value = next;
+            I->last_value    = std::move(initial);
+        }
+    }
     JS_FreeValue(ctx, r);
     rt->host.active_field_script = nullptr;
     I->init_done                 = true;

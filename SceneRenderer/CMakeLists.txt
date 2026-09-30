@@ -103,6 +103,7 @@ if(SCENERENDERER_BUILD_ENGINE AND SCENERENDERER_BUILD_WALLPAPER_HOST)
     endif()
     if(APPLE)
         add_subdirectory(Tools/SceneScreenSaver)
+        add_subdirectory(Tools/SceneBaker)
     endif()
 endif()
 

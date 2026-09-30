@@ -1191,9 +1191,13 @@ bool Scene::EnsureTextureDescriptor(std::string_view key) {
 
     const auto   header = imageParser->ParseHeader(name);
     SceneTexture texture;
-    texture.url     = name;
-    texture.sample  = header.sample;
-    texture.isVideo = header.type == ImageType::VIDEO;
+    texture.url            = name;
+    texture.sample         = header.sample;
+    texture.isVideo        = header.type == ImageType::VIDEO;
+    texture.width          = header.mipmap_larger ? header.width : header.mapWidth;
+    texture.height         = header.mipmap_larger ? header.height : header.mapHeight;
+    texture.content_width  = header.mapWidth;
+    texture.content_height = header.mapHeight;
     if (header.isSprite) {
         texture.isSprite   = true;
         texture.spriteAnim = header.spriteAnim;

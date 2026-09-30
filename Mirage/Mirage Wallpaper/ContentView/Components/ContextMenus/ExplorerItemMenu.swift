@@ -61,6 +61,19 @@ struct ExplorerItemMenu: SubviewOfContentView {
                 }
                 .disabled(!canApply || (hoveredWallpaper.kind != .video && hoveredWallpaper.kind != .scene))
 
+                Button {
+                    WallpaperBakeService.shared.presentedWallpaper = hoveredWallpaper
+                } label: {
+                    Label("烘焙为视频", systemImage: "flame.fill")
+                }
+                .disabled(!canApply)
+
+                Button {
+                    WallpaperBakeService.shared.showsTasks = true
+                } label: {
+                    Label("烘焙任务", systemImage: "list.bullet.rectangle")
+                }
+
                 Button(action: setAsDynamicLockScreen) {
                     Label("设为动态锁屏", systemImage: "lock.rectangle")
                 }
@@ -103,7 +116,7 @@ struct ExplorerItemMenu: SubviewOfContentView {
                         systemImage: isFavorite ? "heart.slash.fill" : "heart.fill"
                     )
                 }
-                .disabled(workshopID.map { workshopViewModel.changingFavoriteIDs.contains($0) } == true)
+                .disabled(workshopID.map { workshopViewModel.directDownloadMode || workshopViewModel.changingFavoriteIDs.contains($0) } == true)
             }
             
             Section {
@@ -415,7 +428,9 @@ struct WorkshopCardContextMenu: View {
     var body: some View {
         Group {
             Section {
-                if workshopViewModel.subscriptionState(for: item.publishedFileId) == .subscribed {
+                if workshopViewModel.directDownloadMode {
+                    Label("免登录下载已开启", systemImage: "arrow.down.circle")
+                } else if workshopViewModel.subscriptionState(for: item.publishedFileId) == .subscribed {
                     Button(role: .destructive) {
                         workshopViewModel.unsubscribe(item)
                     } label: {
@@ -453,7 +468,9 @@ struct WorkshopCardContextMenu: View {
             }
 
             Section {
-                if workshopViewModel.changingFavoriteIDs.contains(item.publishedFileId) {
+                if workshopViewModel.directDownloadMode {
+                    Label("免登录模式仅支持下载，请关闭此模式并登录 Steam 以使用社区功能", systemImage: "info.circle")
+                } else if workshopViewModel.changingFavoriteIDs.contains(item.publishedFileId) {
                     Label("正在同步收藏状态…", systemImage: "arrow.triangle.2.circlepath")
                 } else {
                     Button {
