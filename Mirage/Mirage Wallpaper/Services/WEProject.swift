@@ -669,8 +669,16 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable, Equatable, Hashable
     }
     var resolvedEntryURL: URL {
         if kind == .scene {
-            let package = PathContainment.containedURL("scene.pkg", in: renderDirectory) ?? renderDirectory
-            if FileManager.default.fileExists(atPath: package.path) { return package }
+            let packagePath = (project.file as NSString).deletingPathExtension + ".pkg"
+            if let package = PathContainment.containedURL(packagePath, in: renderDirectory),
+               FileManager.default.fileExists(atPath: package.path) {
+                return package
+            }
+            if packagePath != "scene.pkg",
+               let package = PathContainment.containedURL("scene.pkg", in: renderDirectory),
+               FileManager.default.fileExists(atPath: package.path) {
+                return package
+            }
         }
         return entryURL
     }

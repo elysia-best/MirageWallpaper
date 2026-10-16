@@ -6,6 +6,7 @@
 
 import Foundation
 import Security
+import Darwin
 
 final class SteamServiceManager: ObservableObject, @unchecked Sendable {
     static let shared = SteamServiceManager()
@@ -61,6 +62,14 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
     private var restartRetryWorkItem: DispatchWorkItem?
     private var explicitShutdown = false
     private var favoriteRefreshGeneration = 0
+    private var healthCheckWorkItem: DispatchWorkItem?
+    private var heartbeatRequestID: String?
+    private var heartbeatSentAt: TimeInterval?
+    private var lastResponseAt: TimeInterval = 0
+    private var requestStartedAt: [String: TimeInterval] = [:]
+    private let healthCheckInterval: TimeInterval = 15
+    private let heartbeatTimeout: TimeInterval = 30
+    private let requestTimeout: TimeInterval = 120
 
     private var restoreOperationPending: Bool {
         restoringSession || restoreRetryWorkItem != nil
@@ -464,25 +473,41 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
 
     func shutdown() {
         DirectWorkshopService.shared.shutdown()
-        explicitShutdown = true
         ioQueue.sync {
+            explicitShutdown = true
             cancelServiceRestartOnQueue()
             cancelRestoreRetry()
+            cancelHealthCheckOnQueue()
             guard let process else { return }
+            process.terminationHandler = nil
             sendCommandOnQueue("shutdown")
             try? input?.close()
-            let deadline = Date().addingTimeInterval(1.5)
-            while process.isRunning && Date() < deadline {
-                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            waitForExit(process, timeout: 1.2)
+            if process.isRunning {
+                process.terminate()
+                waitForExit(process, timeout: 0.5)
             }
-            if process.isRunning { process.terminate() }
+            if process.isRunning {
+                let pid = process.processIdentifier
+                if pid > 0 { Darwin.kill(pid, SIGKILL) }
+                waitForExit(process, timeout: 0.3)
+            }
+            detachProcessIO(process)
             self.process = nil
             input = nil
+            outputBuffer.removeAll(keepingCapacity: true)
+            requestHandlers.removeAll()
+            requestStartedAt.removeAll()
         }
     }
 
     private func startOnQueue() {
-        guard process?.isRunning != true else { return }
+        guard !explicitShutdown, process?.isRunning != true else { return }
+        if let process {
+            handleTermination(process: process, status: process.terminationStatus, reason: process.terminationReason)
+            restartRetryWorkItem?.cancel()
+            restartRetryWorkItem = nil
+        }
         guard let launch = serviceLaunchConfiguration() else {
             let message = L("Steam 服务组件不可用")
             failActiveDownloadsOnQueue(message)
@@ -506,20 +531,37 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
             let status = process.terminationStatus
             let reason = process.terminationReason
             self?.ioQueue.async {
-                self?.handleTermination(status: status, reason: reason)
+                self?.handleTermination(process: process, status: status, reason: reason)
             }
         }
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
-            self?.ioQueue.async { self?.consumeOutput(data) }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            self?.ioQueue.async {
+                guard let self, self.process === process else { return }
+                self.consumeOutput(data)
+            }
         }
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             MirageLogService.shared.append(text, source: "steam-service")
         }
         do {
+            let descriptor = stdinPipe.fileHandleForWriting.fileDescriptor
+            let flags = fcntl(descriptor, F_GETFL)
+            guard flags >= 0,
+                  fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0,
+                  fcntl(descriptor, F_SETNOSIGPIPE, 1) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
             try process.run()
             self.process = process
             input = stdinPipe.fileHandleForWriting
@@ -530,7 +572,9 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
             }
             sendCommandOnQueue("hello")
             restoreSessionOnQueue()
+            scheduleHealthCheckOnQueue()
         } catch {
+            detachProcessIO(process)
             let message = L("Steam 服务启动失败：%@", error.localizedDescription)
             failActiveDownloadsOnQueue(message)
             updateOnMain {
@@ -673,6 +717,112 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
         restartRetryCount = 0
     }
 
+    private func scheduleHealthCheckOnQueue(after delay: TimeInterval? = nil) {
+        guard !explicitShutdown, process?.isRunning == true else { return }
+        healthCheckWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.healthCheckWorkItem = nil
+            self.runHealthCheckOnQueue()
+        }
+        healthCheckWorkItem = work
+        ioQueue.asyncAfter(deadline: .now() + (delay ?? healthCheckInterval), execute: work)
+    }
+
+    private func cancelHealthCheckOnQueue() {
+        healthCheckWorkItem?.cancel()
+        healthCheckWorkItem = nil
+        heartbeatRequestID = nil
+        heartbeatSentAt = nil
+    }
+
+    private func runHealthCheckOnQueue() {
+        guard !explicitShutdown, let process, process.isRunning else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let sentAt = heartbeatSentAt {
+            if now - sentAt >= heartbeatTimeout {
+                terminateUnresponsiveServiceOnQueue(process, reason: "heartbeat timeout")
+                return
+            }
+            scheduleHealthCheckOnQueue(after: min(healthCheckInterval, heartbeatTimeout - (now - sentAt)))
+            return
+        }
+        if let oldestRequest = requestStartedAt.values.min() {
+            if now - max(oldestRequest, lastResponseAt) >= requestTimeout {
+                terminateUnresponsiveServiceOnQueue(process, reason: "request timeout")
+                return
+            }
+            scheduleHealthCheckOnQueue()
+            return
+        }
+        sendHeartbeatOnQueue()
+        scheduleHealthCheckOnQueue()
+    }
+
+    private func sendHeartbeatOnQueue() {
+        guard process?.isRunning == true, let input else { return }
+        let requestID = UUID().uuidString
+        let payload: [String: Any] = ["command": "ping", "requestId": requestID]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        heartbeatRequestID = requestID
+        heartbeatSentAt = ProcessInfo.processInfo.systemUptime
+        do {
+            try writeToService(data + Data([0x0A]), input: input)
+        } catch {
+            heartbeatRequestID = nil
+            heartbeatSentAt = nil
+            if let process { terminateUnresponsiveServiceOnQueue(process, reason: "heartbeat write failed") }
+        }
+    }
+
+    private func terminateUnresponsiveServiceOnQueue(_ process: Process, reason: String) {
+        guard self.process === process else { return }
+        cancelHealthCheckOnQueue()
+        MirageLogService.shared.append("Steam service unresponsive: \(reason)", source: "steam-service")
+        if process.isRunning {
+            process.terminate()
+            waitForExit(process, timeout: 0.5)
+        }
+        if process.isRunning {
+            let pid = process.processIdentifier
+            if pid > 0 { Darwin.kill(pid, SIGKILL) }
+            waitForExit(process, timeout: 0.3)
+        }
+    }
+
+    private func waitForExit(_ process: Process, timeout: TimeInterval) {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+            usleep(20_000)
+        }
+    }
+
+    private func detachProcessIO(_ process: Process) {
+        (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+        (process.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+    }
+
+    private func writeToService(_ data: Data, input: FileHandle) throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.25
+        try data.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                let count = Darwin.write(input.fileDescriptor, base.advanced(by: offset), buffer.count - offset)
+                if count > 0 {
+                    offset += count
+                } else if count < 0 && errno != EAGAIN && errno != EINTR {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                } else {
+                    guard ProcessInfo.processInfo.systemUptime < deadline else {
+                        throw POSIXError(.ETIMEDOUT)
+                    }
+                    usleep(5_000)
+                }
+            }
+        }
+    }
+
     private func sendCommand(_ command: String, fields: [String: Any] = [:], completion: ((Bool, String?, String?) -> Void)? = nil) {
         ioQueue.async { [weak self] in
             self?.sendCommandOnQueue(command, fields: fields, completion: completion)
@@ -692,20 +842,26 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
         var payload = fields.filter { !($0.value is NSNull) }
         payload["command"] = command
         payload["requestId"] = requestId
-        if let completion { requestHandlers[requestId] = .basic(completion) }
+        if let completion {
+            requestHandlers[requestId] = .basic(completion)
+            requestStartedAt[requestId] = ProcessInfo.processInfo.systemUptime
+        }
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload),
               var line = String(data: data, encoding: .utf8) else {
             requestHandlers.removeValue(forKey: requestId)
+            requestStartedAt.removeValue(forKey: requestId)
             completion?(false, L("Steam 服务请求无法编码"), nil)
             return
         }
         line.append("\n")
         do {
-            try input.write(contentsOf: Data(line.utf8))
+            try writeToService(Data(line.utf8), input: input)
         } catch {
             requestHandlers.removeValue(forKey: requestId)
+            requestStartedAt.removeValue(forKey: requestId)
             completion?(false, error.localizedDescription, nil)
+            if !explicitShutdown, let process { terminateUnresponsiveServiceOnQueue(process, reason: "command write failed") }
         }
     }
 
@@ -729,19 +885,23 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
         payload["command"] = command
         payload["requestId"] = requestId
         requestHandlers[requestId] = .data(completion)
+        requestStartedAt[requestId] = ProcessInfo.processInfo.systemUptime
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload),
               var line = String(data: data, encoding: .utf8) else {
             requestHandlers.removeValue(forKey: requestId)
+            requestStartedAt.removeValue(forKey: requestId)
             completion(false, nil, L("Steam 服务请求无法编码"), nil)
             return
         }
         line.append("\n")
         do {
-            try input.write(contentsOf: Data(line.utf8))
+            try writeToService(Data(line.utf8), input: input)
         } catch {
             requestHandlers.removeValue(forKey: requestId)
+            requestStartedAt.removeValue(forKey: requestId)
             completion(false, nil, error.localizedDescription, nil)
+            if !explicitShutdown, let process { terminateUnresponsiveServiceOnQueue(process, reason: "command write failed") }
         }
     }
 
@@ -783,9 +943,16 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
         switch type {
         case "hello":
             updateOnMain { self.isAvailable = true }
+        case "pong":
+            guard let requestID = event["requestId"] as? String,
+                  requestID == heartbeatRequestID else { return }
+            heartbeatRequestID = nil
+            heartbeatSentAt = nil
         case "response":
+            lastResponseAt = ProcessInfo.processInfo.systemUptime
             guard let requestId = event["requestId"] as? String,
                   let handler = requestHandlers.removeValue(forKey: requestId) else { return }
+            requestStartedAt.removeValue(forKey: requestId)
             handler.finish(
                 success: event["success"] as? Bool == true,
                 data: event["data"] as? [String: Any],
@@ -953,7 +1120,10 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
         updateOnMain { handler(next) }
     }
 
-    private func handleTermination(status: Int32, reason: Process.TerminationReason) {
+    private func handleTermination(process terminatedProcess: Process, status: Int32, reason: Process.TerminationReason) {
+        guard process === terminatedProcess else { return }
+        cancelHealthCheckOnQueue()
+        detachProcessIO(terminatedProcess)
         process = nil
         input = nil
         outputBuffer.removeAll(keepingCapacity: true)
@@ -961,6 +1131,7 @@ final class SteamServiceManager: ObservableObject, @unchecked Sendable {
         restoringSession = false
         let requests = Array(requestHandlers.values)
         requestHandlers.removeAll()
+        requestStartedAt.removeAll()
         guard !explicitShutdown else { return }
         let reasonText: String
         let message: String

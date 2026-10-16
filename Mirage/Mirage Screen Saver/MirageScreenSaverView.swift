@@ -63,8 +63,17 @@ private struct MirageSaverConfiguration {
         guard let identity = try? JSONSerialization.data(withJSONObject: identityObject, options: .sortedKeys) else { return nil }
         let rawSpeed = (object["speed"] as? NSNumber)?.floatValue ?? 1
         let speed = rawSpeed.isFinite && rawSpeed > 0 ? rawSpeed : 1
-        let entryURL = URL(fileURLWithPath: entryPath)
-        guard FileManager.default.fileExists(atPath: entryURL.path) else { return nil }
+        let configuredEntryURL = URL(fileURLWithPath: entryPath)
+        let entryURL: URL
+        if FileManager.default.fileExists(atPath: configuredEntryURL.path) {
+            entryURL = configuredEntryURL
+        } else if kind == "scene" {
+            let packageURL = configuredEntryURL.deletingPathExtension().appendingPathExtension("pkg")
+            guard FileManager.default.fileExists(atPath: packageURL.path) else { return nil }
+            entryURL = packageURL
+        } else {
+            return nil
+        }
         let candidate = (object["playableEntryPath"] as? String).map(URL.init(fileURLWithPath:))
         let fallbackEntryURL: URL?
         if kind == "video", let candidate,

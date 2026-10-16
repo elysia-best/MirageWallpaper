@@ -161,9 +161,14 @@ struct GlobalSettings: Codable, Equatable {
     // Optional solely for backwards-compatible decoding of settings written
     // before the desktop-override section existed.
     var overrideWallpaper: Bool? = false
+    var automaticWallpaperCacheCleaning: Bool? = true
 
     var shouldOverrideWallpaper: Bool {
         overrideWallpaper ?? false
+    }
+
+    var shouldAutomaticallyCleanWallpaperCache: Bool {
+        automaticWallpaperCacheCleaning ?? true
     }
 
     // MARK: Appearance
@@ -265,6 +270,7 @@ class GlobalSettingsViewModel {
     var didChangeStatusItemIconCancellable: Cancellable?
     var didChangeDeveloperModeCancellable: Cancellable?
     var didChangeOverrideWallpaperCancellable: Cancellable?
+    var didChangeWallpaperCacheCleaningCancellable: Cancellable?
     var playbackPolicySettingsCancellable: Cancellable?
     
     // In-memory snapshot of what is persisted, so the settings UI can tell
@@ -325,6 +331,7 @@ class GlobalSettingsViewModel {
         didChangeStatusItemIconCancellable?.cancel()
         didChangeDeveloperModeCancellable?.cancel()
         didChangeOverrideWallpaperCancellable?.cancel()
+        didChangeWallpaperCacheCleaningCancellable?.cancel()
         playbackPolicySettingsCancellable?.cancel()
         playbackEvalTimer?.invalidate()
         playbackAudioMonitor?.stop()
@@ -375,6 +382,15 @@ class GlobalSettingsViewModel {
             .removeDuplicates { $0.shouldOverrideWallpaper == $1.shouldOverrideWallpaper }
             .map { $0.shouldOverrideWallpaper }
             .sink { DesktopOverrideService.shared.didChangeEnabled($0) }
+
+        self.didChangeWallpaperCacheCleaningCancellable =
+        self.settingsChanges
+            .removeDuplicates {
+                $0.shouldAutomaticallyCleanWallpaperCache
+                    == $1.shouldAutomaticallyCleanWallpaperCache
+            }
+            .map { $0.shouldAutomaticallyCleanWallpaperCache }
+            .sink { DesktopOverrideService.shared.didChangeCacheCleaningEnabled($0) }
 
         let lifecycleNotifications: [(Notification.Name, PlaybackLifecycleEvent)] = [
             (NSWorkspace.willSleepNotification, .systemSleep),

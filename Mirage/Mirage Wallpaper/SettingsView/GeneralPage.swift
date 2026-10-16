@@ -217,6 +217,19 @@ struct GeneralPage: SettingsPage {
                 Text("Mirage 会用当前壁纸的画面替换系统桌面图片，让菜单栏与程序坞的取色与壁纸一致。开启后将持续覆盖，退出 Mirage 后依然保留；关闭时仅在 Mirage 运行期间覆盖，退出会自动还原你原本的桌面图片。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if #available(macOS 26, *) {
+                    Toggle("自动清理 macOS 壁纸缓存", isOn: Binding(
+                        get: { viewModel.settings.shouldAutomaticallyCleanWallpaperCache },
+                        set: { viewModel.settings.automaticWallpaperCacheCleaning = $0 }
+                    ))
+                    Button("立即清理壁纸缓存…") {
+                        DesktopOverrideService.shared.requestSystemCacheAccessAndClean()
+                    }
+                    Text("Mirage 只会清理自己产生且已不再使用的缓存。首次手动清理时，macOS 可能要求你授权 Wallpaper Agent 的图像缓存目录。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } header: {
                 Label("外观", systemImage: "paintpalette.fill")
             }
