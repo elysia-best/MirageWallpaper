@@ -35,4 +35,6 @@ cmake-build-debug
 xcuserdata
 .reasonix
 .workbuddy
+.qtcreator
+.agents
 

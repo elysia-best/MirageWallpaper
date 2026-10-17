@@ -7,6 +7,7 @@
 #include "Services/WorkshopViewModel.h"
 
 #include <QDir>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QUrl>
 
@@ -176,6 +177,20 @@ QVariantMap MirageController::wallpaperMap(const Wallpaper& item) const {
     const QString importedRoot = QDir::cleanPath(m_library.importedDirectory()) + QDir::separator();
     const QString wallpaperPath = QDir::cleanPath(item.wallpaperDirectory) + QDir::separator();
     const qint64 size = QFileInfo(item.previewPath()).size() + QFileInfo(item.entryPath()).size();
+    QVariantList properties;
+    properties.reserve(item.project.properties.size());
+    for (auto it = item.project.properties.constBegin(); it != item.project.properties.constEnd(); ++it) {
+        properties.append(propertyMap(it.key(), it.value()));
+    }
+    std::sort(properties.begin(), properties.end(), [](const QVariant& left, const QVariant& right) {
+        const QVariantMap leftMap = left.toMap();
+        const QVariantMap rightMap = right.toMap();
+        const int leftOrder = leftMap.value(QStringLiteral("order"), leftMap.value(QStringLiteral("index"))).toInt();
+        const int rightOrder = rightMap.value(QStringLiteral("order"), rightMap.value(QStringLiteral("index"))).toInt();
+        return leftOrder == rightOrder
+            ? leftMap.value(QStringLiteral("key")).toString() < rightMap.value(QStringLiteral("key")).toString()
+            : leftOrder < rightOrder;
+    });
     const QString searchText = QStringList{item.project.title,
                                            item.project.resolvedAuthor(),
                                            item.project.type,
@@ -185,6 +200,7 @@ QVariantMap MirageController::wallpaperMap(const Wallpaper& item) const {
                                            item.project.tags.join(' ')}.join(' ');
     return {
         {QStringLiteral("id"), item.id()},
+        {QStringLiteral("path"), item.wallpaperDirectory},
         {QStringLiteral("title"), item.project.title},
         {QStringLiteral("author"), item.project.resolvedAuthor()},
         {QStringLiteral("type"), typeKey},
@@ -192,7 +208,10 @@ QVariantMap MirageController::wallpaperMap(const Wallpaper& item) const {
         {QStringLiteral("kind"), wallpaperKindKey(item.kind())},
         {QStringLiteral("preview"), QUrl::fromLocalFile(item.previewPath())},
         {QStringLiteral("tags"), item.project.tags},
+        {QStringLiteral("properties"), properties},
         {QStringLiteral("description"), item.project.description},
+        {QStringLiteral("workshopid"), item.project.workshopId},
+        {QStringLiteral("contentrating"), item.project.contentRating},
         {QStringLiteral("location"), QUrl::fromLocalFile(item.wallpaperDirectory)},
         {QStringLiteral("favorite"), m_favorites.contains(item.id())},
         {QStringLiteral("customizable"), !item.project.properties.isEmpty()},
@@ -201,6 +220,8 @@ QVariantMap MirageController::wallpaperMap(const Wallpaper& item) const {
         {QStringLiteral("source"), wallpaperPath.startsWith(importedRoot)
                                         ? QStringLiteral("imported") : QStringLiteral("workshop")},
         {QStringLiteral("size"), size},
+        {QStringLiteral("bytes"), size},
+        {QStringLiteral("modified"), QFileInfo(item.wallpaperDirectory).lastModified().toMSecsSinceEpoch()},
         {QStringLiteral("searchText"), searchText},
         {QStringLiteral("preset"), item.isPreset()},
         {QStringLiteral("presetStatus"), item.presetStatusDescription()},

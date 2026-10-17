@@ -17,6 +17,7 @@ public:
 
     QString importedDirectory() const;
     QStringList sourceDirectories() const;
+    void setAdditionalSourceDirectories(const QStringList& directories);
     QVector<Wallpaper> loadAll() const;
     QStringList workshopItemDirectories(const QString& workshopId) const;
 
@@ -36,6 +37,7 @@ private:
     QString uniqueDestination(const QString& baseName) const;
 
     GlobalSettingsService* m_settings = nullptr;
+    QStringList m_additionalSourceDirectories;
 };
 
 } // namespace Mirage

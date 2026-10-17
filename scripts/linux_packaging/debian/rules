@@ -66,8 +66,8 @@ override_dh_auto_install:
 	cp -a $(STEAM_BUILD)/. $(PACKAGE_ROOT)/usr/libexec/miragewallpaper/SteamService/linux-x64/
 	install -d $(PACKAGE_ROOT)/usr/share/doc/miragewallpaper
 	install -m644 LICENSE $(PACKAGE_ROOT)/usr/share/doc/miragewallpaper/LICENSE
-	install -m644 MirageQt/Vendor/FluentUI/License \
-		$(PACKAGE_ROOT)/usr/share/doc/miragewallpaper/FluentUI-MIT.txt
+	install -m644 MirageQt/Vendor/libqrcode/LICENSE \
+		$(PACKAGE_ROOT)/usr/share/doc/miragewallpaper/libqrcode-LICENSE
 	install -m644 debian/README.Debian $(PACKAGE_ROOT)/usr/share/doc/miragewallpaper/README.Debian
 	find $(STEAM_BUILD)/Licenses -maxdepth 1 -type f -exec install -m644 {} \
 		$(PACKAGE_ROOT)/usr/share/doc/miragewallpaper/ \;

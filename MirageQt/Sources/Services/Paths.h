@@ -21,6 +21,7 @@ public:
 
     static QStringList defaultSteamWorkshopDirs();
     static QStringList steamCMDContentDirs();
+    static QStringList legacySteamCMDContentDirs();
 };
 
 } // namespace Mirage

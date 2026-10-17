@@ -1,31 +1,33 @@
 #include "Services/DisplayBrokerService.h"
 #include "Services/MirageController.h"
 #include "StatusBar.h"
-
-#include "FluentUI.h"
+#include "UiBridge.h"
 
 #include <QApplication>
 #include <QDebug>
 #include <QIcon>
+#include <QQmlError>
 #include <QScreen>
+#include <QQuickStyle>
 #include <QUrl>
-#include <QtQml/qqmlextensionplugin.h>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
-
-Q_IMPORT_QML_PLUGIN(FluentUIPlugin)
 
 int main(int argc, char** argv) {
     // RichHTMLText 的 WebEngineView（远程富标签）需要 WebEngine 初始化；
     // 必须在 QCoreApplication/QGuiApplication 创建之前调用
     // （对齐 QtWebEngineQuick 的初始化要求，之后调用仅剩 deprecated 行为）。
     QtWebEngineQuick::initialize();
+    // This allow us to read embedded resource files.
+    qputenv("QML_XHR_ALLOW_FILE_READ", QByteArrayLiteral("1"));
     QApplication app(argc, argv);
-    QCoreApplication::setApplicationName(QStringLiteral("MirageQt"));
     QCoreApplication::setOrganizationName(QStringLiteral("Mirage"));
+    QCoreApplication::setApplicationName(QStringLiteral("MirageQtUI"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0.0"));
-    app.setWindowIcon(QIcon(QStringLiteral(":/appicon.png")));
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
+    app.setWindowIcon(QIcon(QStringLiteral(
+        ":/MirageQt/Resources/Assets.xcassets/AppIcon.appiconset/icon_1024.png")));
 
     // 检查系统报告的screen数量和输出信息
     const auto screens = QGuiApplication::screens();
@@ -40,6 +42,7 @@ int main(int argc, char** argv) {
     }
 
     Mirage::MirageController controller;
+    UiBridge bridge(&app);
     Mirage::DisplayBrokerService displayBroker;
     QObject::connect(&displayBroker, &Mirage::DisplayBrokerService::outputAdded,
                      &controller, &Mirage::MirageController::handleOutputAdded,
@@ -61,8 +64,7 @@ int main(int argc, char** argv) {
                          startupPlaybackStarted = true;
                          controller.startPlayback();
                      }, Qt::QueuedConnection);
-    // 桌面窗口事实（焦点/全屏）由 broker 宿主回调上报，应用据此按播放规则
-    // 驱动渲染器（对齐 macOS 的应用侧播放策略）。
+    // 桌面窗口状态（焦点/全屏）由 broker 回调上报
     QObject::connect(&displayBroker, &Mirage::DisplayBrokerService::windowStateChanged,
                      &controller, &Mirage::MirageController::handleWindowState);
     QString brokerError;
@@ -70,12 +72,16 @@ int main(int argc, char** argv) {
         qWarning().noquote() << brokerError;
     }
     QQmlApplicationEngine engine;
-    FluentUI::registerTypes(&engine);
-    engine.rootContext()->setContextProperty(QStringLiteral("mirage"), &controller);
-    // QTP0001 places the MirageQt module under Qt's canonical resource import
-    // prefix.  Loading this exact URL keeps the executable entry point aligned
-    // with the module resource layout instead of relying on a legacy prefix.
-    const QUrl url(QStringLiteral("qrc:/qt/qml/MirageQt/Main.qml"));
+    engine.rootContext()->setContextProperty(QStringLiteral("controller"), &controller);
+    engine.rootContext()->setContextProperty(QStringLiteral("bridge"), &bridge);
+    const QUrl url(QStringLiteral("qrc:/MirageQt/Qml/Main.qml"));
+    // The engine only emits structured diagnostics; forwarding them keeps
+    // packaged QML failures visible when no development console is attached.
+    QObject::connect(&engine, &QQmlApplicationEngine::warnings, &app,
+                     [](const QList<QQmlError>& warnings) {
+                         for (const QQmlError& warning : warnings)
+                             qWarning().noquote() << warning.toString();
+                     });
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated, &app,
                      [url](QObject* object, const QUrl& objectUrl) {
                          if (!object && objectUrl == url) QCoreApplication::exit(-1);

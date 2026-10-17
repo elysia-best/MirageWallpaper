@@ -1,14 +1,24 @@
 #include "Services/MirageController.h"
 
+#include "Services/Paths.h"
+
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QDesktopServices>
+#include <QFile>
 #include <QFileInfo>
-#include <QClipboard>
 #include <QGuiApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QScreen>
+#include <QSaveFile>
 #include <QSettings>
 #include <QSet>
+#include <QTimer>
 #include <QUrl>
+#include <QUuid>
 
 #include <algorithm>
 
@@ -177,6 +187,8 @@ MirageController::MirageController(QObject* parent)
         setStatusMessage(QStringLiteral("创意工坊下载完成"));
     });
 
+    initializeBakeTasks();
+
     // 启动 Steam 服务进程；若保存过会话则自动恢复。
     m_steamService.start();
     if (m_steamService.hasSavedSession()) m_steamService.restoreSessionIfNeeded();
@@ -205,6 +217,48 @@ void MirageController::refreshWallpapersCache() {
 
 QVariantMap MirageController::selectedWallpaper() const {
     return m_selectedWallpaperCache;
+}
+
+QVariantMap MirageController::wallpaperBakeContext(const QString& id) const {
+    const Wallpaper item = wallpaper(id);
+    if (!item.isValid()) return {};
+
+    const WallpaperRuntimeState runtime = m_runtimeStore.loadRuntime(item);
+    const QHash<QString, ProjectProperty> properties =
+        m_runtimeStore.effectiveProperties(item, runtime);
+    QVariantMap sceneProperties;
+    QVariantMap webProperties;
+    for (auto it = properties.constBegin(); it != properties.constEnd(); ++it) {
+        const QVariant value = it.value().value;
+        sceneProperties.insert(it.key(), value);
+        webProperties.insert(it.key(), QVariantMap{{QStringLiteral("value"), value}});
+    }
+
+    QVariantMap storage;
+    for (auto it = runtime.scriptStorage.constBegin(); it != runtime.scriptStorage.constEnd(); ++it) {
+        storage.insert(it.key(), it.value());
+    }
+
+    const QVariantMap data = wallpaperMap(item);
+    return {
+        {QStringLiteral("id"), item.id()},
+        {QStringLiteral("kind"), wallpaperKindKey(item.kind())},
+        {QStringLiteral("source"), item.resolvedEntryPath()},
+        {QStringLiteral("directory"), item.renderDirectory},
+        {QStringLiteral("overlays"), item.assetOverlayDirectories},
+        {QStringLiteral("assets"), Paths::assetsDir()},
+        {QStringLiteral("properties"), item.kind() == WallpaperKind::Web ? webProperties : sceneProperties},
+        {QStringLiteral("storage"), storage},
+        {QStringLiteral("title"), data.value(QStringLiteral("title"))},
+        {QStringLiteral("author"), data.value(QStringLiteral("author"))},
+        {QStringLiteral("contentrating"), data.value(QStringLiteral("contentrating"))},
+        {QStringLiteral("tags"), data.value(QStringLiteral("tags"))},
+        {QStringLiteral("speed"), item.kind() == WallpaperKind::Web ? 1.0 : runtime.speed},
+        {QStringLiteral("volume"), runtime.muted ? 0.0 : runtime.volume},
+        {QStringLiteral("fillMode"), RendererController::fillModeKey(runtime.fillMode)},
+        {QStringLiteral("positionX"), runtime.position.x()},
+        {QStringLiteral("positionY"), runtime.position.y()},
+    };
 }
 
 QString MirageController::selectedWallpaperId() const {
@@ -254,6 +308,10 @@ QVariantList MirageController::downloadQueue() const {
         });
     }
     return result;
+}
+
+QVariantList MirageController::bakeTasks() const {
+    return m_bakeTasks;
 }
 
 bool MirageController::steamReady() const { return m_workshop.steamSetupState() == SteamSetupState::Ready; }
@@ -431,6 +489,10 @@ void MirageController::reloadWallpapers() {
     emit selectedRuntimeChanged();
 }
 
+void MirageController::setLibrarySources(const QStringList& directories) {
+    m_library.setAdditionalSourceDirectories(directories);
+}
+
 void MirageController::selectWallpaper(const QString& id) {
     if (m_selectedWallpaperId == id || !wallpaper(id).isValid()) return;
     m_selectedWallpaperId = id;
@@ -472,7 +534,11 @@ void MirageController::applyWallpaper(const QString& id, bool allScreens) {
 }
 
 void MirageController::toggleSelectedFavorite() {
-    if (!m_selectedWallpaperId.isEmpty()) m_favorites.toggle(m_selectedWallpaperId);
+    toggleFavorite(m_selectedWallpaperId);
+}
+
+void MirageController::toggleFavorite(const QString& id) {
+    if (wallpaper(id).isValid()) m_favorites.toggle(id);
 }
 
 void MirageController::updateSelectedMetadata(const QString& title, const QVariantList& tags) {
@@ -586,6 +652,14 @@ void MirageController::cancelWallpaperAssignment() {
 
 void MirageController::addSelectedToPlaylist() {
     const Wallpaper item = wallpaper(m_selectedWallpaperId);
+    if (!item.isValid()) return;
+    m_playlist.add(item, m_playlistScreen);
+    emit playlistChanged();
+    setStatusMessage(QStringLiteral("已加入播放列表"));
+}
+
+void MirageController::addWallpaperToPlaylist(const QString& id) {
+    const Wallpaper item = wallpaper(id);
     if (!item.isValid()) return;
     m_playlist.add(item, m_playlistScreen);
     emit playlistChanged();
@@ -757,10 +831,6 @@ void MirageController::cancelPendingSteamWork() {
 
 void MirageController::logoutSteam() {
     m_steamSetup.logout();
-}
-
-void MirageController::copyTextToClipboard(const QString& text) {
-    QGuiApplication::clipboard()->setText(text);
 }
 
 void MirageController::loadSubscriptions() {
@@ -975,6 +1045,439 @@ void MirageController::setStatusMessage(const QString& message) {
     if (message.isEmpty()) return;
     m_statusMessage = message;
     emit statusMessageChanged();
+}
+
+
+void MirageController::initializeBakeTasks() {
+    connect(&m_bakeProcess, &QProcess::readyReadStandardOutput,
+            this, &MirageController::consumeBakeOutput);
+    connect(&m_bakeProcess, &QProcess::finished, this,
+            [this](int exitCode, QProcess::ExitStatus exitStatus) {
+                consumeBakeOutput();
+                const QString id = m_activeBakeId;
+                if (id.isEmpty()) return;
+                const auto found = std::find_if(m_bakeTasks.begin(), m_bakeTasks.end(),
+                    [&id](const QVariant& task) {
+                        return task.toMap().value(QStringLiteral("id")).toString() == id;
+                    });
+                if (found == m_bakeTasks.end()) {
+                    m_activeBakeId.clear();
+                    startNextBake();
+                    return;
+                }
+
+                QVariantMap task = found->toMap();
+                const QString stage = task.value(QStringLiteral("stage")).toString();
+                const QString outputPath = stage + QStringLiteral("/wallpaper.mp4");
+                const QString previewPath = stage + QStringLiteral("/preview.jpg");
+                const QString helperError = task.value(QStringLiteral("error")).toString();
+                if (exitStatus == QProcess::NormalExit && exitCode == 0 &&
+                    m_bakeCompleteEvent && helperError.isEmpty() &&
+                    QFileInfo(outputPath).isFile() && QFileInfo(previewPath).isFile()) {
+                    const QVariantMap request = task.value(QStringLiteral("request")).toMap();
+                    const QVariantMap metadata = task.value(QStringLiteral("metadata")).toMap();
+                    const QString title = bakeText(QStringLiteral("%@ · 已烘焙"))
+                        .replace(QStringLiteral("%@"), metadata.value(QStringLiteral("sourceTitle")).toString());
+                    const QVariantMap bakeData = task.value(QStringLiteral("eventData")).toMap();
+                    const QDateTime now = QDateTime::currentDateTimeUtc();
+                    const QJsonObject project{
+                        {QStringLiteral("author"), metadata.value(QStringLiteral("author")).toString()},
+                        {QStringLiteral("contentrating"), metadata.value(QStringLiteral("contentrating")).toString()},
+                        {QStringLiteral("file"), QStringLiteral("wallpaper.mp4")},
+                        {QStringLiteral("preview"), QStringLiteral("preview.jpg")},
+                        {QStringLiteral("tags"), QJsonArray::fromStringList(metadata.value(QStringLiteral("tags")).toStringList())},
+                        {QStringLiteral("title"), title},
+                        {QStringLiteral("type"), QStringLiteral("video")},
+                        {QStringLiteral("mirageBake"), QJsonObject{
+                            {QStringLiteral("schema"), 1},
+                            {QStringLiteral("id"), id},
+                            {QStringLiteral("sourceTitle"), metadata.value(QStringLiteral("sourceTitle")).toString()},
+                            {QStringLiteral("sourceKind"), metadata.value(QStringLiteral("sourceKind")).toString()},
+                            {QStringLiteral("sourceDigest"), bakeData.value(QStringLiteral("sourceDigest")).toString()},
+                            {QStringLiteral("createdAt"), static_cast<double>(now.toSecsSinceEpoch() - 978307200)},
+                            {QStringLiteral("width"), request.value(QStringLiteral("width")).toInt()},
+                            {QStringLiteral("height"), request.value(QStringLiteral("height")).toInt()},
+                            {QStringLiteral("fps"), request.value(QStringLiteral("fps")).toInt()},
+                            {QStringLiteral("duration"), request.value(QStringLiteral("duration")).toInt()},
+                        }},
+                    };
+                    QSaveFile projectFile(stage + QStringLiteral("/project.json"));
+                    const QByteArray projectBytes = QJsonDocument(project).toJson(QJsonDocument::Indented);
+                    const QString destination = Mirage::Paths::importedDir() +
+                        QStringLiteral("/Mirage-Baked-") + id;
+                    QFile::remove(request.value(QStringLiteral("requestPath")).toString());
+                    QDir(stage + QStringLiteral("/cache")).removeRecursively();
+                    const bool projectWritten = projectFile.open(QIODevice::WriteOnly) &&
+                        projectFile.write(projectBytes) == projectBytes.size() && projectFile.commit();
+                    if (projectWritten && !QFileInfo::exists(destination) &&
+                        QDir().rename(stage, destination)) {
+                        task.insert(QStringLiteral("state"), QStringLiteral("complete"));
+                        task.insert(QStringLiteral("progress"), 1.0);
+                        task.insert(QStringLiteral("path"), destination);
+                        task.insert(QStringLiteral("preview"), QUrl::fromLocalFile(destination + QStringLiteral("/preview.jpg")));
+                        task.insert(QStringLiteral("detail"), bakeText(QStringLiteral("烘焙完成")));
+                        reloadWallpapers();
+                    } else {
+                        task.insert(QStringLiteral("state"), QStringLiteral("failed"));
+                        task.insert(QStringLiteral("error"), bakeText(QStringLiteral("无法写入烘焙壁纸清单")));
+                        QDir(stage).removeRecursively();
+                    }
+                } else {
+                    const bool cancelled = task.value(QStringLiteral("cancelRequested")).toBool();
+                    task.insert(QStringLiteral("state"), cancelled ? QStringLiteral("cancelled") : QStringLiteral("failed"));
+                    if (!cancelled && helperError.isEmpty()) {
+                        task.insert(QStringLiteral("error"), bakeText(QStringLiteral("烘焙失败，未生成壁纸")));
+                    }
+                    QDir(stage).removeRecursively();
+                }
+                task.remove(QStringLiteral("eventData"));
+                task.remove(QStringLiteral("cancelRequested"));
+                *found = task;
+                m_activeBakeId.clear();
+                m_bakeOutputBuffer.clear();
+                m_bakeCompleteEvent = false;
+                emit bakeTasksChanged();
+                startNextBake();
+            });
+    connect(&m_bakeProcess, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError processError) {
+                if (processError != QProcess::FailedToStart || m_activeBakeId.isEmpty()) return;
+                const QString id = m_activeBakeId;
+                const auto found = std::find_if(m_bakeTasks.begin(), m_bakeTasks.end(),
+                    [&id](const QVariant& task) {
+                        return task.toMap().value(QStringLiteral("id")).toString() == id;
+                    });
+                if (found != m_bakeTasks.end()) {
+                    QVariantMap task = found->toMap();
+                    task.insert(QStringLiteral("state"), QStringLiteral("failed"));
+                    task.insert(QStringLiteral("error"), bakeText(QStringLiteral("未找到烘焙组件，请重新构建或安装完整的 Mirage")));
+                    QDir(task.value(QStringLiteral("stage")).toString()).removeRecursively();
+                    task.remove(QStringLiteral("eventData"));
+                    *found = task;
+                }
+                m_activeBakeId.clear();
+                m_bakeOutputBuffer.clear();
+                m_bakeCompleteEvent = false;
+                emit bakeTasksChanged();
+                startNextBake();
+            });
+}
+
+QString MirageController::enqueueBake(const QString& wallpaperId, int width, int height,
+                              int fps, int duration, int warmup,
+                              bool audio, bool highQuality) {
+    const QVariantMap context = wallpaperBakeContext(wallpaperId);
+    if (context.isEmpty()) {
+        setStatusMessage(bakeText(QStringLiteral("请选择一个有效的壁纸")));
+        return {};
+    }
+    if (width < 128 || width > 4096 || height < 128 || height > 4096 ||
+        width % 2 != 0 || height % 2 != 0 ||
+        (fps != 24 && fps != 30 && fps != 60) ||
+        duration < 1 || duration > 600 || warmup < 0 || warmup > 10) {
+        setStatusMessage(bakeText(QStringLiteral("烘焙参数无效，请检查尺寸、时长和播放速度")));
+        return {};
+    }
+    const QString kind = context.value(QStringLiteral("kind")).toString();
+    if (kind != QStringLiteral("scene") && kind != QStringLiteral("web") &&
+        kind != QStringLiteral("video")) {
+        setStatusMessage(bakeText(QStringLiteral("此壁纸类型不支持烘焙")));
+        return {};
+    }
+    if (!QFileInfo(context.value(QStringLiteral("source")).toString()).isFile()) {
+        setStatusMessage(bakeText(QStringLiteral("无法读取壁纸或解码其视频")));
+        return {};
+    }
+    const double speed = context.value(QStringLiteral("speed")).toDouble();
+    if (!std::isfinite(speed) || speed < 0.1 || speed > 4.0) {
+        setStatusMessage(bakeText(QStringLiteral("烘焙参数无效，请检查尺寸、时长和播放速度")));
+        return {};
+    }
+
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString stage = Mirage::Paths::importedDir() + QStringLiteral("/.mirage-bake-") + id;
+    const QString requestPath = stage + QStringLiteral("/request.json");
+    const QString logRoot = Mirage::Paths::dataDir() + QStringLiteral("/Baking/Logs");
+    if (!QDir().mkpath(stage) || !QDir().mkpath(logRoot) ||
+        !QDir().mkpath(stage + QStringLiteral("/cache"))) {
+        setStatusMessage(bakeText(QStringLiteral("无法创建烘焙暂存目录")));
+        return {};
+    }
+
+    const QVariantMap request{
+        {QStringLiteral("schema"), 1},
+        {QStringLiteral("source"), context.value(QStringLiteral("source"))},
+        {QStringLiteral("directory"), context.value(QStringLiteral("directory"))},
+        {QStringLiteral("overlays"), context.value(QStringLiteral("overlays"))},
+        {QStringLiteral("assets"), context.value(QStringLiteral("assets"))},
+        {QStringLiteral("cache"), stage + QStringLiteral("/cache")},
+        {QStringLiteral("output"), stage + QStringLiteral("/wallpaper.mp4")},
+        {QStringLiteral("properties"), context.value(QStringLiteral("properties"))},
+        {QStringLiteral("storage"), context.value(QStringLiteral("storage"))},
+        {QStringLiteral("width"), width},
+        {QStringLiteral("height"), height},
+        {QStringLiteral("fps"), fps},
+        {QStringLiteral("duration"), duration},
+        {QStringLiteral("warmup"), warmup},
+        {QStringLiteral("audio"), audio && kind != QStringLiteral("web")},
+        {QStringLiteral("volume"), context.value(QStringLiteral("volume"))},
+        {QStringLiteral("speed"), speed},
+        {QStringLiteral("seed"), 1},
+        {QStringLiteral("fillMode"), context.value(QStringLiteral("fillMode"))},
+        {QStringLiteral("positionX"), context.value(QStringLiteral("positionX"))},
+        {QStringLiteral("positionY"), context.value(QStringLiteral("positionY"))},
+        {QStringLiteral("quality"), highQuality ? QStringLiteral("high") : QStringLiteral("standard")},
+    };
+    QSaveFile requestFile(requestPath);
+    const QByteArray requestBytes = QJsonDocument(QJsonObject::fromVariantMap(request))
+                                       .toJson(QJsonDocument::Indented);
+    if (!requestFile.open(QIODevice::WriteOnly) || requestFile.write(requestBytes) != requestBytes.size() ||
+        !requestFile.commit()) {
+        QDir(stage).removeRecursively();
+        setStatusMessage(bakeText(QStringLiteral("无法写入烘焙任务请求")));
+        return {};
+    }
+
+    const QVariantMap metadata{
+        {QStringLiteral("sourceTitle"), context.value(QStringLiteral("title"))},
+        {QStringLiteral("sourceKind"), kind},
+        {QStringLiteral("author"), context.value(QStringLiteral("author"))},
+        {QStringLiteral("contentrating"), context.value(QStringLiteral("contentrating"))},
+        {QStringLiteral("tags"), context.value(QStringLiteral("tags"))},
+    };
+    m_bakeTasks.append(QVariantMap{
+        {QStringLiteral("id"), id},
+        {QStringLiteral("wallpaperId"), wallpaperId},
+        {QStringLiteral("title"), metadata.value(QStringLiteral("sourceTitle"))},
+        {QStringLiteral("state"), QStringLiteral("queued")},
+        {QStringLiteral("progress"), 0.0},
+        {QStringLiteral("error"), QString()},
+        {QStringLiteral("detail"), bakeText(QStringLiteral("等待烘焙队列"))},
+        {QStringLiteral("path"), QString()},
+        {QStringLiteral("preview"), context.value(QStringLiteral("preview"))},
+        {QStringLiteral("kind"), kind},
+        {QStringLiteral("stage"), stage},
+        {QStringLiteral("requestPath"), requestPath},
+        {QStringLiteral("log"), logRoot + QStringLiteral("/") + id + QStringLiteral(".log")},
+        {QStringLiteral("request"), request},
+        {QStringLiteral("metadata"), metadata},
+        {QStringLiteral("eventData"), QVariantMap{}},
+        {QStringLiteral("cancelRequested"), false},
+    });
+    m_bakeQueue.enqueue(id);
+    emit bakeTasksChanged();
+    startNextBake();
+    return id;
+}
+
+void MirageController::cancelBakeTask(const QString& id) {
+    const auto found = std::find_if(m_bakeTasks.begin(), m_bakeTasks.end(),
+        [&id](const QVariant& task) {
+            return task.toMap().value(QStringLiteral("id")).toString() == id;
+        });
+    if (found == m_bakeTasks.end()) return;
+    QVariantMap task = found->toMap();
+    const QString state = task.value(QStringLiteral("state")).toString();
+    if (state == QStringLiteral("complete") || state == QStringLiteral("failed") ||
+        state == QStringLiteral("cancelled")) return;
+    task.insert(QStringLiteral("cancelRequested"), true);
+    if (m_activeBakeId == id) {
+        task.insert(QStringLiteral("state"), QStringLiteral("cancelling"));
+        task.insert(QStringLiteral("detail"), bakeText(QStringLiteral("正在取消烘焙")));
+        *found = task;
+        m_bakeProcess.terminate();
+        QTimer::singleShot(3000, this, [this, id] {
+            if (m_activeBakeId == id && m_bakeProcess.state() != QProcess::NotRunning)
+                m_bakeProcess.kill();
+        });
+    } else {
+        m_bakeQueue.removeOne(id);
+        task.insert(QStringLiteral("state"), QStringLiteral("cancelled"));
+        task.insert(QStringLiteral("detail"), bakeText(QStringLiteral("烘焙已取消")));
+        QDir(task.value(QStringLiteral("stage")).toString()).removeRecursively();
+        *found = task;
+        startNextBake();
+    }
+    emit bakeTasksChanged();
+}
+
+void MirageController::retryBakeTask(const QString& id) {
+    const auto found = std::find_if(m_bakeTasks.begin(), m_bakeTasks.end(),
+        [&id](const QVariant& task) {
+            return task.toMap().value(QStringLiteral("id")).toString() == id;
+        });
+    if (found == m_bakeTasks.end()) return;
+    QVariantMap task = found->toMap();
+    if (task.value(QStringLiteral("state")).toString() != QStringLiteral("failed")) return;
+    task.insert(QStringLiteral("state"), QStringLiteral("queued"));
+    task.insert(QStringLiteral("progress"), 0.0);
+    task.insert(QStringLiteral("error"), QString());
+    task.insert(QStringLiteral("detail"), bakeText(QStringLiteral("等待烘焙队列")));
+    task.insert(QStringLiteral("cancelRequested"), false);
+    task.insert(QStringLiteral("eventData"), QVariantMap{});
+    *found = task;
+    m_bakeQueue.enqueue(id);
+    emit bakeTasksChanged();
+    startNextBake();
+}
+
+void MirageController::clearCompletedBakeTasks() {
+    m_bakeTasks.erase(std::remove_if(m_bakeTasks.begin(), m_bakeTasks.end(),
+        [](const QVariant& value) {
+            const QString state = value.toMap().value(QStringLiteral("state")).toString();
+            return state == QStringLiteral("complete") || state == QStringLiteral("failed") ||
+                   state == QStringLiteral("cancelled");
+        }), m_bakeTasks.end());
+    emit bakeTasksChanged();
+}
+
+void MirageController::startNextBake() {
+    if (!m_activeBakeId.isEmpty() || m_bakeProcess.state() != QProcess::NotRunning) return;
+    while (!m_bakeQueue.isEmpty()) {
+        const QString id = m_bakeQueue.dequeue();
+        const auto found = std::find_if(m_bakeTasks.begin(), m_bakeTasks.end(),
+            [&id](const QVariant& task) {
+                return task.toMap().value(QStringLiteral("id")).toString() == id;
+            });
+        if (found == m_bakeTasks.end()) continue;
+        QVariantMap task = found->toMap();
+        if (task.value(QStringLiteral("state")).toString() != QStringLiteral("queued")) continue;
+        const QString helper = bakeHelperPath(task.value(QStringLiteral("kind")).toString());
+        const QString stage = task.value(QStringLiteral("stage")).toString();
+        if (helper.isEmpty() || !QDir().mkpath(stage + QStringLiteral("/cache"))) {
+            task.insert(QStringLiteral("state"), QStringLiteral("failed"));
+            task.insert(QStringLiteral("error"), bakeText(QStringLiteral("未找到烘焙组件，请重新构建或安装完整的 Mirage")));
+            QDir(stage).removeRecursively();
+            *found = task;
+            emit bakeTasksChanged();
+            continue;
+        }
+
+        const QString requestPath = task.value(QStringLiteral("requestPath")).toString();
+        const QVariantMap request = task.value(QStringLiteral("request")).toMap();
+        QSaveFile requestFile(requestPath);
+        const QByteArray requestBytes = QJsonDocument(QJsonObject::fromVariantMap(request))
+                                            .toJson(QJsonDocument::Compact);
+        if (!requestFile.open(QIODevice::WriteOnly) ||
+            requestFile.write(requestBytes) != requestBytes.size() || !requestFile.commit()) {
+            task.insert(QStringLiteral("state"), QStringLiteral("failed"));
+            task.insert(QStringLiteral("error"), bakeText(QStringLiteral("无法写入烘焙任务请求")));
+            QDir(stage).removeRecursively();
+            *found = task;
+            emit bakeTasksChanged();
+            continue;
+        }
+
+        m_activeBakeId = id;
+        m_bakeOutputBuffer.clear();
+        m_bakeCompleteEvent = false;
+        task.insert(QStringLiteral("state"), QStringLiteral("preparing"));
+        task.insert(QStringLiteral("detail"), bakeText(QStringLiteral("正在准备渲染器")));
+        *found = task;
+        m_bakeProcess.setProgram(helper);
+        m_bakeProcess.setArguments({requestPath});
+        m_bakeProcess.setWorkingDirectory(stage);
+        m_bakeProcess.setStandardErrorFile(task.value(QStringLiteral("log")).toString(), QIODevice::Append);
+        m_bakeProcess.start();
+        emit bakeTasksChanged();
+        return;
+    }
+}
+
+void MirageController::consumeBakeOutput() {
+    m_bakeOutputBuffer.append(m_bakeProcess.readAllStandardOutput());
+    if (m_bakeOutputBuffer.size() > 1048576 && !m_bakeOutputBuffer.contains('\n')) {
+        updateBakeTask(m_activeBakeId, {
+            {QStringLiteral("error"), bakeText(QStringLiteral("烘焙组件返回了过长的事件行"))},
+        });
+        m_bakeOutputBuffer.clear();
+        return;
+    }
+
+    while (true) {
+        const qsizetype newline = m_bakeOutputBuffer.indexOf('\n');
+        if (newline < 0) break;
+        const QByteArray line = m_bakeOutputBuffer.left(newline);
+        m_bakeOutputBuffer.remove(0, newline + 1);
+        const QJsonDocument document = QJsonDocument::fromJson(line);
+        if (!document.isObject()) {
+            updateBakeTask(m_activeBakeId, {
+                {QStringLiteral("error"), bakeText(QStringLiteral("烘焙组件返回了无效事件"))},
+            });
+            continue;
+        }
+        const QJsonObject event = document.object();
+        const QString name = event.value(QStringLiteral("event")).toString();
+        if (name == QStringLiteral("complete")) {
+            m_bakeCompleteEvent = true;
+            updateBakeTask(m_activeBakeId, {
+                {QStringLiteral("eventData"), event.toVariantMap()},
+                {QStringLiteral("state"), QStringLiteral("finalizing")},
+                {QStringLiteral("detail"), bakeText(QStringLiteral("正在验证输出"))},
+            });
+        } else if (name == QStringLiteral("error")) {
+            updateBakeTask(m_activeBakeId, {
+                {QStringLiteral("error"), event.value(QStringLiteral("detail")).toString(
+                    event.value(QStringLiteral("code")).toString())},
+                {QStringLiteral("detail"), event.value(QStringLiteral("code")).toString()},
+            });
+        } else if (name == QStringLiteral("preparing") || name == QStringLiteral("transcoding") ||
+                   name == QStringLiteral("warming") || name == QStringLiteral("progress") ||
+                   name == QStringLiteral("finishing") || name == QStringLiteral("muxing") ||
+                   name == QStringLiteral("verifying")) {
+            const double total = event.value(QStringLiteral("total")).toDouble();
+            const double completed = event.value(QStringLiteral("completed")).toDouble();
+            QVariantMap values{
+                {QStringLiteral("state"), name},
+                {QStringLiteral("detail"), bakeText(name)},
+            };
+            if (total > 0.0) values.insert(QStringLiteral("progress"), qBound(0.0, completed / total, 1.0));
+            updateBakeTask(m_activeBakeId, values);
+        } else {
+            updateBakeTask(m_activeBakeId, {
+                {QStringLiteral("error"), bakeText(QStringLiteral("烘焙组件返回了未知事件"))},
+            });
+        }
+    }
+}
+
+void MirageController::updateBakeTask(const QString& id, const QVariantMap& values) {
+    if (id.isEmpty()) return;
+    const auto found = std::find_if(m_bakeTasks.begin(), m_bakeTasks.end(),
+        [&id](const QVariant& task) {
+            return task.toMap().value(QStringLiteral("id")).toString() == id;
+        });
+    if (found == m_bakeTasks.end()) return;
+    QVariantMap task = found->toMap();
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) task.insert(it.key(), it.value());
+    *found = task;
+    emit bakeTasksChanged();
+}
+
+QString MirageController::bakeHelperPath(const QString& kind) const {
+    QStringList candidates;
+    const QString runtime = QStringLiteral(MIRAGEQT_RUNTIME_DIR);
+    if (kind == QStringLiteral("scene")) {
+        candidates = {
+            runtime + QStringLiteral("/SceneBaker"),
+            Mirage::Paths::repoRoot() + QStringLiteral("/SceneRenderer/build/linux-clang-release/Tools/SceneBaker/SceneBaker"),
+            Mirage::Paths::repoRoot() + QStringLiteral("/SceneRenderer/build/release/Tools/SceneBaker/SceneBaker"),
+        };
+    } else {
+        candidates = {
+            runtime + QStringLiteral("/MirageQtBakeHelper"),
+            QCoreApplication::applicationDirPath() + QStringLiteral("/MirageQtBakeHelper"),
+        };
+    }
+    for (const QString& candidate : candidates) {
+        if (QFileInfo(candidate).isExecutable()) return QDir::cleanPath(candidate);
+    }
+    return {};
+}
+
+
+QString MirageController::bakeText(const QString& key) const {
+    return key;
 }
 
 } // namespace Mirage

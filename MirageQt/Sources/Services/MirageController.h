@@ -17,6 +17,9 @@
 #include "Services/WorkshopViewModel.h"
 
 #include <QObject>
+#include <QByteArray>
+#include <QProcess>
+#include <QQueue>
 #include <QSet>
 #include <QStringList>
 #include <QVariantList>
@@ -75,6 +78,7 @@ class MirageController : public QObject {
     Q_PROPERTY(int workshopPageCount READ workshopPageCount NOTIFY workshopStateChanged)
     Q_PROPERTY(int activeDownloadCount READ activeDownloadCount NOTIFY workshopStateChanged)
     Q_PROPERTY(QVariantList downloadQueue READ downloadQueue NOTIFY workshopStateChanged)
+    Q_PROPERTY(QVariantList bakeTasks READ bakeTasks NOTIFY bakeTasksChanged)
     Q_PROPERTY(bool steamReady READ steamReady NOTIFY workshopStateChanged)
     Q_PROPERTY(QString steamSetupSummary READ steamSetupSummary NOTIFY workshopStateChanged)
     Q_PROPERTY(QString steamUsername READ steamUsername NOTIFY steamChanged)
@@ -124,6 +128,9 @@ public:
 
     QVariantList wallpapers() const;
     QVariantMap selectedWallpaper() const;
+    // Returns resolved render inputs and a copied runtime snapshot for the
+    // catalog ID, so queued baking does not retain library-owned references.
+    QVariantMap wallpaperBakeContext(const QString& id) const;
     QString selectedWallpaperId() const;
     QVariantList playlistItems() const;
     QVariantList workshopItems() const;
@@ -136,6 +143,7 @@ public:
     int workshopPageCount() const;
     int activeDownloadCount() const;
     QVariantList downloadQueue() const;
+    QVariantList bakeTasks() const;
     bool steamReady() const;
     QString steamSetupSummary() const;
     QString steamUsername() const;
@@ -176,12 +184,14 @@ public:
     bool showOnStart() const;
 
     Q_INVOKABLE void reloadWallpapers();
+    Q_INVOKABLE void setLibrarySources(const QStringList& directories);
     Q_INVOKABLE void selectWallpaper(const QString& id);
     Q_INVOKABLE bool isWallpaperTrusted(const QString& id) const;
     Q_INVOKABLE void trustWallpaper(const QString& id, bool persist);
     Q_INVOKABLE void applySelected(bool allScreens = false);
     Q_INVOKABLE void applyWallpaper(const QString& id, bool allScreens = false);
     Q_INVOKABLE void toggleSelectedFavorite();
+    Q_INVOKABLE void toggleFavorite(const QString& id);
     Q_INVOKABLE void updateSelectedMetadata(const QString& title, const QVariantList& tags);
     Q_INVOKABLE void deleteSelectedWallpaper();
     Q_INVOKABLE void importWallpaperPath(const QString& path);
@@ -194,6 +204,8 @@ public:
     Q_INVOKABLE void beginWallpaperAssignment(const QString& displayId);
     Q_INVOKABLE void cancelWallpaperAssignment();
     Q_INVOKABLE void addSelectedToPlaylist();
+    // Uses the shared directory ID and persists through PlaylistManager.
+    Q_INVOKABLE void addWallpaperToPlaylist(const QString& id);
     Q_INVOKABLE void playPlaylistItem(const QString& id);
     Q_INVOKABLE void removePlaylistItem(const QString& id);
     Q_INVOKABLE void clearPlaylist();
@@ -233,6 +245,14 @@ public:
     Q_INVOKABLE void cancelWorkshopDownload(const QString& id);
     Q_INVOKABLE void retryWorkshopDownload(const QString& id);
     Q_INVOKABLE void clearCompletedDownloads();
+    // Baking snapshots wallpaper render inputs and writes helper requests/output under Mirage-owned paths.
+    // QML calls and task notifications run on the GUI thread; the helper process owns only its copied request.
+    Q_INVOKABLE QString enqueueBake(const QString& wallpaperId, int width, int height,
+                                    int fps, int duration, int warmup,
+                                    bool audio, bool highQuality);
+    Q_INVOKABLE void cancelBakeTask(const QString& id);
+    Q_INVOKABLE void retryBakeTask(const QString& id);
+    Q_INVOKABLE void clearCompletedBakeTasks();
     Q_INVOKABLE void loginSteamQR();
     Q_INVOKABLE void loginSteam(const QString& username, const QString& password);
     Q_INVOKABLE void submitSteamGuardCode(const QString& code);
@@ -240,7 +260,6 @@ public:
     Q_INVOKABLE void cancelSteamLogin();
     Q_INVOKABLE void cancelPendingSteamWork();
     Q_INVOKABLE void logoutSteam();
-    Q_INVOKABLE void copyTextToClipboard(const QString& text);
     Q_INVOKABLE void loadSubscriptions();
     Q_INVOKABLE void goToSubscriptionPage(int page);
     Q_INVOKABLE void subscribeWorkshopItem(const QString& id);
@@ -289,6 +308,7 @@ signals:
     void selectedWorkshopItemChanged();
     void installedWallpaperSelected();
     void workshopStateChanged();
+    void bakeTasksChanged();
     void firstLaunchChanged();
     void statusMessageChanged();
     void settingsChanged();
@@ -338,6 +358,13 @@ private:
     // 变化必须重算），缓存只消除信号后的重复调用。
     void refreshWallpapersCache();
     void refreshDisplayStates();
+    // Starts and owns the single helper-process pipeline used by queued bake tasks.
+    void initializeBakeTasks();
+    void startNextBake();
+    void consumeBakeOutput();
+    void updateBakeTask(const QString& id, const QVariantMap& values);
+    QString bakeHelperPath(const QString& kind) const;
+    QString bakeText(const QString& key) const;
 
     GlobalSettingsService m_settings;
     FavoritesManager m_favorites;
@@ -352,6 +379,12 @@ private:
     SteamSetupViewModel m_steamSetup;
     PlaybackController m_playback;
     DisplayOutputModel m_displayModel;
+    QProcess m_bakeProcess;
+    QQueue<QString> m_bakeQueue;
+    QVariantList m_bakeTasks;
+    QString m_activeBakeId;
+    QByteArray m_bakeOutputBuffer;
+    bool m_bakeCompleteEvent = false;
     QVector<Wallpaper> m_allWallpapers;
     QString m_selectedWallpaperId;
     // 选中壁纸的序列化缓存（mutable：getter 为 const）。失效时机见

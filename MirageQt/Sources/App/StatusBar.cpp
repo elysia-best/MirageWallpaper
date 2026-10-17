@@ -20,7 +20,9 @@ StatusBar::StatusBar(QQmlApplicationEngine* engine,
     : QObject(parent)
     , m_engine(engine)
     , m_controller(controller)
-    , m_tray(QIcon(QStringLiteral(":/appicon.png")), this) {
+    // Use the compiled resource alias shared with main.cpp; :/appicon.png is not packaged.
+    , m_tray(QIcon(QStringLiteral(
+          ":/MirageQt/Resources/Assets.xcassets/AppIcon.appiconset/icon_32.png")), this) {
     m_tray.setToolTip(QStringLiteral("Mirage"));
 }
 
@@ -32,14 +34,14 @@ bool StatusBar::start() {
 
     auto* importAction = m_menu.addAction(QStringLiteral("导入壁纸…"));
     connect(importAction, &QAction::triggered, this, [this] {
-        invokeMainWindowAction("openImportPanel");
+        invokeMainWindowAction("openImport");
     });
 
     m_menu.addSeparator();
 
     auto* settingsAction = m_menu.addAction(QStringLiteral("设置…"));
     connect(settingsAction, &QAction::triggered, this, [this] {
-        invokeMainWindowAction("openSettingsPanel");
+        invokeMainWindowAction("openSettings");
     });
 
     auto* updateAction = m_menu.addAction(QStringLiteral("检查更新…（TODO：Linux 更新服务）"));

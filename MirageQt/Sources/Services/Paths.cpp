@@ -33,15 +33,15 @@ QString Paths::repoRoot() {
 }
 
 QString Paths::configDir() {
-    return ensureDir(homePath(".config/MirageQt"));
+    return ensureDir(homePath(".config/MirageQtUI"));
 }
 
 QString Paths::dataDir() {
-    return ensureDir(homePath(".local/share/MirageQt"));
+    return ensureDir(homePath(".local/share/MirageQtUI"));
 }
 
 QString Paths::cacheDir() {
-    return ensureDir(homePath(".cache/MirageQt"));
+    return ensureDir(homePath(".cache/MirageQtUI"));
 }
 
 QString Paths::importedDir() {
@@ -72,7 +72,7 @@ QString Paths::assetsDir() {
 }
 
 QString Paths::autostartDesktopFile() {
-    return homePath(".config/autostart/mirageqt.desktop");
+    return homePath(".config/autostart/mirageqt-ui.desktop");
 }
 
 QStringList Paths::defaultSteamWorkshopDirs() {
@@ -85,6 +85,16 @@ QStringList Paths::defaultSteamWorkshopDirs() {
 
 QStringList Paths::steamCMDContentDirs() {
     const QString root = steamCMDDir();
+    return {
+        QDir::cleanPath(root + "/steamapps/workshop/content/431960"),
+        QDir::cleanPath(root + "/home/Steam/steamapps/workshop/content/431960"),
+        QDir::cleanPath(root + "/home/.steam/steam/steamapps/workshop/content/431960"),
+        QDir::cleanPath(root + "/home/.local/share/Steam/steamapps/workshop/content/431960"),
+    };
+}
+
+QStringList Paths::legacySteamCMDContentDirs() {
+    const QString root = homePath(".local/share/MirageQt/steamcmd");
     return {
         QDir::cleanPath(root + "/steamapps/workshop/content/431960"),
         QDir::cleanPath(root + "/home/Steam/steamapps/workshop/content/431960"),

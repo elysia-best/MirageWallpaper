@@ -140,16 +140,15 @@ printf '%s\n' '#!/bin/sh' 'unset DOTNET_ROOT' 'exec %{_bindir}/dotnet "$@"' \
     > %{buildroot}%{_libexecdir}/miragewallpaper/SteamService/linux-x64/runtime/dotnet
 chmod 0755 %{buildroot}%{_libexecdir}/miragewallpaper/SteamService/linux-x64/runtime/dotnet
 install -Dm644 LICENSE %{buildroot}%{_docdir}/%{name}/LICENSE
-install -Dm644 MirageQt/Vendor/FluentUI/License \
-    %{buildroot}%{_docdir}/%{name}/FluentUI-MIT.txt
 install -d %{buildroot}%{_datadir}/licenses/%{name}
+install -m644 MirageQt/Vendor/libqrcode/LICENSE \
+    %{buildroot}%{_datadir}/licenses/%{name}/libqrcode-LICENSE
 find %{_builddir}/mirage-steamservice/Licenses -maxdepth 1 -type f \
     -exec install -m644 {} %{buildroot}%{_datadir}/licenses/%{name}/ \;
 desktop-file-validate %{buildroot}%{_datadir}/applications/mirageqt.desktop
 
 %files
 %license %{_docdir}/%{name}/LICENSE
-%license %{_docdir}/%{name}/FluentUI-MIT.txt
 %license %{_datadir}/licenses/%{name}/*
 %{_bindir}/MirageQt
 %{_libexecdir}/miragewallpaper/

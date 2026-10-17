@@ -84,7 +84,19 @@ QStringList WallpaperLibrary::sourceDirectories() const {
     for (const QString& dir : Paths::steamCMDContentDirs()) {
         if (!dirs.contains(dir)) dirs << dir;
     }
+    for (const QString& dir : Paths::legacySteamCMDContentDirs()) {
+        if (!dirs.contains(dir)) dirs << dir;
+    }
+    for (const QString& dir : m_additionalSourceDirectories) {
+        if (!dirs.contains(dir)) dirs << dir;
+    }
     return dirs;
+}
+
+void WallpaperLibrary::setAdditionalSourceDirectories(const QStringList& directories) {
+    if (m_additionalSourceDirectories == directories) return;
+    m_additionalSourceDirectories = directories;
+    emit libraryChanged();
 }
 
 QVector<Wallpaper> WallpaperLibrary::loadAll() const {
