@@ -1,3 +1,5 @@
+add_executable(MirageQt)
+
 #遍历所有Cpp文件
 file(GLOB_RECURSE CPP_FILES *.cpp)
 foreach (filepath ${CPP_FILES})
@@ -14,7 +16,7 @@ endforeach (filepath)
 
 #遍历所有qml文件
 set(SINGLETON_FILES "Theme.qml" "FilterData.qml" "Store.qml")
-file(GLOB_RECURSE QML_PATHS Qml/*.qml qmldir)
+file(GLOB_RECURSE QML_PATHS Qml/*.qml Qml/*.js qmldir)
 foreach (filepath ${QML_PATHS})
     string(REPLACE "${CMAKE_CURRENT_SOURCE_DIR}/" "" filename ${filepath})
     if (${filename} MATCHES "qmldir")
@@ -45,11 +47,6 @@ foreach (respath ${RES_PATHS})
     endforeach ()
 endforeach (respath)
 
-# Store.qml imports this sibling script from the QML module resource namespace.
-list(APPEND resource_files "Qml/ConditionEvaluator.js")
-
-qt_add_executable(MirageQt)
-
 qt_add_qml_module(MirageQt
         OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/temp/MirageQt
         URI MirageQt
@@ -75,6 +72,7 @@ qt_add_resources(MirageQt mirageqt_translations
 
 # For MirageLinuxDisplay
 target_include_directories(MirageQt PRIVATE "${MIRAGE_DISPLAY_SOURCE_DIR}/include")
+target_include_directories(MirageQt PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/App")
 
 target_link_libraries(MirageQt PRIVATE
         Qt6::Widgets
