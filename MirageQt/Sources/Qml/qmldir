@@ -13,6 +13,8 @@ MButton 1.0 MButton.qml
 MCheck 1.0 MCheck.qml
 MCombo 1.0 MCombo.qml
 MField 1.0 MField.qml
+MMenu 1.0 MMenu.qml
+MMenuItem 1.0 MMenuItem.qml
 MSlider 1.0 MSlider.qml
 MText 1.0 MText.qml
 Main 1.0 Main.qml

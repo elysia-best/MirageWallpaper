@@ -345,105 +345,105 @@ ApplicationWindow {
                 controller.importWallpaperPath(url.toLocalFile());
         }
     }
-    Menu {
+    MMenu {
         id: importMenu
-        MenuItem {
+        MMenuItem {
             text: Theme.t("从文件夹导入…")
             onTriggered: folderPicker.open()
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("导入视频…")
             onTriggered: videoPicker.open()
         }
     }
-    Menu {
+    MMenu {
         id: itemMenu
-        MenuItem {
+        MMenuItem {
             text: Theme.t("设为壁纸")
             enabled: Store.rendererConnected && !!Store.selected.id
             onTriggered: Store.apply()
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("设为屏保")
             enabled: false
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("烘焙为视频")
             enabled: !!Store.selected.id
             onTriggered: bake.open()
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("烘焙任务")
             onTriggered: window.showDialog("bakeTasks")
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("设为动态锁屏")
             enabled: false
         }
         MenuSeparator {}
-        MenuItem {
+        MMenuItem {
             text: Theme.t("加入播放列表")
             enabled: !!Store.selected.id
             onTriggered: Store.addToPlaylist(Store.selectedId)
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t(Store.favorites.includes(Store.selectedId) ? "取消收藏" : "加入收藏")
             enabled: !!Store.selected.id
             onTriggered: Store.favorite(Store.selectedId)
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("删除壁纸")
             enabled: !!Store.selected.id
             onTriggered: window.showDialog("delete")
         }
         MenuSeparator {}
-        MenuItem {
+        MMenuItem {
             text: Theme.t("在创意工坊中打开")
             enabled: /^\d+$/.test(String(Store.selected.workshopid || ""))
             onTriggered: Qt.openUrlExternally("https://steamcommunity.com/sharedfiles/filedetails/?id=" + Store.selected.workshopid)
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("查看作者主页和作品")
             enabled: !!Store.selected.author
             onTriggered: window.showDialog("author")
         }
-        Menu {
+        MMenu {
             title: Theme.t("相关壁纸")
             enabled: false
-            MenuItem {
+            MMenuItem {
                 text: Theme.t("浏览该作者全部")
             }
-            MenuItem {
+            MMenuItem {
                 text: Theme.t("浏览预设")
             }
         }
-        Menu {
+        MMenu {
             title: Theme.t("举报与屏蔽")
             enabled: false
-            MenuItem {
+            MMenuItem {
                 text: Theme.t("举报")
             }
-            MenuItem {
+            MMenuItem {
                 text: Theme.t("管理屏蔽列表")
             }
         }
         MenuSeparator {}
-        MenuItem {
+        MMenuItem {
             text: Theme.t("设置快捷键")
             enabled: !!Store.selected.id
             onTriggered: window.showDialog("shortcut")
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("在文件管理器中显示")
             enabled: !!Store.selected.path
             onTriggered: bridge.openFolder(Store.selected.path)
         }
     }
-    Menu {
+    MMenu {
         id: displayMenu
         Repeater {
             model: controller.displays
-            MenuItem {
+            MMenuItem {
                 required property var modelData
                 required property int index
                 text: Theme.t("显示器") + " " + (index + 1) + " · " + modelData.name + " · " + modelData.width + " × " + modelData.height
@@ -453,12 +453,12 @@ ApplicationWindow {
             }
         }
         MenuSeparator {}
-        MenuItem {
+        MMenuItem {
             text: Theme.t("停止此显示器")
             enabled: Store.rendererConnected
             onTriggered: controller.stopScreen(Store.display)
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("全部停止")
             enabled: Store.rendererConnected
             onTriggered: controller.stopWallpapers()

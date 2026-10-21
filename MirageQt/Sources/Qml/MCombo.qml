@@ -32,7 +32,8 @@ ComboBox {
         border.color: control.activeFocus ? Theme.accent : Theme.line
     }
     delegate: ItemDelegate {
-        width: control.width
+        // The delegate lives inside the popup's padded ListView; use that actual content width.
+        width: control.popup.contentItem.width
         text: control.translateModel ? Theme.t(modelData) : modelData
         highlighted: control.highlightedIndex === index
         contentItem: MText {
@@ -40,7 +41,9 @@ ComboBox {
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
+            anchors.fill: parent
             color: parent.highlighted ? Theme.hover : Theme.field
+            radius: 5
         }
     }
     popup: Popup {
@@ -55,7 +58,7 @@ ComboBox {
         contentItem: ListView {
             implicitHeight: Math.min(contentHeight, 320)
             model: control.popup.visible ? control.delegateModel : null
-            clip: true
+            clip: false
             currentIndex: control.highlightedIndex
             ScrollIndicator.vertical: ScrollIndicator {}
         }

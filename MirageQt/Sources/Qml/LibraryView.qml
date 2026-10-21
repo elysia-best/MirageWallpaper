@@ -106,24 +106,24 @@ ColumnLayout {
             }
         }
     }
-    Menu {
+    MMenu {
         id: viewMenu
-        MenuItem {
+        MMenuItem {
             text: Theme.t("小图标")
             onTriggered: Store.cardSize = 140
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("中图标")
             onTriggered: Store.cardSize = 170
         }
-        MenuItem {
+        MMenuItem {
             text: Theme.t("大图标")
             onTriggered: Store.cardSize = 200
         }
         MenuSeparator {}
         Repeater {
             model: [25, 50, 100, 200]
-            delegate: MenuItem {
+            delegate: MMenuItem {
                 required property int modelData
                 text: Theme.t("每页") + " " + modelData
                 checkable: true
