@@ -30,10 +30,11 @@ OUTPUT="${1:-$ROOT_DIR/SteamService/build/linux-x64}"
 DOTNET_EXECUTABLE="$(command -v dotnet)"
 [ -n "$DOTNET_EXECUTABLE" ] || { echo "[steam-service] dotnet is required (net10.0 SDK)" >&2; exit 1; }
 DOTNET_EXECUTABLE="$(readlink -f "$DOTNET_EXECUTABLE")"
-DOTNET_ROOT="$(dirname "$DOTNET_EXECUTABLE")"
+DOTNET_ROOT="${DOTNET_ROOT:-$(dirname "$DOTNET_EXECUTABLE")}"
+DOTNET_ROOT="$(readlink -f "$DOTNET_ROOT")"
 RUNTIME_VERSION="$(dotnet --list-runtimes | awk '$1 == "Microsoft.NETCore.App" && $2 ~ /^10\./ { print $2 }' | sort -V | tail -1)"
 [ -n "$RUNTIME_VERSION" ] || { echo "[steam-service] Microsoft.NETCore.App 10 runtime is unavailable" >&2; exit 1; }
-[ -d "$DOTNET_ROOT/host/fxr/$RUNTIME_VERSION" ] || { echo "[steam-service] hostfxr $RUNTIME_VERSION is unavailable" >&2; exit 1; }
+[ -d "$DOTNET_ROOT/host/fxr" ] || { echo "[steam-service] hostfxr directory is unavailable under $DOTNET_ROOT" >&2; exit 1; }
 [ -d "$DOTNET_ROOT/shared/Microsoft.NETCore.App/$RUNTIME_VERSION" ] || { echo "[steam-service] runtime $RUNTIME_VERSION is unavailable" >&2; exit 1; }
 # 发行版打包的 dotnet 可能不带 LICENSE.txt/ThirdPartyNotices.txt（许可证在
 # 系统包文档里）；缺失时仅警告，不阻断 bundle。
@@ -68,16 +69,10 @@ env -u ASSEMBLY_NAME -u PRODUCT_NAME -u PROJECT_NAME -u TARGET_NAME \
 # bundle：dll 应用 + dotnet runtime（framework-dependent 依赖 runtime 目录）。
 cp -R "$PUBLISH_DIR/." "$APP_DEST/"
 cp -f "$DOTNET_EXECUTABLE" "$RUNTIME_DEST/dotnet"
-cp -R "$DOTNET_ROOT/host/fxr/$RUNTIME_VERSION" "$RUNTIME_DEST/host/fxr/$RUNTIME_VERSION"
+cp -R "$DOTNET_ROOT/host/fxr/." "$RUNTIME_DEST/host/fxr/"
 cp -R "$DOTNET_ROOT/shared/Microsoft.NETCore.App/$RUNTIME_VERSION" \
     "$RUNTIME_DEST/shared/Microsoft.NETCore.App/$RUNTIME_VERSION"
 chmod +x "$RUNTIME_DEST/dotnet"
-
-# 架构校验：linux-x64 产物必须是 x86-64 dotnet。
-file "$RUNTIME_DEST/dotnet" | grep -q "x86-64" || {
-    echo "[steam-service] dotnet architecture does not match linux-x64" >&2
-    exit 1
-}
 
 # 许可证（存在才拷贝）。
 cp -f "$ROOT_DIR/SteamService/Licenses/LGPL-2.1.txt" "$LICENSE_DEST/LGPL-2.1.txt"

@@ -164,7 +164,9 @@ internal sealed class WorkshopDownloader
             {
                 if (!IsChunkValid(stream, chunk)) throw new ServiceException("VALIDATION_FAILED", entry.File.FileName);
             }
-            if (entry.File.Flags.HasFlag(EDepotFileFlag.Executable))
+            // Steam depot executable bits are meaningful on Unix filesystems; guard the
+            // platform-specific API so multi-RID analysis remains warning-free on Windows.
+            if (entry.File.Flags.HasFlag(EDepotFileFlag.Executable) && !OperatingSystem.IsWindows())
             {
                 var mode = File.GetUnixFileMode(entry.Path);
                 File.SetUnixFileMode(entry.Path, mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
