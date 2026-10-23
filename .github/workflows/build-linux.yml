@@ -127,7 +127,7 @@ jobs:
           install -Dm755 "$build_root/scene/Tools/SceneWallpaper/SceneWallpaper" "$dist_dir/SceneWallpaper"
           install -Dm755 "$build_root/video/Tools/VideoWallpaper/VideoWallpaper" "$dist_dir/VideoWallpaper"
           install -Dm755 "$build_root/web/Tools/WebWallpaper/WebWallpaper" "$dist_dir/WebWallpaper"
-          install -Dm644 "$build_root/mirageqt/mirageqt.desktop" "$dist_dir/mirageqt.desktop"
+          install -Dm644 "$build_root/mirageqt/Sources/mirageqt.desktop" "$dist_dir/mirageqt.desktop"
           install -Dm644 MirageQt/Sources/Resources/mirage.png "$dist_dir/mirageqt.png"
           install -Dm644 LICENSE "$dist_dir/LICENSE"
           install -Dm644 MirageQt/Vendor/libqrcode/LICENSE "$dist_dir/Licenses/libqrcode-LICENSE"
