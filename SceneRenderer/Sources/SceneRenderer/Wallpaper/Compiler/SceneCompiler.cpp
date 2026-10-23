@@ -3322,8 +3322,8 @@ void ParseImageObj(ParseContext& context, wpscene::ImageObject& img_obj,
         colorEffect.materials.push_back(std::move(colorMat));
         wpimgobj.effects.push_back(std::move(colorEffect));
     }
-    const bool is_hidden_link_source =
-        context.hidden_link_source_ids.count(static_cast<std::int32_t>(wpimgobj.id)) != 0;
+    // Reuse the classification established before animation handling for the
+    // linked-composite checks below; recomputing it in this scope redeclares it.
     const bool captures_children = wpimgobj.composite_layer && ! wpimgobj.copybackground &&
         (has_author_effect ||
          std::any_of(context.object_parent_ids.begin(), context.object_parent_ids.end(),
