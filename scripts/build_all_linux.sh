@@ -30,6 +30,8 @@
 #   MIRAGEQT_BUILD_DIR=PATH      MirageQt build dir override (default: MirageQt/build/{release,debug})
 #   PACKAGE_DIR=PATH             staging root for the tar.gz (default: $ROOT_DIR/dist)
 #   VERSION=STRING               package version override (default: git describe)
+#   QT_PREFIX=PATH               Qt installation prefix (default: qtpaths query)
+#   FFMPEG_BIN=PATH              ffmpeg executable to bundle (default: PATH lookup)
 #   NO_PACKAGE=1                 build without creating the tar.gz
 
 set -euo pipefail
@@ -72,6 +74,8 @@ Environment variables:
   MIRAGEQT_BUILD_DIR=PATH     MirageQt build dir override (default: MirageQt/build/{release,debug})
   PACKAGE_DIR=PATH            staging root for the tar.gz (default: <repo>/dist)
   VERSION=STRING              package version override (default: git describe)
+  QT_PREFIX=PATH              Qt installation prefix (default: qtpaths query)
+  FFMPEG_BIN=PATH             ffmpeg executable to bundle (default: PATH lookup)
   NO_PACKAGE=1                build without creating the tar.gz
 EOF
 }
@@ -216,91 +220,161 @@ find_display_lib_dir() {
     return 1
 }
 
-# --- package: stage existing artifacts and create the "大包围" tar.gz ---
+# --- package: stage existing artifacts, copy runtime libraries, and archive ---
 package() {
     step "Packaging MirageWallpaper ($CONFIG)"
 
     local scene_bin video_bin web_bin app_bin
-    scene_bin="$(first_existing \
-        "$ROOT_DIR/SceneRenderer/build/linux-clang-$CONFIG/Tools/SceneWallpaper/SceneWallpaper" \
+    scene_bin="$(first_existing "$ROOT_DIR/SceneRenderer/build/linux-clang-$CONFIG/Tools/SceneWallpaper/SceneWallpaper" \
         "$ROOT_DIR/SceneRenderer/build/release/Tools/SceneWallpaper/SceneWallpaper" \
-        "$ROOT_DIR/SceneRenderer/build/debug/Tools/SceneWallpaper/SceneWallpaper")" \
-        || die "SceneWallpaper binary not found (build it first: $SCENE_SH $CONFIG)"
-    video_bin="$(first_existing \
-        "$ROOT_DIR/VideoRenderer/build/$CONFIG/Tools/VideoWallpaper/VideoWallpaper" \
+        "$ROOT_DIR/SceneRenderer/build/debug/Tools/SceneWallpaper/SceneWallpaper")" || die "SceneWallpaper binary not found"
+    video_bin="$(first_existing "$ROOT_DIR/VideoRenderer/build/$CONFIG/Tools/VideoWallpaper/VideoWallpaper" \
         "$ROOT_DIR/VideoRenderer/build/release/Tools/VideoWallpaper/VideoWallpaper" \
-        "$ROOT_DIR/VideoRenderer/build/Tools/VideoWallpaper/VideoWallpaper")" \
-        || die "VideoWallpaper binary not found (build it first: $VIDEO_SH $CONFIG)"
-    web_bin="$(first_existing \
-        "$WEB_BUILD_DIR/Tools/WebWallpaper/WebWallpaper" \
+        "$ROOT_DIR/VideoRenderer/build/Tools/VideoWallpaper/VideoWallpaper")" || die "VideoWallpaper binary not found"
+    web_bin="$(first_existing "$WEB_BUILD_DIR/Tools/WebWallpaper/WebWallpaper" \
         "$ROOT_DIR/WebRenderer/build/linux-release/Tools/WebWallpaper/WebWallpaper" \
-        "$ROOT_DIR/WebRenderer/build/linux-debug/Tools/WebWallpaper/WebWallpaper")" \
-        || die "WebWallpaper binary not found (build it first: $0 web $CONFIG)"
+        "$ROOT_DIR/WebRenderer/build/linux-debug/Tools/WebWallpaper/WebWallpaper")" || die "WebWallpaper binary not found"
     app_bin="$APP_BUILD_DIR/bin/MirageQt"
-    [[ -x "$app_bin" ]] || die "MirageQt binary not found at $app_bin (build it first: $0 app)"
+    [[ -x "$app_bin" ]] || die "MirageQt binary not found at $app_bin"
 
+    local qtpaths_bin="$(command -v qtpaths6 || command -v qtpaths-qt6 || true)" qt_prefix
+    if [[ -n "${QT_PREFIX:-}" ]]; then
+        qt_prefix="$QT_PREFIX"
+    else
+        [[ -n "$qtpaths_bin" ]] || die "Qt installation prefix is unknown; set QT_PREFIX or install qtpaths6"
+        qt_prefix="$("$qtpaths_bin" --query QT_INSTALL_PREFIX)"
+    fi
+    [[ -d "$qt_prefix" ]] || die "Qt installation prefix does not exist: $qt_prefix"
+    qt_query() {
+        local key="$1"
+        if [[ -n "$qtpaths_bin" ]]; then
+            "$qtpaths_bin" --query "$key"
+        else
+            case "$key" in
+                QT_INSTALL_PLUGINS) printf '%s/plugins\n' "$qt_prefix" ;;
+                QT_INSTALL_QML) printf '%s/qml\n' "$qt_prefix" ;;
+                QT_INSTALL_DATA) printf '%s/share/qt\n' "$qt_prefix" ;;
+                QT_INSTALL_TRANSLATIONS) printf '%s/share/qt/translations\n' "$qt_prefix" ;;
+                QT_INSTALL_LIBEXECS) printf '%s/libexec\n' "$qt_prefix" ;;
+                QT_INSTALL_LIBS) printf '%s/lib\n' "$qt_prefix" ;;
+                *) die "QT_PREFIX requires qtpaths for query: $key" ;;
+            esac
+        fi
+    }
+
+    local ffmpeg_bin="${FFMPEG_BIN:-$(command -v ffmpeg || true)}"
+    [[ -x "$ffmpeg_bin" ]] || die "ffmpeg executable not found; set FFMPEG_BIN"
     local version="${VERSION:-$(git -C "$ROOT_DIR" describe --tags --always --dirty 2>/dev/null || echo 0.1.0)}"
     version="${version//\//-}"
-    local arch="$(uname -m)"
-    local name="MirageWallpaper-${version}-linux-${arch}"
+    local name="MirageWallpaper-${version}-linux-$(uname -m)"
     local pkg_dir="$PACKAGE_DIR/$name"
-
-    info "package name: $name"
-    info "staging into: $pkg_dir"
     rm -rf "$pkg_dir"
     mkdir -p "$pkg_dir"
 
-    info "copying binaries"
-    cp -f "$app_bin"   "$pkg_dir/MirageQt"
-    cp -f "$scene_bin" "$pkg_dir/SceneWallpaper"
-    cp -f "$video_bin" "$pkg_dir/VideoWallpaper"
-    cp -f "$web_bin"   "$pkg_dir/WebWallpaper"
-    chmod +x "$pkg_dir"/MirageQt "$pkg_dir"/SceneWallpaper "$pkg_dir"/VideoWallpaper "$pkg_dir"/WebWallpaper
-
-    # SteamService (SteamKit2): bundle beside the app so Steam login/workshop
-    # works in the packaged tree without a system-wide dotnet runtime.
-    if [[ -d "$STEAM_SERVICE_DIR" ]]; then
-        info "bundling SteamService"
-        mkdir -p "$pkg_dir/SteamService"
-        cp -a "$STEAM_SERVICE_DIR" "$pkg_dir/SteamService/linux-x64"
-    else
-        warn "SteamService bundle not found at $STEAM_SERVICE_DIR;" \
-            "Steam login and workshop downloads will be unavailable"
-    fi
-
-    # Renderers link libmirage_display.so.0 at runtime; bundle it beside them
-    # and rewrite the RUNPATH to $ORIGIN so the package works outside the repo.
-    local lib_dir
-    lib_dir="$(find_display_lib_dir)" || true
-    if [[ -n "$lib_dir" ]]; then
-        info "bundling mirage-display shared library from $lib_dir"
-        cp -a "$lib_dir"/libmirage_display.so* "$pkg_dir"/
-        if command -v patchelf >/dev/null 2>&1; then
-            info "rewriting renderer RUNPATH to \$ORIGIN"
-            patchelf --set-rpath '$ORIGIN' \
-                "$pkg_dir/SceneWallpaper" "$pkg_dir/VideoWallpaper" "$pkg_dir/WebWallpaper"
-        else
-            warn "patchelf not found; renderers keep their build-dir RUNPATH." \
-                "Install patchelf and re-run, or launch with LD_LIBRARY_PATH=$pkg_dir."
-        fi
-    else
-        warn "libmirage_display.so.0 not found; the package may not run outside this checkout."
-    fi
-
-    info "copying assets/"
+    # The CI and local builds use the same staging tree; only this function
+    # owns runtime copying so the archive does not depend on the build host.
+    install -Dm755 "$app_bin" "$pkg_dir/MirageQt"
+    install -Dm755 "$scene_bin" "$pkg_dir/SceneWallpaper"
+    install -Dm755 "$video_bin" "$pkg_dir/VideoWallpaper"
+    install -Dm755 "$web_bin" "$pkg_dir/WebWallpaper"
+    install -Dm755 "$ffmpeg_bin" "$pkg_dir/bin/ffmpeg"
+    install -Dm644 "$ROOT_DIR/LICENSE" "$pkg_dir/LICENSE"
     cp -a "$ROOT_DIR/assets" "$pkg_dir/assets"
+    install -Dm644 "$ROOT_DIR/MirageQt/Sources/Resources/mirage.png" "$pkg_dir/mirageqt.png"
+    sed -e 's|@MIRAGEQT_EXECUTABLE@|MirageQt|' \
+        -e 's|^Icon=.*|Icon=mirageqt.png|' \
+        "$ROOT_DIR/MirageQt/Sources/Resources/mirageqt.desktop.in" > "$pkg_dir/mirageqt.desktop"
+    install -d "$pkg_dir/SteamService"
+    cp -a "$STEAM_SERVICE_DIR" "$pkg_dir/SteamService/linux-x64"
 
-    info "writing icon and desktop entry"
-    cp -f "$ROOT_DIR/MirageQt/Resources/mirage.png" "$pkg_dir/mirageqt.png"
-    sed -e "s|@MIRAGEQT_EXECUTABLE@|$pkg_dir/MirageQt|" \
-        -e "s|^Icon=.*|Icon=$pkg_dir/mirageqt.png|" \
-        "$ROOT_DIR/MirageQt/Resources/mirageqt.desktop.in" > "$pkg_dir/mirageqt.desktop"
+    # Qt's shared libraries, QML imports, plugins, WebEngine resources, and
+    # helper are runtime inputs; qtpaths supplies their actual installation
+    # prefix for both Homebrew and system Qt installations.
+    local qt_plugins qt_qml qt_resources qt_translations qt_libexec qt_libs
+    qt_plugins="$(qt_query QT_INSTALL_PLUGINS)"
+    qt_qml="$(qt_query QT_INSTALL_QML)"
+    qt_resources="$(qt_query QT_INSTALL_DATA)/resources"
+    qt_translations="$(qt_query QT_INSTALL_TRANSLATIONS)"
+    qt_libexec="$(qt_query QT_INSTALL_LIBEXECS)"
+    qt_libs="$(qt_query QT_INSTALL_LIBS)"
+    install -d "$pkg_dir/share/qt"
+    cp -aL "$qt_plugins" "$pkg_dir/"
+    cp -aL "$qt_qml" "$pkg_dir/"
+    cp -aL "$qt_resources" "$pkg_dir/share/qt/"
+    cp -aL "$qt_translations" "$pkg_dir/share/qt/"
+    install -Dm755 "$qt_libexec/QtWebEngineProcess" "$pkg_dir/libexec/QtWebEngineProcess"
+    command -v patchelf >/dev/null 2>&1 || die "patchelf is required for portable runtime RPATHs"
+    cat > "$pkg_dir/qt.conf" <<'EOF'
+[Paths]
+Prefix=.
+Libraries=lib
+Plugins=plugins
+QmlImports=qml
+Qml2Imports=qml
+Data=share/qt
+Translations=share/qt/translations
+LibraryExecutables=libexec
+EOF
 
+    # Copy every non-glibc ELF dependency from the build host, then reject any
+    # unresolved or conflicting library so the archive remains self-contained.
+    install -d "$pkg_dir/lib"
+    runtime_library_path="$pkg_dir/lib:$qt_libs:$qt_prefix/lib"
+    while IFS= read -r -d '' elf; do
+        local elf_header elf_type dependencies
+        elf_header="$(readelf -h "$elf" 2>/dev/null)" || continue
+        elf_type="$(awk -F: '/^[[:space:]]*Type:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<< "$elf_header")"
+        [[ "$elf_type" == EXEC* || "$elf_type" == DYN* ]] || continue
+        if ! dependencies="$(LD_LIBRARY_PATH="$runtime_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>/dev/null)"; then
+            die "failed to inspect runtime dependencies for $elf"
+        fi
+        grep -q 'not found' <<< "$dependencies" && die "unresolved runtime dependency in $elf"
+        while IFS= read -r dependency; do
+            case "$(basename "$dependency")" in
+                libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|ld-linux*.so.*|linux-vdso.so.*) continue ;;
+            esac
+            local destination="$pkg_dir/lib/$(basename "$dependency")"
+            if [[ -e "$destination" ]]; then
+                continue
+            else
+                install -Dm755 "$dependency" "$destination"
+            fi
+        done < <(awk '
+            $2 == "=>" && substr($3, 1, 1) == "/" { print $3 }
+            substr($1, 1, 1) == "/" && $2 ~ /^\(0x/ { print $1 }
+        ' <<< "$dependencies")
+    done < <(find "$pkg_dir" -type f -print0)
+
+    while IFS= read -r -d '' elf; do
+        local elf_header elf_type relative_lib dependencies
+        elf_header="$(readelf -h "$elf" 2>/dev/null)" || continue
+        elf_type="$(awk -F: '/^[[:space:]]*Type:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<< "$elf_header")"
+        [[ "$elf_type" == EXEC* || "$elf_type" == DYN* ]] || continue
+        relative_lib="$(realpath --relative-to="$(dirname "$elf")" "$pkg_dir/lib")"
+        patchelf --set-rpath "\$ORIGIN:\$ORIGIN/$relative_lib" "$elf"
+        if ! dependencies="$(LD_LIBRARY_PATH="$runtime_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>/dev/null)"; then
+            die "failed to verify bundled runtime dependencies for $elf"
+        fi
+        grep -q 'not found' <<< "$dependencies" && die "unresolved bundled runtime dependency in $elf"
+    done < <(find "$pkg_dir" -type f -print0)
+
+    cat > "$pkg_dir/run.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH="$root/bin:$PATH"
+export QT_PLUGIN_PATH="$root/plugins"
+export QML2_IMPORT_PATH="$root/qml"
+export QTWEBENGINEPROCESS_PATH="$root/libexec/QtWebEngineProcess"
+export QTWEBENGINE_RESOURCES_PATH="$root/share/qt/resources"
+export QTWEBENGINE_LOCALES_PATH="$root/share/qt/translations/qtwebengine_locales"
+exec "$root/MirageQt" "$@"
+EOF
+    chmod 755 "$pkg_dir/run.sh"
     local tarball="$PACKAGE_DIR/$name.tar.gz"
-    info "creating $tarball"
-    ( cd "$PACKAGE_DIR" && tar -czf "$name.tar.gz" "$name" )
+    (cd "$PACKAGE_DIR" && tar -czf "$name.tar.gz" "$name")
     good "artifact: $tarball"
-    du -sh "$tarball" "$pkg_dir" | sed 's/^/  /'
 }
 
 # --- dispatch ---
