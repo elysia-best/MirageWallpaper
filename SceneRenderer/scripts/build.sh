@@ -117,6 +117,12 @@ command -v glslangValidator >/dev/null || die "glslangValidator not found. Insta
 
 EXTRA_CONFIGURE_ARGS=()
 
+# CI/package builds may disable the optional GLFW viewer when platform OpenGL
+# development headers are unavailable; the wallpaper host does not need it.
+if [[ -n "${SCENERENDERER_BUILD_VIEWER:-}" ]]; then
+    EXTRA_CONFIGURE_ARGS+=("-DSCENERENDERER_BUILD_VIEWER=${SCENERENDERER_BUILD_VIEWER}")
+fi
+
 case "$SYSTEM_NAME" in
     Darwin)
         command -v brew >/dev/null || die "Homebrew not found. Install from https://brew.sh"

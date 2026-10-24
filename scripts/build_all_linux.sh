@@ -122,7 +122,10 @@ WEB_BUILD_DIR="$WEBRENDERER_DIR/build/linux-$CONFIG"
 # --- per-component build helpers ---
 build_scene() {
     step "Building SceneRenderer ($CONFIG)"
-    bash "$SCENE_SH" "$CONFIG"
+    # The Linux distribution contains SceneWallpaper, not the optional GLFW
+    # SceneViewer; disabling the viewer avoids requiring platform OpenGL SDK
+    # headers that are unrelated to the packaged runtime.
+    SCENERENDERER_BUILD_VIEWER=OFF bash "$SCENE_SH" "$CONFIG"
 }
 build_video() {
     step "Building VideoRenderer ($CONFIG)"
