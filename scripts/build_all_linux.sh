@@ -8,11 +8,10 @@
 #   3. WebRenderer   → WebWallpaper     (CMake, QtWebEngine + Vulkan)
 #   4. MirageQt      → MirageQt app     (CMake, Qt 6.8+)
 #
-# Finally everything is staged under dist/ and packed into a self-contained
-# tar.gz: the MirageQt binary, the SceneWallpaper / VideoWallpaper / WebWallpaper
-# renderer binaries, the mirage-display shared library (with the renderer
-# RUNPATH rewritten to $ORIGIN), the shared assets directory, and a desktop
-# entry — a complete distribution you can extract and run directly.
+# Finally everything is staged under dist/ and packed with application runtime
+# libraries; the host's graphics driver stack remains a system dependency. The
+# archive contains the app and renderer binaries, assets, desktop entry, and
+# SteamService bundle and can be extracted and launched with its run.sh wrapper.
 #
 # Usage:
 #   scripts/build_all_linux.sh                 full build (release, default) + tar.gz
@@ -319,32 +318,51 @@ Translations=share/qt/translations
 LibraryExecutables=libexec
 EOF
 
-    # Copy every non-glibc ELF dependency from the build host, then reject any
-    # unresolved or conflicting library so the archive remains self-contained.
+    # Copy application/runtime dependencies, but leave EGL, GBM, DRM, Vulkan,
+    # VA-API, and Mesa/LLVM driver components to the target system. These
+    # loaders discover host-specific DRI/GBM drivers at runtime; bundling the
+    # build host's versions embeds Homebrew Cellar paths and prevents the
+    # target's Mesa stack from loading.
     install -d "$pkg_dir/lib"
     runtime_library_path="$pkg_dir/lib:$qt_libs:$qt_prefix/lib"
+    local dependency_copy_failure=""
+    # Defer the first ldd failure until find finishes; exiting inside this
+    # process-substitution loop closes its output pipe and hides the cause.
     while IFS= read -r -d '' elf; do
         local elf_header elf_type dependencies
         elf_header="$(readelf -h "$elf" 2>/dev/null)" || continue
         elf_type="$(awk -F: '/^[[:space:]]*Type:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<< "$elf_header")"
         [[ "$elf_type" == EXEC* || "$elf_type" == DYN* ]] || continue
-        if ! dependencies="$(LD_LIBRARY_PATH="$runtime_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>/dev/null)"; then
-            die "failed to inspect runtime dependencies for $elf"
-        fi
         while IFS= read -r absolute_needed; do
             [[ -n "$absolute_needed" ]] || continue
-            [[ -f "$absolute_needed" ]] || die "absolute runtime dependency is unavailable: $absolute_needed"
             local needed_name="$(basename "$absolute_needed")"
+            case "$needed_name" in
+                libEGL.so*|libGLESv*.so*|libgbm.so*|libdrm*.so*|libGL.so*|libGLX.so*|libGLdispatch.so*|libOpenGL.so*|libglapi.so*|libvulkan.so*|libvulkan_*.so*|libgallium*.so*|libdri*.so*|libmesa*.so*|libva*.so*|libvdpau*.so*|libLLVM*.so*)
+                    patchelf --replace-needed "$absolute_needed" "$needed_name" "$elf"
+                    continue
+                    ;;
+            esac
+            [[ -f "$absolute_needed" ]] || die "absolute runtime dependency is unavailable: $absolute_needed"
             local needed_destination="$pkg_dir/lib/$needed_name"
             if [[ ! -e "$needed_destination" ]]; then
                 install -Dm755 "$absolute_needed" "$needed_destination"
             fi
             patchelf --replace-needed "$absolute_needed" "$needed_name" "$elf"
         done < <(readelf -d "$elf" | awk -F'[][]' '/NEEDED/ && $2 ~ /^\// { print $2 }')
-        grep -q 'not found' <<< "$dependencies" && die "unresolved runtime dependency in $elf"
+        if ! dependencies="$(LD_LIBRARY_PATH="$runtime_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>/dev/null)"; then
+            [[ -n "$dependency_copy_failure" ]] || dependency_copy_failure="failed to inspect runtime dependencies for $elf"
+            continue
+        fi
+        if grep -q 'not found' <<< "$dependencies"; then
+            local missing_dependency="$(awk '/not found/ { print; exit }' <<< "$dependencies")"
+            [[ -n "$dependency_copy_failure" ]] || dependency_copy_failure="unresolved runtime dependency in $elf: $missing_dependency"
+        fi
         while IFS= read -r dependency; do
             case "$(basename "$dependency")" in
-                libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|ld-linux*.so.*|linux-vdso.so.*) continue ;;
+                libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|ld-linux*.so.*|linux-vdso.so.*|\
+                libEGL.so*|libGLESv*.so*|libgbm.so*|libdrm*.so*|libGL.so*|libGLX.so*|libGLdispatch.so*|\
+                libOpenGL.so*|libglapi.so*|libvulkan.so*|libvulkan_*.so*|libgallium*.so*|libdri*.so*|\
+                libmesa*.so*|libva*.so*|libvdpau*.so*|libLLVM*.so*) continue ;;
             esac
             local destination="$pkg_dir/lib/$(basename "$dependency")"
             if [[ -e "$destination" ]]; then
@@ -357,7 +375,15 @@ EOF
             substr($1, 1, 1) == "/" && ($2 ~ /^\(0x/ || $2 == "=>") { print $1 }
         ' <<< "$dependencies")
     done < <(find "$pkg_dir" -type f -print0)
+    [[ -z "$dependency_copy_failure" ]] || die "$dependency_copy_failure"
 
+    # Graphics, DRM, Vulkan, and video-acceleration libraries are deliberately
+    # supplied by the target system, so portable-archive verification must not
+    # require the CI packaging host to install them. All other unresolved ELF
+    # dependencies still fail packaging and identify the exact missing SONAME.
+    local dependency_verify_failure=""
+    # Collect verifier failures for the same reason: die here would make find
+    # print a broken-pipe error that obscures the dependency failure.
     while IFS= read -r -d '' elf; do
         local elf_header elf_type relative_lib dependencies
         elf_header="$(readelf -h "$elf" 2>/dev/null)" || continue
@@ -369,17 +395,31 @@ EOF
             [[ -n "$absolute_needed" ]] || continue
             patchelf --replace-needed "$absolute_needed" "$(basename "$absolute_needed")" "$elf"
         done < <(readelf -d "$elf" | awk -F'[][]' '/NEEDED/ && $2 ~ /^\// { print $2 }')
-        if ! dependencies="$(LD_LIBRARY_PATH="$runtime_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>/dev/null)"; then
-            die "failed to verify bundled runtime dependencies for $elf"
+        if ! dependencies="$(env -u LD_LIBRARY_PATH ldd "$elf" 2>/dev/null)"; then
+            [[ -n "$dependency_verify_failure" ]] || dependency_verify_failure="failed to verify bundled runtime dependencies for $elf"
+            continue
         fi
-        grep -q 'not found' <<< "$dependencies" && die "unresolved bundled runtime dependency in $elf"
+        while IFS= read -r missing_dependency; do
+            case "$missing_dependency" in
+                libEGL.so*|libGLESv*.so*|libgbm.so*|libdrm*.so*|libGL.so*|libGLX.so*|libGLdispatch.so*|\
+                libOpenGL.so*|libglapi.so*|libvulkan.so*|libvulkan_*.so*|libgallium*.so*|libdri*.so*|\
+                libmesa*.so*|libva*.so*|libvdpau*.so*|libLLVM*.so*) continue ;;
+            esac
+            [[ -n "$dependency_verify_failure" ]] || dependency_verify_failure="unresolved bundled runtime dependency $missing_dependency in $elf"
+        done < <(awk '$2 == "=>" && $3 == "not" && $4 == "found" { print $1 }' <<< "$dependencies")
+        if [[ -n "${HOMEBREW_PREFIX:-}" ]] && grep -Fq "$HOMEBREW_PREFIX" <<< "$dependencies"; then
+            [[ -n "$dependency_verify_failure" ]] || dependency_verify_failure="build-prefix runtime dependency escaped the distribution for $elf"
+        fi
     done < <(find "$pkg_dir" -type f -print0)
+    [[ -z "$dependency_verify_failure" ]] || die "$dependency_verify_failure"
 
     cat > "$pkg_dir/run.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Each bundled ELF has a package-relative RPATH; keep GPU driver discovery on
+# the host so Mesa and hardware-specific EGL/GBM drivers come from the target.
+unset LD_LIBRARY_PATH
 export PATH="$root/bin:$PATH"
 export QT_PLUGIN_PATH="$root/plugins"
 export QML2_IMPORT_PATH="$root/qml"
