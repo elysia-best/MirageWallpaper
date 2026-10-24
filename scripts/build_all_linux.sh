@@ -331,6 +331,16 @@ EOF
         if ! dependencies="$(LD_LIBRARY_PATH="$runtime_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>/dev/null)"; then
             die "failed to inspect runtime dependencies for $elf"
         fi
+        while IFS= read -r absolute_needed; do
+            [[ -n "$absolute_needed" ]] || continue
+            [[ -f "$absolute_needed" ]] || die "absolute runtime dependency is unavailable: $absolute_needed"
+            local needed_name="$(basename "$absolute_needed")"
+            local needed_destination="$pkg_dir/lib/$needed_name"
+            if [[ ! -e "$needed_destination" ]]; then
+                install -Dm755 "$absolute_needed" "$needed_destination"
+            fi
+            patchelf --replace-needed "$absolute_needed" "$needed_name" "$elf"
+        done < <(readelf -d "$elf" | awk -F'[][]' '/NEEDED/ && $2 ~ /^\// { print $2 }')
         grep -q 'not found' <<< "$dependencies" && die "unresolved runtime dependency in $elf"
         while IFS= read -r dependency; do
             case "$(basename "$dependency")" in
@@ -344,7 +354,7 @@ EOF
             fi
         done < <(awk '
             $2 == "=>" && substr($3, 1, 1) == "/" { print $3 }
-            substr($1, 1, 1) == "/" && $2 ~ /^\(0x/ { print $1 }
+            substr($1, 1, 1) == "/" && ($2 ~ /^\(0x/ || $2 == "=>") { print $1 }
         ' <<< "$dependencies")
     done < <(find "$pkg_dir" -type f -print0)
 
@@ -355,6 +365,10 @@ EOF
         [[ "$elf_type" == EXEC* || "$elf_type" == DYN* ]] || continue
         relative_lib="$(realpath --relative-to="$(dirname "$elf")" "$pkg_dir/lib")"
         patchelf --set-rpath "\$ORIGIN:\$ORIGIN/$relative_lib" "$elf"
+        while IFS= read -r absolute_needed; do
+            [[ -n "$absolute_needed" ]] || continue
+            patchelf --replace-needed "$absolute_needed" "$(basename "$absolute_needed")" "$elf"
+        done < <(readelf -d "$elf" | awk -F'[][]' '/NEEDED/ && $2 ~ /^\// { print $2 }')
         if ! dependencies="$(LD_LIBRARY_PATH="$runtime_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>/dev/null)"; then
             die "failed to verify bundled runtime dependencies for $elf"
         fi
