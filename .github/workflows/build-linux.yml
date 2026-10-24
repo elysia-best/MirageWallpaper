@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install alsa-lib cmake dbus dotnet ffmpeg fontconfig freetype glslang \
+          brew install alsa-lib cmake dbus dotnet ffmpeg fontconfig freetype glslang glfw \
             libass libdrm libplacebo libx11 libxkbcommon llvm lld lz4 mesa mpv ninja \
             patchelf pipewire pkgconf pulseaudio qt qtwebengine vulkan-headers vulkan-loader
           brew_prefix="$(brew --prefix)"
