@@ -981,11 +981,10 @@ private:
             }
         }
         // 行为可预测：不读用户 mpv.conf、不加载脚本；必须显式 vo=libmpv，
-        // 否则 mpv 会打开默认 VO 窗口。解码器与 GL interop 必须按 Vulkan 已
-        // 验证的目标 GPU 明确选择；mpv 的 auto 会在 Intel 上加载 CUDA interop，
-        // 随后可能静默回退软解，破坏同一 render node 上的零拷贝路径。
+        // 否则 mpv 会打开默认 VO 窗口。解码器按已验证的目标 GPU 明确选择；
+        // GPU interop 保留 libmpv 默认值，因为该选项在不同发行版的 libmpv
+        // 构建中并不稳定，且硬件路径会由 hwdec 与后续 hwdec-current 校验确认。
         const char* hardware_decoder;
-        const char* hardware_interop;
         switch (m_gpu_vendor_id) {
         case kIntelVendorId:
             /* The tested iHD stack corrupts its VA surface pool when mpv
@@ -995,17 +994,14 @@ private:
              * linear-render-target bottleneck that made this mode saturate the
              * integrated GPU. */
             hardware_decoder = "vaapi-copy";
-            hardware_interop = "no";
             break;
         case kAmdVendorId:
             /* AMD keeps decoded VA surfaces on the GPU and imports them into
              * EGL directly; its existing zero-copy path is unchanged. */
             hardware_decoder = "vaapi";
-            hardware_interop = "vaapi";
             break;
         case kNvidiaVendorId:
             hardware_decoder = "nvdec";
-            hardware_interop = "cuda";
             break;
         default:
             m_last_error = "target GPU vendor has no configured hardware decoder";
@@ -1021,7 +1017,6 @@ private:
             {"load-scripts", "no"},
             {"vo", "libmpv"},
             {"hwdec", hardware_decoder},
-            {"gpu-hwdec-interop", hardware_interop},
             // Wallpaper rendering requires GPU decode. A decoder failure must be
             // reported by mpv instead of silently shifting sustained work to the CPU.
             {"hwdec-software-fallback", "no"},
