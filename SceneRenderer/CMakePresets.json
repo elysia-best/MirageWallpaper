@@ -74,7 +74,6 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_LINKER_TYPE": "DEFAULT",
         "SCENERENDERER_BUILD_WALLPAPER_HOST": "ON",
-        "SCENERENDERER_ENABLE_X11_WALLPAPER": "ON",
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++"
       }
@@ -86,7 +85,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "SCENERENDERER_BUILD_WALLPAPER_HOST": "ON",
-        "SCENERENDERER_ENABLE_X11_WALLPAPER": "ON",
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++"
       }

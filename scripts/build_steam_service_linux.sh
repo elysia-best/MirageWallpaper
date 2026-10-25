@@ -30,20 +30,18 @@ OUTPUT="${1:-$ROOT_DIR/SteamService/build/linux-x64}"
 DOTNET_EXECUTABLE="$(command -v dotnet)"
 [ -n "$DOTNET_EXECUTABLE" ] || { echo "[steam-service] dotnet is required (net10.0 SDK)" >&2; exit 1; }
 DOTNET_EXECUTABLE="$(readlink -f "$DOTNET_EXECUTABLE")"
-DOTNET_ROOT="${DOTNET_ROOT:-$(dirname "$DOTNET_EXECUTABLE")}"
-DOTNET_ROOT="$(readlink -f "$DOTNET_ROOT")"
-RUNTIME_VERSION="$(dotnet --list-runtimes | awk '$1 == "Microsoft.NETCore.App" && $2 ~ /^10\./ { print $2 }' | sort -V | tail -1)"
-[ -n "$RUNTIME_VERSION" ] || { echo "[steam-service] Microsoft.NETCore.App 10 runtime is unavailable" >&2; exit 1; }
-[ -d "$DOTNET_ROOT/host/fxr" ] || { echo "[steam-service] hostfxr directory is unavailable under $DOTNET_ROOT" >&2; exit 1; }
-[ -d "$DOTNET_ROOT/shared/Microsoft.NETCore.App/$RUNTIME_VERSION" ] || { echo "[steam-service] runtime $RUNTIME_VERSION is unavailable" >&2; exit 1; }
-# 发行版打包的 dotnet 可能不带 LICENSE.txt/ThirdPartyNotices.txt（许可证在
-# 系统包文档里）；缺失时仅警告，不阻断 bundle。
+RUNTIME_PATH="$(dotnet --list-runtimes | awk '$1 == "Microsoft.NETCore.App" && $2 ~ /^10\./ { gsub(/[\[\]]/, "", $3); print $3, $2 }' | sort -k2 -V | tail -1)"
 
 PUBLISH_DIR="$OUTPUT/publish"
 APP_DEST="$OUTPUT/app"
 RUNTIME_DEST="$OUTPUT/runtime"
 LICENSE_DEST="$OUTPUT/Licenses"
-
+RUNTIME_DIR="${RUNTIME_PATH% *}"
+RUNTIME_VERSION="${RUNTIME_PATH##* }"
+[ -n "$RUNTIME_VERSION" ] && [ -d "$RUNTIME_DIR" ] || { echo "[steam-service] Microsoft.NETCore.App 10 runtime is unavailable" >&2; exit 1; }
+DOTNET_ROOT="$(dirname "$(dirname "$RUNTIME_DIR")")"
+[ -d "$DOTNET_ROOT/host/fxr" ] || { echo "[steam-service] hostfxr directory is unavailable under $DOTNET_ROOT" >&2; exit 1; }
+[ -d "$DOTNET_ROOT/shared/Microsoft.NETCore.App/$RUNTIME_VERSION" ] || { echo "[steam-service] runtime $RUNTIME_VERSION is unavailable" >&2; exit 1; }
 rm -rf "$OUTPUT"
 mkdir -p "$APP_DEST" "$RUNTIME_DEST/host/fxr" "$RUNTIME_DEST/shared/Microsoft.NETCore.App" "$LICENSE_DEST"
 

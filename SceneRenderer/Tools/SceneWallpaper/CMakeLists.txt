@@ -66,3 +66,7 @@ endif()
 
 target_compile_features(SceneWallpaper PRIVATE cxx_std_20)
 set_target_properties(SceneWallpaper PROPERTIES CXX_SCAN_FOR_MODULES ON)
+
+include(GNUInstallDirs)
+install(TARGETS SceneWallpaper
+        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)

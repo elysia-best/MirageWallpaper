@@ -8,18 +8,16 @@
 #   3. WebRenderer   → WebWallpaper     (CMake, QtWebEngine + Vulkan)
 #   4. MirageQt      → MirageQt app     (CMake, Qt 6.8+)
 #
-# Finally everything is staged under dist/ and packed with application runtime
-# libraries; the host's graphics driver stack remains a system dependency. The
-# archive contains the app and renderer binaries, assets, desktop entry, and
-# SteamService bundle and can be extracted and launched with its run.sh wrapper.
+# Finally everything is staged in an AppDir and converted to an AppImage. The
+# host's graphics driver stack remains a system dependency.
 #
 # Usage:
-#   scripts/build_all_linux.sh                 full build (release, default) + tar.gz
+#   scripts/build_all_linux.sh                 full build (release, default) + AppImage
 #   scripts/build_all_linux.sh debug           debug build
 #   scripts/build_all_linux.sh renderers       build only the renderers (skip app)
 #   scripts/build_all_linux.sh app             build only MirageQt (assumes renderers are ready)
 #   scripts/build_all_linux.sh scene|video|web build a single named renderer
-#   scripts/build_all_linux.sh package         stage + pack existing artifacts into dist/*.tar.gz
+#   scripts/build_all_linux.sh package         stage + pack existing artifacts into dist/*.AppImage
 #   scripts/build_all_linux.sh clean           remove all sub-project build dirs and dist
 #   scripts/build_all_linux.sh -h|--help
 #
@@ -27,11 +25,12 @@
 #   JOBS=N                       parallel build jobs (default: nproc)
 #   MIRAGE_STEAM_WEB_API_KEY     optional built-in Steam Web API Key (32 hex chars)
 #   MIRAGEQT_BUILD_DIR=PATH      MirageQt build dir override (default: MirageQt/build/{release,debug})
-#   PACKAGE_DIR=PATH             staging root for the tar.gz (default: $ROOT_DIR/dist)
+#   PACKAGE_DIR=PATH             output/staging root for the AppImage (default: $ROOT_DIR/dist)
 #   VERSION=STRING               package version override (default: git describe)
 #   QT_PREFIX=PATH               Qt installation prefix (default: qtpaths query)
 #   FFMPEG_BIN=PATH              ffmpeg executable to bundle (default: PATH lookup)
-#   NO_PACKAGE=1                 build without creating the tar.gz
+#   APPIMAGETOOL=PATH            appimagetool executable (default: download latest)
+#   NO_PACKAGE=1                 build without creating the AppImage
 
 set -euo pipefail
 
@@ -55,7 +54,7 @@ usage() {
 MirageWallpaper one-shot build + packaging script for Linux.
 
 Usage:
-  scripts/build_all_linux.sh                 full build (release, default) + tar.gz
+  scripts/build_all_linux.sh                 full build (release, default) + AppImage
   scripts/build_all_linux.sh debug           debug build
   scripts/build_all_linux.sh renderers       build only the renderers (skip app)
   scripts/build_all_linux.sh app             build only MirageQt (assumes renderers are ready)
@@ -63,7 +62,7 @@ Usage:
   scripts/build_all_linux.sh video           build VideoRenderer only
   scripts/build_all_linux.sh web             build WebRenderer only
   scripts/build_all_linux.sh steam           build SteamService (SteamKit2) bundle only
-  scripts/build_all_linux.sh package         stage + pack existing artifacts into dist/*.tar.gz
+  scripts/build_all_linux.sh package         stage + pack existing artifacts into dist/*.AppImage
   scripts/build_all_linux.sh clean           remove all sub-project build dirs and dist
   scripts/build_all_linux.sh -h|--help       show this help
 
@@ -71,11 +70,12 @@ Environment variables:
   JOBS=N                      parallel build jobs (default: nproc)
   MIRAGE_STEAM_WEB_API_KEY    optional built-in Steam Web API Key (32 hex chars)
   MIRAGEQT_BUILD_DIR=PATH     MirageQt build dir override (default: MirageQt/build/{release,debug})
-  PACKAGE_DIR=PATH            staging root for the tar.gz (default: <repo>/dist)
+  PACKAGE_DIR=PATH            output/staging root for the AppImage (default: <repo>/dist)
   VERSION=STRING              package version override (default: git describe)
   QT_PREFIX=PATH              Qt installation prefix (default: qtpaths query)
   FFMPEG_BIN=PATH             ffmpeg executable to bundle (default: PATH lookup)
-  NO_PACKAGE=1                build without creating the tar.gz
+  APPIMAGETOOL=PATH           appimagetool executable (default: download latest)
+  NO_PACKAGE=1                build without creating the AppImage
 EOF
 }
 
@@ -151,7 +151,10 @@ build_app() {
     info "cmake -S $MIRAGEQT_DIR -B $APP_BUILD_DIR (jobs=$JOBS)"
     cmake -S "$MIRAGEQT_DIR" -B "$APP_BUILD_DIR" -G Ninja \
         -DCMAKE_BUILD_TYPE="$CMAKE_CONFIG" \
-        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DMIRAGEQT_RUNTIME_DIR=/usr/libexec/miragewallpaper \
+        -DMIRAGEQT_DATA_DIR=/usr/share/miragewallpaper
     cmake --build "$APP_BUILD_DIR" --parallel "$JOBS"
     # MirageQt explicitly emits runtime targets under build/bin; package and
     # build verification must use that CMake-owned location consistently.
@@ -222,7 +225,7 @@ find_display_lib_dir() {
     return 1
 }
 
-# --- package: stage existing artifacts, copy runtime libraries, and archive ---
+# --- package: stage existing artifacts, copy runtime libraries, and make AppImage ---
 package() {
     step "Packaging MirageWallpaper ($CONFIG)"
 
@@ -253,11 +256,11 @@ package() {
             "$qtpaths_bin" --query "$key"
         else
             case "$key" in
-                QT_INSTALL_PLUGINS) printf '%s/plugins\n' "$qt_prefix" ;;
-                QT_INSTALL_QML) printf '%s/qml\n' "$qt_prefix" ;;
+                QT_INSTALL_PLUGINS) printf '%s/share/qt/plugins\n' "$qt_prefix" ;;
+                QT_INSTALL_QML) printf '%s/share/qt/qml\n' "$qt_prefix" ;;
                 QT_INSTALL_DATA) printf '%s/share/qt\n' "$qt_prefix" ;;
                 QT_INSTALL_TRANSLATIONS) printf '%s/share/qt/translations\n' "$qt_prefix" ;;
-                QT_INSTALL_LIBEXECS) printf '%s/libexec\n' "$qt_prefix" ;;
+                QT_INSTALL_LIBEXECS) printf '%s/share/qt/libexec\n' "$qt_prefix" ;;
                 QT_INSTALL_LIBS) printf '%s/lib\n' "$qt_prefix" ;;
                 *) die "QT_PREFIX requires qtpaths for query: $key" ;;
             esac
@@ -269,29 +272,39 @@ package() {
     local version="${VERSION:-$(git -C "$ROOT_DIR" describe --tags --always --dirty 2>/dev/null || echo 0.1.0)}"
     version="${version//\//-}"
     local name="MirageWallpaper-${version}-linux-$(uname -m)"
-    local pkg_dir="$PACKAGE_DIR/$name"
+    local pkg_dir="$PACKAGE_DIR/$name.AppDir"
     rm -rf "$pkg_dir"
     mkdir -p "$pkg_dir"
 
-    # The CI and local builds use the same staging tree; only this function
-    # owns runtime copying so the archive does not depend on the build host.
-    install -Dm755 "$app_bin" "$pkg_dir/MirageQt"
-    install -Dm755 "$scene_bin" "$pkg_dir/SceneWallpaper"
-    install -Dm755 "$video_bin" "$pkg_dir/VideoWallpaper"
-    install -Dm755 "$web_bin" "$pkg_dir/WebWallpaper"
-    install -Dm755 "$ffmpeg_bin" "$pkg_dir/bin/ffmpeg"
-    install -Dm644 "$ROOT_DIR/LICENSE" "$pkg_dir/LICENSE"
-    cp -a "$ROOT_DIR/assets" "$pkg_dir/assets"
-    install -Dm644 "$ROOT_DIR/MirageQt/Sources/Resources/mirage.png" "$pkg_dir/mirageqt.png"
-    sed -e 's|@MIRAGEQT_EXECUTABLE@|MirageQt|' \
-        -e 's|^Icon=.*|Icon=mirageqt.png|' \
-        "$ROOT_DIR/MirageQt/Sources/Resources/mirageqt.desktop.in" > "$pkg_dir/mirageqt.desktop"
-    install -d "$pkg_dir/SteamService"
-    cp -a "$STEAM_SERVICE_DIR" "$pkg_dir/SteamService/linux-x64"
+    # Install project-owned files through each build CMake install rules.
+    local scene_build_dir="${scene_bin%/Tools/SceneWallpaper/SceneWallpaper}"
+    local video_build_dir="${video_bin%/Tools/VideoWallpaper/VideoWallpaper}"
+    local web_build_dir="${web_bin%/Tools/WebWallpaper/WebWallpaper}"
 
-    # Qt's shared libraries, QML imports, plugins, WebEngine resources, and
-    # helper are runtime inputs; qtpaths supplies their actual installation
-    # prefix for both Homebrew and system Qt installations.
+    cmake --install "$scene_build_dir" --prefix "$pkg_dir/usr"
+    cmake --install "$video_build_dir" --prefix "$pkg_dir/usr"
+    cmake --install "$web_build_dir" --prefix "$pkg_dir/usr"
+    cmake --install "$APP_BUILD_DIR" --prefix "$pkg_dir/usr"
+
+    install -Dm755 "$ffmpeg_bin" "$pkg_dir/usr/bin/ffmpeg"
+    install -Dm644 "$ROOT_DIR/LICENSE" "$pkg_dir/LICENSE"
+    install -d "$pkg_dir/usr/libexec/miragewallpaper/SteamService"
+    cp -a "$STEAM_SERVICE_DIR" "$pkg_dir/usr/libexec/miragewallpaper/SteamService/linux-x64"
+
+    # The application currently searches sibling binaries and assets first.
+    # Keep those lookups valid while the canonical files stay in FHS paths.
+    [[ -e "$pkg_dir/usr/bin/SceneWallpaper" || -L "$pkg_dir/usr/bin/SceneWallpaper" ]] || ln -s ../libexec/miragewallpaper/SceneWallpaper "$pkg_dir/usr/bin/SceneWallpaper"
+    [[ -e "$pkg_dir/usr/bin/VideoWallpaper" || -L "$pkg_dir/usr/bin/VideoWallpaper" ]] || ln -s ../libexec/miragewallpaper/VideoWallpaper "$pkg_dir/usr/bin/VideoWallpaper"
+    [[ -e "$pkg_dir/usr/bin/WebWallpaper" || -L "$pkg_dir/usr/bin/WebWallpaper" ]] || ln -s ../libexec/miragewallpaper/WebWallpaper "$pkg_dir/usr/bin/WebWallpaper"
+    [[ -e "$pkg_dir/usr/bin/SteamService" || -L "$pkg_dir/usr/bin/SteamService" ]] || ln -s ../libexec/miragewallpaper/SteamService "$pkg_dir/usr/bin/SteamService"
+    [[ -e "$pkg_dir/usr/bin/assets" || -L "$pkg_dir/usr/bin/assets" ]] || ln -s ../share/miragewallpaper/assets "$pkg_dir/usr/bin/assets"
+
+    install -Dm644 "$pkg_dir/usr/share/applications/mirageqt.desktop" "$pkg_dir/mirageqt.desktop"
+    sed -i -e "s|^Exec=.*|Exec=AppRun|" -e "s|^Icon=.*|Icon=mirageqt|" "$pkg_dir/mirageqt.desktop"
+    install -Dm644 "$pkg_dir/usr/share/icons/hicolor/512x512/apps/mirageqt.png" "$pkg_dir/mirageqt.png"
+
+
+    # Qt runtime files are external inputs, so place them beside the CMake-installed files.
     local qt_plugins qt_qml qt_resources qt_translations qt_libexec qt_libs
     qt_plugins="$(qt_query QT_INSTALL_PLUGINS)"
     qt_qml="$(qt_query QT_INSTALL_QML)"
@@ -299,16 +312,15 @@ package() {
     qt_translations="$(qt_query QT_INSTALL_TRANSLATIONS)"
     qt_libexec="$(qt_query QT_INSTALL_LIBEXECS)"
     qt_libs="$(qt_query QT_INSTALL_LIBS)"
-    install -d "$pkg_dir/share/qt"
-    cp -aL "$qt_plugins" "$pkg_dir/"
-    cp -aL "$qt_qml" "$pkg_dir/"
-    cp -aL "$qt_resources" "$pkg_dir/share/qt/"
-    cp -aL "$qt_translations" "$pkg_dir/share/qt/"
-    install -Dm755 "$qt_libexec/QtWebEngineProcess" "$pkg_dir/libexec/QtWebEngineProcess"
-    command -v patchelf >/dev/null 2>&1 || die "patchelf is required for portable runtime RPATHs"
-    cat > "$pkg_dir/qt.conf" <<'EOF'
+    install -d "$pkg_dir/usr/share/qt" "$pkg_dir/usr/libexec"
+    cp -aL "$qt_plugins" "$pkg_dir/usr/"
+    cp -aL "$qt_qml" "$pkg_dir/usr/"
+    cp -aL "$qt_resources" "$pkg_dir/usr/share/qt/"
+    cp -aL "$qt_translations" "$pkg_dir/usr/share/qt/"
+    install -Dm755 "$qt_libexec/QtWebEngineProcess" "$pkg_dir/usr/libexec/QtWebEngineProcess"
+    cat > "$pkg_dir/usr/bin/qt.conf" <<'EOF'
 [Paths]
-Prefix=.
+Prefix=..
 Libraries=lib
 Plugins=plugins
 QmlImports=qml
@@ -317,39 +329,47 @@ Data=share/qt
 Translations=share/qt/translations
 LibraryExecutables=libexec
 EOF
+    command -v patchelf >/dev/null 2>&1 || die "patchelf is required for portable runtime RPATHs"
+    local system_dynamic_linker
+    system_dynamic_linker="$(readelf -l "$(readlink -f /bin/sh)" 2>/dev/null | awk '/Requesting program interpreter/ { sub(/^.*interpreter: /, ""); gsub(/[\[\]]/, ""); print; exit }' )"
+    [[ -n "$system_dynamic_linker" ]] || die "could not determine the system ELF interpreter"
 
     # Copy application/runtime dependencies, but leave EGL, GBM, DRM, Vulkan,
     # VA-API, and Mesa/LLVM driver components to the target system. These
     # loaders discover host-specific DRI/GBM drivers at runtime; bundling the
     # build host's versions embeds Homebrew Cellar paths and prevents the
     # target's Mesa stack from loading.
-    install -d "$pkg_dir/lib"
-    runtime_library_path="$pkg_dir/lib:$qt_libs:$qt_prefix/lib"
+    install -d "$pkg_dir/usr/lib"
+    runtime_library_path="$pkg_dir/usr/lib:$qt_libs:$qt_prefix/lib"
     local dependency_copy_failure=""
     # Defer the first ldd failure until find finishes; exiting inside this
     # process-substitution loop closes its output pipe and hides the cause.
     while IFS= read -r -d '' elf; do
-        local elf_header elf_type dependencies
+        local elf_header elf_type elf_interpreter dependencies
         elf_header="$(readelf -h "$elf" 2>/dev/null)" || continue
         elf_type="$(awk -F: '/^[[:space:]]*Type:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<< "$elf_header")"
         [[ "$elf_type" == EXEC* || "$elf_type" == DYN* ]] || continue
+        elf_interpreter="$(readelf -l "$elf" 2>/dev/null | awk '/Requesting program interpreter/ { sub(/^.*interpreter: /, ""); gsub(/[\[\]]/, ""); print; exit }' )"
+        if [[ "$elf_type" == EXEC* && ( "$elf_interpreter" == "${HOMEBREW_PREFIX:-}"/* || "$elf_interpreter" == "${HOMEBREW_CELLAR:-}"/* ) ]]; then
+            patchelf --set-interpreter "$system_dynamic_linker" "$elf"
+        fi
         while IFS= read -r absolute_needed; do
             [[ -n "$absolute_needed" ]] || continue
             local needed_name="$(basename "$absolute_needed")"
             case "$needed_name" in
-                libEGL.so*|libGLESv*.so*|libgbm.so*|libdrm*.so*|libGL.so*|libGLX.so*|libGLdispatch.so*|libOpenGL.so*|libglapi.so*|libvulkan.so*|libvulkan_*.so*|libgallium*.so*|libdri*.so*|libmesa*.so*|libva*.so*|libvdpau*.so*|libLLVM*.so*)
+                libvulkan_*.so*|libdri*.so*|libva*.so*|libvdpau*.so*)
                     patchelf --replace-needed "$absolute_needed" "$needed_name" "$elf"
                     continue
                     ;;
             esac
             [[ -f "$absolute_needed" ]] || die "absolute runtime dependency is unavailable: $absolute_needed"
-            local needed_destination="$pkg_dir/lib/$needed_name"
+            local needed_destination="$pkg_dir/usr/lib/$needed_name"
             if [[ ! -e "$needed_destination" ]]; then
                 install -Dm755 "$absolute_needed" "$needed_destination"
             fi
             patchelf --replace-needed "$absolute_needed" "$needed_name" "$elf"
         done < <(readelf -d "$elf" | awk -F'[][]' '/NEEDED/ && $2 ~ /^\// { print $2 }')
-        if ! dependencies="$(LD_LIBRARY_PATH="$runtime_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$elf" 2>/dev/null)"; then
+        if ! dependencies="$(env -u LD_LIBRARY_PATH "$system_dynamic_linker" --inhibit-cache --library-path "$runtime_library_path" --list "$elf" 2>/dev/null)"; then
             [[ -n "$dependency_copy_failure" ]] || dependency_copy_failure="failed to inspect runtime dependencies for $elf"
             continue
         fi
@@ -360,11 +380,9 @@ EOF
         while IFS= read -r dependency; do
             case "$(basename "$dependency")" in
                 libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|ld-linux*.so.*|linux-vdso.so.*|\
-                libEGL.so*|libGLESv*.so*|libgbm.so*|libdrm*.so*|libGL.so*|libGLX.so*|libGLdispatch.so*|\
-                libOpenGL.so*|libglapi.so*|libvulkan.so*|libvulkan_*.so*|libgallium*.so*|libdri*.so*|\
-                libmesa*.so*|libva*.so*|libvdpau*.so*|libLLVM*.so*) continue ;;
+                                libvulkan_*.so*|libdri*.so*|libva*.so*|libvdpau*.so*) continue ;;
             esac
-            local destination="$pkg_dir/lib/$(basename "$dependency")"
+            local destination="$pkg_dir/usr/lib/$(basename "$dependency")"
             if [[ -e "$destination" ]]; then
                 continue
             else
@@ -384,54 +402,97 @@ EOF
     local dependency_verify_failure=""
     # Collect verifier failures for the same reason: die here would make find
     # print a broken-pipe error that obscures the dependency failure.
+    local build_prefix_dependency
     while IFS= read -r -d '' elf; do
-        local elf_header elf_type relative_lib dependencies
+        local elf_header elf_type relative_lib elf_interpreter dependencies
         elf_header="$(readelf -h "$elf" 2>/dev/null)" || continue
         elf_type="$(awk -F: '/^[[:space:]]*Type:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' <<< "$elf_header")"
         [[ "$elf_type" == EXEC* || "$elf_type" == DYN* ]] || continue
-        relative_lib="$(realpath --relative-to="$(dirname "$elf")" "$pkg_dir/lib")"
+        elf_interpreter="$(readelf -l "$elf" 2>/dev/null | awk '/Requesting program interpreter/ { sub(/^.*interpreter: /, ""); gsub(/[\[\]]/, ""); print; exit }' )"
+        if [[ "$elf_type" == EXEC* && ( "$elf_interpreter" == "${HOMEBREW_PREFIX:-}"/* || "$elf_interpreter" == "${HOMEBREW_CELLAR:-}"/* ) ]]; then
+            patchelf --set-interpreter "$system_dynamic_linker" "$elf"
+        fi
+        relative_lib="$(realpath --relative-to="$(dirname "$elf")" "$pkg_dir/usr/lib")"
         patchelf --set-rpath "\$ORIGIN:\$ORIGIN/$relative_lib" "$elf"
         while IFS= read -r absolute_needed; do
             [[ -n "$absolute_needed" ]] || continue
             patchelf --replace-needed "$absolute_needed" "$(basename "$absolute_needed")" "$elf"
         done < <(readelf -d "$elf" | awk -F'[][]' '/NEEDED/ && $2 ~ /^\// { print $2 }')
-        if ! dependencies="$(env -u LD_LIBRARY_PATH ldd "$elf" 2>/dev/null)"; then
+        if ! dependencies="$(env -u LD_LIBRARY_PATH "$system_dynamic_linker" --inhibit-cache --library-path "$pkg_dir/usr/lib:$qt_libs:$qt_prefix/lib" --list "$elf" 2>/dev/null)"; then
             [[ -n "$dependency_verify_failure" ]] || dependency_verify_failure="failed to verify bundled runtime dependencies for $elf"
             continue
         fi
         while IFS= read -r missing_dependency; do
             case "$missing_dependency" in
-                libEGL.so*|libGLESv*.so*|libgbm.so*|libdrm*.so*|libGL.so*|libGLX.so*|libGLdispatch.so*|\
-                libOpenGL.so*|libglapi.so*|libvulkan.so*|libvulkan_*.so*|libgallium*.so*|libdri*.so*|\
-                libmesa*.so*|libva*.so*|libvdpau*.so*|libLLVM*.so*) continue ;;
+                libvulkan_*.so*|libdri*.so*|libva*.so*|libvdpau*.so*) continue ;;
             esac
             [[ -n "$dependency_verify_failure" ]] || dependency_verify_failure="unresolved bundled runtime dependency $missing_dependency in $elf"
         done < <(awk '$2 == "=>" && $3 == "not" && $4 == "found" { print $1 }' <<< "$dependencies")
-        if [[ -n "${HOMEBREW_PREFIX:-}" ]] && grep -Fq "$HOMEBREW_PREFIX" <<< "$dependencies"; then
-            [[ -n "$dependency_verify_failure" ]] || dependency_verify_failure="build-prefix runtime dependency escaped the distribution for $elf"
-        fi
+        build_prefix_dependency=""
+        while IFS= read -r dependency_line; do
+            dependency_path="${dependency_line#*=> }"
+            dependency_name="$(basename "${dependency_path%% *}")"
+            case "$dependency_name" in
+                libvulkan_*.so*|libdri*.so*|libva*.so*|libvdpau*.so*) continue ;;
+            esac
+            if [[ ! -e "$pkg_dir/usr/lib/$dependency_name" ]]; then
+                build_prefix_dependency="$dependency_line"
+                break
+            fi
+        done < <(grep -F "$HOMEBREW_PREFIX" <<< "$dependencies" | grep -vF "$HOMEBREW_PREFIX/lib/ld.so =>")
     done < <(find "$pkg_dir" -type f -print0)
     [[ -z "$dependency_verify_failure" ]] || die "$dependency_verify_failure"
 
-    cat > "$pkg_dir/run.sh" <<'EOF'
+    # AppImage requires an executable AppRun at the AppDir root. Keep the
+    # environment setup here so the same binary also works when AppDir is
+    # launched directly during local packaging checks.
+    cat > "$pkg_dir/AppRun" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Each bundled ELF has a package-relative RPATH; keep GPU driver discovery on
 # the host so Mesa and hardware-specific EGL/GBM drivers come from the target.
 unset LD_LIBRARY_PATH
-export PATH="$root/bin:$PATH"
-export QT_PLUGIN_PATH="$root/plugins"
-export QML2_IMPORT_PATH="$root/qml"
-export QTWEBENGINEPROCESS_PATH="$root/libexec/QtWebEngineProcess"
-export QTWEBENGINE_RESOURCES_PATH="$root/share/qt/resources"
-export QTWEBENGINE_LOCALES_PATH="$root/share/qt/translations/qtwebengine_locales"
-exec "$root/MirageQt" "$@"
+export PATH="$root/usr/bin:$PATH"
+export QT_PLUGIN_PATH="$root/usr/plugins"
+export QML2_IMPORT_PATH="$root/usr/qml"
+export QTWEBENGINEPROCESS_PATH="$root/usr/libexec/QtWebEngineProcess"
+export QTWEBENGINE_RESOURCES_PATH="$root/usr/share/qt/resources"
+export QTWEBENGINE_LOCALES_PATH="$root/usr/share/qt/translations/qtwebengine_locales"
+exec "$root/usr/bin/MirageQt" "$@"
 EOF
-    chmod 755 "$pkg_dir/run.sh"
-    local tarball="$PACKAGE_DIR/$name.tar.gz"
-    (cd "$PACKAGE_DIR" && tar -czf "$name.tar.gz" "$name")
-    good "artifact: $tarball"
+    chmod 755 "$pkg_dir/AppRun"
+
+    local appimagetool_arch
+    case "$(uname -m)" in
+        x86_64|amd64) appimagetool_arch="x86_64" ;;
+        aarch64|arm64) appimagetool_arch="aarch64" ;;
+        *) die "no appimagetool is configured for architecture $(uname -m); set APPIMAGETOOL" ;;
+    esac
+    local appimagetool_bin="${APPIMAGETOOL:-}"
+    if [[ -z "$appimagetool_bin" ]]; then
+        appimagetool_bin="$(command -v appimagetool || true)"
+    fi
+    if [[ -z "$appimagetool_bin" ]]; then
+        appimagetool_bin="$PACKAGE_DIR/appimagetool-$appimagetool_arch.AppImage"
+        if [[ ! -x "$appimagetool_bin" ]]; then
+            command -v curl >/dev/null 2>&1 || die "appimagetool is missing and curl is unavailable; set APPIMAGETOOL"
+            info "Downloading appimagetool ($appimagetool_arch)"
+            curl --fail --location --silent --show-error \
+                "${APPIMAGETOOL_URL:-https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${appimagetool_arch}.AppImage}" \
+                -o "$appimagetool_bin"
+            chmod 755 "$appimagetool_bin"
+        fi
+    fi
+    [[ -x "$appimagetool_bin" ]] || die "appimagetool is not executable: $appimagetool_bin"
+
+    local appimage="$PACKAGE_DIR/$name.AppImage"
+    rm -f "$appimage"
+    info "Creating AppImage: $appimage"
+    APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$appimagetool_arch" "$appimagetool_bin" "$pkg_dir" "$appimage"
+    [[ -x "$appimage" ]] || die "AppImage was not created: $appimage"
+    rm -rf "$pkg_dir"
+    good "artifact: $appimage"
 }
 
 # --- dispatch ---
@@ -451,7 +512,7 @@ if [[ "$TARGET" == "all" || "$TARGET" == "app" ]]; then
     step "Build complete"
     good "MirageQt binary: $APP_BUILD_DIR/bin/MirageQt"
     if [[ "$TARGET" == "all" && "${NO_PACKAGE:-0}" != "1" ]]; then
-        good "tarball: $PACKAGE_DIR/MirageWallpaper-*-linux-*.tar.gz"
+        good "AppImage: $PACKAGE_DIR/MirageWallpaper-*-linux-*.AppImage"
     fi
 else
     good "done."

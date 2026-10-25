@@ -48,3 +48,7 @@ elseif(UNIX AND NOT APPLE)
 else()
     message(FATAL_ERROR "VideoWallpaper has no platform backend for this system")
 endif()
+
+include(GNUInstallDirs)
+install(TARGETS VideoWallpaper
+        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)

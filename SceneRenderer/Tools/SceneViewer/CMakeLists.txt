@@ -34,6 +34,14 @@ if(SCENERENDERER_BUILD_ENGINE AND SCENERENDERER_BUILD_VIEWER)
             Vulkan::Vulkan
             SceneRenderer::Engine
             argparse::argparse)
+    if(UNIX AND NOT APPLE)
+        find_package(OpenGL REQUIRED)
+        target_link_libraries(SceneViewer
+            PRIVATE
+                OpenGL::GL)
+        # This is required when using brew on linux
+        include_directories(SYSTEM ${OPENGL_EGL_INCLUDE_DIRS})
+    endif()
     if(APPLE)
         target_sources(SceneViewer PRIVATE
             ../../Sources/SceneRenderer/Host/macOS/MacMetalDisplay.mm)
@@ -49,3 +57,61 @@ if(SCENERENDERER_BUILD_ENGINE AND SCENERENDERER_BUILD_VIEWER)
     endif()
     set_target_properties(SceneViewer PROPERTIES CXX_SCAN_FOR_MODULES ON)
 endif()
+
+include(GNUInstallDirs)
+install(TARGETS SceneViewer
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+install(CODE "
+    file(GET_RUNTIME_DEPENDENCIES
+        EXECUTABLES \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/SceneViewer\"
+        RESOLVED_DEPENDENCIES_VAR _r_deps
+        UNRESOLVED_DEPENDENCIES_VAR _u_deps
+        
+        DIRECTORIES 
+            \"/usr/local/lib\" 
+            \"/usr/lib/x86_64-linux-gnu\"
+            \"/home/linuxbrew/.linuxbrew/lib\"
+            
+        PRE_EXCLUDE_REGEXES 
+            \"^libc\\\\.so.*\" 
+            \"^libm\\\\.so.*\" 
+            \"^libpthread\\\\.so.*\" 
+            \"^ld-linux.*\"
+            \"^libdl\\\\.so.*\"
+            \"^librt\\\\.so.*\"
+            
+        POST_EXCLUDE_REGEXES 
+            \"^/lib/.*\" 
+            \"^/lib64/.*\" 
+            \"^/usr/lib/.*\" 
+            \"^/usr/lib64/.*\"
+            \"^/usr/lib/x86_64-linux-gnu/.*\"
+            \".*libLLVM.*\"
+            \".*libgallium.*\"
+            \".*libSPIRV.*\"
+            \".*libz3.*\"
+    )
+
+    foreach(_file \${_r_deps})
+        file(INSTALL
+            DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\"
+            TYPE SHARED_LIBRARY
+            FILES \"\${_file}\"
+        )
+    endforeach()
+
+    # 【修复 1】：if 条件直接检查变量名，不要加 ${}
+    if(_u_deps)
+        message(WARNING \"Unresolved dependencies found: \${_u_deps}\")
+    endif()
+    
+    # 【修复 2】：安全计算数量
+    set(_r_count 0)
+    if(_r_deps)
+        # 【核心修复】：list(LENGTH) 的第一个参数必须是变量名 (_r_deps)，而不是值 (\${_r_deps})
+        list(LENGTH _r_deps _r_count)
+    endif()
+    
+    message(STATUS \"Automatically installed \${_r_count} runtime dependencies.\")
+")

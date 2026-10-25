@@ -47,11 +47,13 @@ function(mirage_add_library target_name)
         target_link_libraries(${target_name}_static PUBLIC ${ARG_LINKS_STATIC})
     endif()
 
-    install(TARGETS ${target_name} ${target_name}_static
-        EXPORT MirageDisplayTargets
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-    if(ARG_HEADERS)
-        install(FILES ${ARG_HEADERS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    if(MIRAGE_DISPLAT_PLUGIN_INSTALL_TARGETS)
+        install(TARGETS ${target_name} ${target_name}_static
+            EXPORT MirageDisplayTargets
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        if(ARG_HEADERS)
+            install(FILES ${ARG_HEADERS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+        endif()
     endif()
 endfunction()

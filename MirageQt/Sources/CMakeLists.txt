@@ -35,7 +35,7 @@ endforeach (filepath)
 #遍历所有资源文件
 set(RES_SUFFIX "")
 set(RES_PATHS "")
-list(APPEND RES_SUFFIX *.png *.jpg *.svg *.ico *.ttf *.webp *.js *.qm *.qsb *.mp4)
+list(APPEND RES_SUFFIX *.png *.jpg *.svg *.ico *.ttf *.webp *.js *.qm *.qsb *.mp4 .strings .json)
 list(APPEND RES_PATHS Resources)
 foreach (respath ${RES_PATHS})
     foreach (filesuffix ${RES_SUFFIX})
@@ -56,19 +56,6 @@ qt_add_qml_module(MirageQt
         RESOURCES ${resource_files}
         RESOURCE_PREFIX "/"
 )
-
-# Keep QML localization assets owned by MirageQt so its resource bundle does not
-# depend on sibling application directories at configure or build time.
-qt_add_resources(MirageQt mirageqt_translations
-        PREFIX "/MirageQt/Resources"
-        BASE "${CMAKE_CURRENT_SOURCE_DIR}/Resources"
-        FILES
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/en.lproj/Localizable.strings"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/zh-Hans.lproj/Localizable.strings"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/zh-Hant.lproj/Localizable.strings"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ui_zh-chs.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ui_zh-cht.json"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Translations.json")
 
 # For MirageLinuxDisplay
 target_include_directories(MirageQt PRIVATE "${MIRAGE_DISPLAY_SOURCE_DIR}/include")
@@ -109,3 +96,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/mirageqt.desktop
 install(FILES Resources/mirage.png
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/512x512/apps
         RENAME mirageqt.png)
+
+# Shared renderer assets are part of the installed application data tree.
+install(DIRECTORY "${MIRAGEQT_REPO_ROOT}/assets/"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/miragewallpaper/assets)

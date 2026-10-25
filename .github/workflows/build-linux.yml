@@ -49,6 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          eval "$("/home/linuxbrew/.linuxbrew/bin/brew" shellenv)"
           brew install alsa-lib cmake dbus dotnet ffmpeg fontconfig freetype glslang glfw \
             libass libdrm libplacebo libx11 libxkbcommon llvm lld lz4 mesa mpv ninja \
             patchelf pipewire pkgconf pulseaudio qt qtwebengine vulkan-headers vulkan-loader
@@ -66,9 +67,17 @@ jobs:
             printf 'QT_PREFIX=%s\n' "$(brew --prefix qt)"
             printf 'FFMPEG_BIN=%s\n' "$brew_prefix/bin/ffmpeg"
           } >> "$GITHUB_ENV"
-          dotnet --version | grep -Eq '^10\.'
-          cmake --version
-          clang++ --version | head -1
+
+      - name: Install appimagetool
+        shell: bash
+        run: |
+          set -euo pipefail
+          appimagetool="${RUNNER_TEMP}/appimagetool-x86_64.AppImage"
+          curl --fail --location --silent --show-error \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -o "$appimagetool"
+          chmod 755 "$appimagetool"
+          printf 'APPIMAGETOOL=%s\n' "$appimagetool" >> "$GITHUB_ENV"
 
       - name: Build and package Linux distribution
         shell: bash
@@ -76,11 +85,11 @@ jobs:
           set -euo pipefail
           JOBS="$(nproc)" scripts/build_all_linux.sh release
 
-      - name: Upload Linux dist archive
+      - name: Upload Linux AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: MirageWallpaper-linux-x86_64-dist
-          path: dist/MirageWallpaper-*-linux-x86_64.tar.gz
+          name: MirageWallpaper-linux-x86_64-AppImage
+          path: dist/MirageWallpaper-*-linux-x86_64.AppImage
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

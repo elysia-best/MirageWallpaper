@@ -32,6 +32,7 @@ option(MIRAGE_DISPLAY_WITH_EGL "Build the EGL DMA-BUF helper" ${_mirage_egl_defa
 option(MIRAGE_DISPLAY_BUILD_TESTS "Build protocol and session tests" ON)
 option(MIRAGE_DISPLAY_BUILD_EXAMPLES "Build protocol simulator examples" ON)
 option(MIRAGE_DISPLAY_PLUGIN_QML "Build the Plasma Qt Quick display adapter" OFF)
+option(MIRAGE_DISPLAT_PLUGIN_INSTALL_TARGETS "Whether to install this plugin to system" OFF)
 
 if(MIRAGE_DISPLAY_WITH_VULKAN AND NOT Vulkan_FOUND)
     message(FATAL_ERROR "MIRAGE_DISPLAY_WITH_VULKAN=ON but Vulkan was not found")
@@ -61,14 +62,15 @@ if(MIRAGE_DISPLAY_PLUGIN_QML)
     add_subdirectory(adapters/kde)
 endif()
 
-install(EXPORT MirageDisplayTargets
-    FILE MirageDisplayTargets.cmake
-    NAMESPACE Mirage::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/MirageDisplay)
-
-set(CPACK_GENERATOR "ZIP")
-set(CPACK_PACKAGE_NAME "mirage-linux-display")
-set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
-set(CPACK_PACKAGING_INSTALL_PREFIX "")
-include(CPack)
+if(MIRAGE_DISPLAT_PLUGIN_INSTALL_TARGETS)
+    install(EXPORT MirageDisplayTargets
+        FILE MirageDisplayTargets.cmake
+        NAMESPACE Mirage::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/MirageDisplay)
+    set(CPACK_GENERATOR "ZIP")
+    set(CPACK_PACKAGE_NAME "mirage-linux-display")
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+    set(CPACK_PACKAGING_INSTALL_PREFIX "")
+    include(CPack)
+endif()

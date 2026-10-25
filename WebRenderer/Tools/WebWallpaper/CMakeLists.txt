@@ -23,3 +23,7 @@ else()
     target_compile_options(WebWallpaper PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion
         -Wno-missing-field-initializers)
 endif()
+
+include(GNUInstallDirs)
+install(TARGETS WebWallpaper
+        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)
