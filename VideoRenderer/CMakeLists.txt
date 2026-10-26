@@ -8,6 +8,8 @@ endif()
 
 set(VIDEORENDERER_VERSION 0.1.0)
 
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/MirageRuntimeDependencies.cmake")
+
 # C++ standard settings must be in place before the vendored rstd/wavsen
 # subdirectories are added: clang's module scanner misresolves nested
 # partitions when the module targets are built with GNU extensions

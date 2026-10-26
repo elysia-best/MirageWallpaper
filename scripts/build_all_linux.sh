@@ -357,7 +357,7 @@ EOF
             [[ -n "$absolute_needed" ]] || continue
             local needed_name="$(basename "$absolute_needed")"
             case "$needed_name" in
-                libvulkan_*.so*|libdri*.so*|libva*.so*|libvdpau*.so*)
+                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*)
                     patchelf --replace-needed "$absolute_needed" "$needed_name" "$elf"
                     continue
                     ;;
@@ -380,7 +380,7 @@ EOF
         while IFS= read -r dependency; do
             case "$(basename "$dependency")" in
                 libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|ld-linux*.so.*|linux-vdso.so.*|\
-                                libvulkan_*.so*|libdri*.so*|libva*.so*|libvdpau*.so*) continue ;;
+                                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*) continue ;;
             esac
             local destination="$pkg_dir/usr/lib/$(basename "$dependency")"
             if [[ -e "$destination" ]]; then
@@ -424,7 +424,7 @@ EOF
         fi
         while IFS= read -r missing_dependency; do
             case "$missing_dependency" in
-                libvulkan_*.so*|libdri*.so*|libva*.so*|libvdpau*.so*) continue ;;
+                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*) continue ;;
             esac
             [[ -n "$dependency_verify_failure" ]] || dependency_verify_failure="unresolved bundled runtime dependency $missing_dependency in $elf"
         done < <(awk '$2 == "=>" && $3 == "not" && $4 == "found" { print $1 }' <<< "$dependencies")
@@ -433,7 +433,7 @@ EOF
             dependency_path="${dependency_line#*=> }"
             dependency_name="$(basename "${dependency_path%% *}")"
             case "$dependency_name" in
-                libvulkan_*.so*|libdri*.so*|libva*.so*|libvdpau*.so*) continue ;;
+                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*) continue ;;
             esac
             if [[ ! -e "$pkg_dir/usr/lib/$dependency_name" ]]; then
                 build_prefix_dependency="$dependency_line"

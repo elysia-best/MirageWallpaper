@@ -85,6 +85,7 @@ set_target_properties(MirageQt PROPERTIES
 
 install(TARGETS MirageQt
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+mirage_install_runtime_dependencies(MirageQt ${CMAKE_INSTALL_BINDIR})
 
 # --- Desktop integration ---
 # Desktop environments resolve the installed launcher through PATH, so the

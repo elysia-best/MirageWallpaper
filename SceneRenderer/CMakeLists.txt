@@ -11,6 +11,8 @@ set(SCENERENDERER_VERSION 0.1.8)
 
 project(SceneRenderer VERSION ${SCENERENDERER_VERSION})
 
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/MirageRuntimeDependencies.cmake")
+
 # SceneRenderer engine build.
 # On macOS, MoltenVK is used as the Vulkan ICD and wavsen is forced onto
 # Core Audio. Linux builds use the system Vulkan loader and the default

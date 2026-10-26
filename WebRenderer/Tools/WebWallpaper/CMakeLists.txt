@@ -27,3 +27,4 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS WebWallpaper
         RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)
+mirage_install_runtime_dependencies(WebWallpaper ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)

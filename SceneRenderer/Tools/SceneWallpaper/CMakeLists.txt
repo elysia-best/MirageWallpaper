@@ -70,3 +70,4 @@ set_target_properties(SceneWallpaper PROPERTIES CXX_SCAN_FOR_MODULES ON)
 include(GNUInstallDirs)
 install(TARGETS SceneWallpaper
         RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)
+mirage_install_runtime_dependencies(SceneWallpaper ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)
