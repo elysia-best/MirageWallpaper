@@ -335,10 +335,11 @@ EOF
     [[ -n "$system_dynamic_linker" ]] || die "could not determine the system ELF interpreter"
 
     # Copy application/runtime dependencies, but leave EGL, GBM, DRM, Vulkan,
-    # VA-API, and Mesa/LLVM driver components to the target system. These
-    # loaders discover host-specific DRI/GBM drivers at runtime; bundling the
-    # build host's versions embeds Homebrew Cellar paths and prevents the
-    # target's Mesa stack from loading.
+    # VA-API, Mesa/LLVM driver components, and the desktop audio stack to the
+    # target system. These components discover host-specific drivers, SPA
+    # modules, and ALSA configuration at runtime; bundling the build host's
+    # versions embeds Homebrew Cellar paths and prevents the target's graphics
+    # or audio session from loading its own configuration.
     install -d "$pkg_dir/usr/lib"
     runtime_library_path="$pkg_dir/usr/lib:$qt_libs:$qt_prefix/lib"
     local dependency_copy_failure=""
@@ -357,7 +358,7 @@ EOF
             [[ -n "$absolute_needed" ]] || continue
             local needed_name="$(basename "$absolute_needed")"
             case "$needed_name" in
-                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*)
+                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libOpenGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*|libasound*.so*|libpipewire*.so*|libspa*.so*|libpulse*.so*|libpulsecommon*.so*|libjack*.so*)
                     patchelf --replace-needed "$absolute_needed" "$needed_name" "$elf"
                     continue
                     ;;
@@ -380,7 +381,7 @@ EOF
         while IFS= read -r dependency; do
             case "$(basename "$dependency")" in
                 libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|ld-linux*.so.*|linux-vdso.so.*|\
-                                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*) continue ;;
+                                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libOpenGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*|libasound*.so*|libpipewire*.so*|libspa*.so*|libpulse*.so*|libpulsecommon*.so*|libjack*.so*) continue ;;
             esac
             local destination="$pkg_dir/usr/lib/$(basename "$dependency")"
             if [[ -e "$destination" ]]; then
@@ -424,7 +425,7 @@ EOF
         fi
         while IFS= read -r missing_dependency; do
             case "$missing_dependency" in
-                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*) continue ;;
+                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libOpenGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*|libasound*.so*|libpipewire*.so*|libspa*.so*|libpulse*.so*|libpulsecommon*.so*|libjack*.so*) continue ;;
             esac
             [[ -n "$dependency_verify_failure" ]] || dependency_verify_failure="unresolved bundled runtime dependency $missing_dependency in $elf"
         done < <(awk '$2 == "=>" && $3 == "not" && $4 == "found" { print $1 }' <<< "$dependencies")
@@ -433,7 +434,7 @@ EOF
             dependency_path="${dependency_line#*=> }"
             dependency_name="$(basename "${dependency_path%% *}")"
             case "$dependency_name" in
-                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*) continue ;;
+                libvulkan_*.so*|libdri*.so*|libgbm*.so*|libEGL*.so*|libGLES*.so*|libGLX*.so*|libGL*.so*|libOpenGL*.so*|libdrm*.so*|libva*.so*|libvdpau*.so*|libasound*.so*|libpipewire*.so*|libspa*.so*|libpulse*.so*|libpulsecommon*.so*|libjack*.so*) continue ;;
             esac
             if [[ ! -e "$pkg_dir/usr/lib/$dependency_name" ]]; then
                 build_prefix_dependency="$dependency_line"

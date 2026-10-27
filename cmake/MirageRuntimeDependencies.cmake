@@ -1,10 +1,10 @@
 # Shared Linux install-time dependency scanning for Mirage executables.
 #
-# The package must carry application libraries, while EGL/GBM/DRM/Vulkan and
-# Mesa driver libraries must remain on the target system. Those libraries
-# discover hardware-specific drivers at runtime; copying a build-host Mesa
-# stack embeds paths such as a Homebrew Cellar location and breaks headless
-# video rendering on another machine.
+# The package must carry application libraries, while EGL/GBM/DRM/Vulkan,
+# Mesa driver libraries, and the desktop audio stack must remain on the target
+# system. Those libraries discover hardware-specific drivers, SPA modules, and
+# ALSA configuration at runtime; copying a CI host stack embeds paths such as a
+# Homebrew Cellar location and breaks headless video rendering elsewhere.
 
 function(mirage_install_runtime_dependencies target_name install_destination)
     if(NOT UNIX OR APPLE)
@@ -42,6 +42,11 @@ function(mirage_install_runtime_dependencies target_name install_destination)
                     \"^libdrm\\\\.so.*\"
                     \"^libva.*\\\\.so.*\"
                     \"^libvdpau.*\\\\.so.*\"
+                    \"^libasound.*\"
+                    \"^libpipewire.*\"
+                    \"^libspa.*\"
+                    \"^libpulse.*\"
+                    \"^libjack.*\"
                 POST_EXCLUDE_REGEXES
                     \"^/lib/.*\"
                     \"^/lib64/.*\"
