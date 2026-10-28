@@ -35,7 +35,7 @@ endforeach (filepath)
 #遍历所有资源文件
 set(RES_SUFFIX "")
 set(RES_PATHS "")
-list(APPEND RES_SUFFIX *.png *.jpg *.svg *.ico *.ttf *.webp *.js *.qm *.qsb *.mp4 .strings .json)
+list(APPEND RES_SUFFIX *.png *.jpg *.svg *.ico *.ttf *.webp *.js *.qm *.qsb *.mp4 *.strings *.json)
 list(APPEND RES_PATHS Resources)
 foreach (respath ${RES_PATHS})
     foreach (filesuffix ${RES_SUFFIX})

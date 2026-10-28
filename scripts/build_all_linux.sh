@@ -288,8 +288,15 @@ package_linuxdeploy() {
     export QMAKE="$(command -v qmake6 || command -v qmake || true)"
     [[ -n "$QMAKE" ]] || die "qmake is required by linuxdeploy-plugin-qt"
     # QML is compiled into the executable's resources, so the Qt deploy plugin
-    # needs source files to discover runtime imports such as QtQuick.Controls.
+    # scans the sources to discover runtime imports such as QtQuick.Controls.
     export QML_SOURCES_PATHS="$ROOT_DIR/MirageQt/Sources/Qml"
+    # QPA plugins are loaded dynamically; explicitly deploy Wayland so the
+    # AppImage can use compositor screen metadata rather than falling back to X11.
+    export EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so"
+    # These Qt modules are also dynamically loaded and are not found through
+    # MirageQt's ELF dependencies; SVG is used by the UI and Wayland support
+    # is required for the compositor-backed application session.
+    export EXTRA_QT_MODULES="waylandcompositor;svg"
     export PATH="$(dirname "$linuxdeploy_qt"):$(dirname "$appimagetool_bin"):$PATH"
     info "linuxdeploy is bundling Qt, WebEngine, and dependencies of all wallpaper hosts"
     (
