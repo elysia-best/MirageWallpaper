@@ -287,6 +287,9 @@ package_linuxdeploy() {
 
     export QMAKE="$(command -v qmake6 || command -v qmake || true)"
     [[ -n "$QMAKE" ]] || die "qmake is required by linuxdeploy-plugin-qt"
+    # QML is compiled into the executable's resources, so the Qt deploy plugin
+    # needs source files to discover runtime imports such as QtQuick.Controls.
+    export QML_SOURCES_PATHS="$ROOT_DIR/MirageQt/Sources/Qml"
     export PATH="$(dirname "$linuxdeploy_qt"):$(dirname "$appimagetool_bin"):$PATH"
     info "linuxdeploy is bundling Qt, WebEngine, and dependencies of all wallpaper hosts"
     (
