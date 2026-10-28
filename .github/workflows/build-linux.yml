@@ -47,7 +47,7 @@ jobs:
           cmake --version | grep -q '^cmake version 4\.3\.4$'
           clang-21 --version | grep -q 'clang version 21\.'
           apt-get install -y --no-install-recommends \
-            build-essential dbus dotnet-sdk-10.0 ffmpeg fontconfig git glslang-tools \
+            build-essential dbus dotnet-sdk-10.0 ffmpeg file fontconfig git glslang-tools \
             libasound2-dev libass-dev libavcodec-dev libavformat-dev libavutil-dev \
             libdbus-1-dev libdrm-dev libegl-dev libfontconfig1-dev libfreetype-dev \
             libgles2-mesa-dev libglvnd-dev liblz4-dev libmpv-dev libpipewire-0.3-dev \

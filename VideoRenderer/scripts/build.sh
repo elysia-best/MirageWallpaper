@@ -86,6 +86,14 @@ esac
 
 JOBS="${JOBS:-$DEFAULT_JOBS}"
 
+EXTRA_CONFIGURE_ARGS=()
+
+# CI/package builds omit the optional GLFW preview window; the wallpaper host
+# is the only VideoRenderer executable included in the Linux distribution.
+if [[ -n "${VIDEORENDERER_BUILD_VIEWER:-}" ]]; then
+    EXTRA_CONFIGURE_ARGS+=("-DVIDEORENDERER_BUILD_VIEWER=${VIDEORENDERER_BUILD_VIEWER}")
+fi
+
 do_clean() {
     [[ -d "$BUILD_DIR" ]] || { info "nothing to clean ($BUILD_DIR absent)"; return; }
     info "cleaning $BUILD_DIR"; rm -rf "$BUILD_DIR"
@@ -102,7 +110,7 @@ do_configure() {
         export PKG_CONFIG_PATH="$FFMPEG_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     fi
     info "configuring preset: $PRESET"
-    cmake -U '*VR_AV*' -U '*VR_SW*' --preset "$PRESET"
+    cmake -U '*VR_AV*' -U '*VR_SW*' --preset "$PRESET" "${EXTRA_CONFIGURE_ARGS[@]}"
 }
 
 do_build() {

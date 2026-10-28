@@ -130,7 +130,7 @@ build_scene() {
 }
 build_video() {
     step "Building VideoRenderer ($CONFIG)"
-    bash "$VIDEO_SH" "$CONFIG"
+    VIDEORENDERER_BUILD_VIEWER=OFF bash "$VIDEO_SH" "$CONFIG"
 }
 build_web() {
     step "Building WebRenderer ($CONFIG)"
