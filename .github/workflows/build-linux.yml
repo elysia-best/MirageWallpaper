@@ -12,8 +12,6 @@ permissions:
   contents: read
 
 env:
-  HOMEBREW_NO_AUTO_UPDATE: "1"
-  HOMEBREW_NO_INSTALL_CLEANUP: "1"
   DOTNET_CLI_TELEMETRY_OPTOUT: "1"
   DOTNET_MULTILEVEL_LOOKUP: "0"
   DOTNET_NOLOGO: "1"
@@ -22,6 +20,8 @@ jobs:
   build:
     name: Linux x86_64 dist
     runs-on: ubuntu-24.04
+    container:
+      image: debian:13
     timeout-minutes: 240
 
     steps:
@@ -30,43 +30,55 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Homebrew
+      - name: Install Debian 13 build dependencies
         shell: bash
         run: |
           set -euo pipefail
-          if command -v brew >/dev/null 2>&1; then
-            brew_bin="$(command -v brew)"
-          else
-            NONINTERACTIVE=1 /bin/bash -c "$(curl --fail --location --silent --show-error https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            brew_bin="/home/linuxbrew/.linuxbrew/bin/brew"
-          fi
-          eval "$("$brew_bin" shellenv)"
-          test "$(uname -s)" = Linux
-          printf '%s\n' "$HOMEBREW_PREFIX/bin" "$HOMEBREW_PREFIX/sbin" >> "$GITHUB_PATH"
-          printf 'HOMEBREW_PREFIX=%s\n' "$HOMEBREW_PREFIX" >> "$GITHUB_ENV"
-
-      - name: Install build dependencies with Homebrew
-        shell: bash
-        run: |
-          set -euo pipefail
-          eval "$("/home/linuxbrew/.linuxbrew/bin/brew" shellenv)"
-          brew install alsa-lib cmake dbus dotnet ffmpeg fontconfig freetype glslang glfw \
-            libass libdrm libplacebo libx11 libxkbcommon llvm lld lz4 mesa mpv ninja \
-            patchelf pipewire pkgconf pulseaudio qt qtwebengine vulkan-headers vulkan-loader
-          brew_prefix="$(brew --prefix)"
-          llvm_prefix="$(brew --prefix llvm)"
-          lld_prefix="$(brew --prefix lld)"
-          dotnet_prefix="$(brew --prefix dotnet)"
-          printf '%s\n' "$llvm_prefix/bin" "$lld_prefix/bin" >> "$GITHUB_PATH"
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl debian-archive-keyring
+          curl --fail --location --silent --show-error \
+            https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb \
+            -o /tmp/packages-microsoft-prod.deb
+          dpkg -i /tmp/packages-microsoft-prod.deb
+          printf '%s\n' 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/trixie-backports.list
+          apt-get update
+          apt-get install -y --no-install-recommends -t trixie-backports cmake clang-21
+          cmake --version | grep -q '^cmake version 4\.3\.4$'
+          clang-21 --version | grep -q 'clang version 21\.'
+          apt-get install -y --no-install-recommends \
+            build-essential dbus dotnet-sdk-10.0 ffmpeg fontconfig git glslang-tools \
+            libasound2-dev libass-dev libavcodec-dev libavformat-dev libavutil-dev \
+            libdbus-1-dev libdrm-dev libegl-dev libfontconfig1-dev libfreetype-dev \
+            libgles2-mesa-dev libglvnd-dev liblz4-dev libmpv-dev libpipewire-0.3-dev \
+            libplacebo-dev libpulse-dev libswresample-dev libswscale-dev libvulkan-dev \
+            libx11-dev libxkbcommon-dev ninja-build pkg-config qt6-5compat-dev qt6-base-dev \
+            qt6-base-dev-tools qt6-declarative-dev qt6-shadertools-dev qt6-webchannel-dev \
+            qt6-webengine-dev qt6-webengine-dev-tools qt6-wayland-dev \
+            qml6-module-qt5compat-graphicaleffects qml6-module-qtquick-controls \
+            qml6-module-qtquick-dialogs qml6-module-qtquick-layouts qml6-module-qtquick-shapes \
+            qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtwebengine
           {
-            printf 'CC=%s\n' "$llvm_prefix/bin/clang"
-            printf 'CXX=%s\n' "$llvm_prefix/bin/clang++"
-            printf 'CMAKE_PREFIX_PATH=%s\n' "$brew_prefix"
-            printf 'DOTNET_ROOT=%s/libexec\n' "$dotnet_prefix"
-            printf 'PKG_CONFIG_PATH=%s/lib/pkgconfig:%s/share/pkgconfig\n' "$brew_prefix" "$brew_prefix"
-            printf 'QT_PREFIX=%s\n' "$(brew --prefix qt)"
-            printf 'FFMPEG_BIN=%s\n' "$brew_prefix/bin/ffmpeg"
+            printf 'CC=%s\n' "$(command -v clang-21)"
+            printf 'CXX=%s\n' "$(command -v clang++-21)"
+            printf 'FFMPEG_BIN=%s\n' "$(command -v ffmpeg)"
           } >> "$GITHUB_ENV"
+
+      - name: Install linuxdeploy tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/linuxdeploy"
+          curl --fail --location --silent --show-error \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            -o "$RUNNER_TEMP/linuxdeploy/linuxdeploy"
+          curl --fail --location --silent --show-error \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage \
+            -o "$RUNNER_TEMP/linuxdeploy/linuxdeploy-plugin-qt"
+          chmod 755 "$RUNNER_TEMP/linuxdeploy/linuxdeploy" "$RUNNER_TEMP/linuxdeploy/linuxdeploy-plugin-qt"
+          printf '%s\n' "$RUNNER_TEMP/linuxdeploy" >> "$GITHUB_PATH"
+          printf 'LINUXDEPLOY=%s\n' "$RUNNER_TEMP/linuxdeploy/linuxdeploy" >> "$GITHUB_ENV"
+          printf 'LINUXDEPLOY_PLUGIN_QT=%s\n' "$RUNNER_TEMP/linuxdeploy/linuxdeploy-plugin-qt" >> "$GITHUB_ENV"
 
       - name: Install appimagetool
         shell: bash
@@ -77,6 +89,7 @@ jobs:
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
             -o "$appimagetool"
           chmod 755 "$appimagetool"
+          printf '%s\n' "$(dirname "$appimagetool")" >> "$GITHUB_PATH"
           printf 'APPIMAGETOOL=%s\n' "$appimagetool" >> "$GITHUB_ENV"
 
       - name: Build and package Linux distribution

@@ -52,4 +52,3 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS VideoWallpaper
         RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)
-mirage_install_runtime_dependencies(VideoWallpaper ${CMAKE_INSTALL_LIBEXECDIR}/miragewallpaper)

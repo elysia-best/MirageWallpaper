@@ -61,4 +61,3 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS SceneViewer
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-mirage_install_runtime_dependencies(SceneViewer ${CMAKE_INSTALL_BINDIR})
