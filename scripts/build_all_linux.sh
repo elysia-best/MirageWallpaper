@@ -246,6 +246,13 @@ package_linuxdeploy() {
 
     local ffmpeg_bin="${FFMPEG_BIN:-$(command -v ffmpeg || true)}"
     [[ -x "$ffmpeg_bin" ]] || die "ffmpeg executable not found; set FFMPEG_BIN"
+    # AlmaLinux's FFmpeg packages install versioned shared objects outside the
+    # AppDir. Resolve the package library directory once so all renderer hosts
+    # receive the exact ABI they were compiled against.
+    local ffmpeg_lib_dir="${FFMPEG_LIB_DIR:-/usr/lib64}"
+    [[ -d "$ffmpeg_lib_dir" ]] || die "FFmpeg library directory not found: $ffmpeg_lib_dir"
+    local openssl_lib_dir="${OPENSSL_LIB_DIR:-/usr/lib64}"
+    [[ -d "$openssl_lib_dir" ]] || die "OpenSSL library directory not found: $openssl_lib_dir"
     local linuxdeploy_bin="${LINUXDEPLOY:-$(command -v linuxdeploy || true)}"
     local linuxdeploy_qt="${LINUXDEPLOY_PLUGIN_QT:-$(command -v linuxdeploy-plugin-qt || true)}"
     local appimagetool_bin="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
@@ -287,6 +294,16 @@ package_linuxdeploy() {
 
     export QMAKE="$(command -v qmake6 || command -v qmake || true)"
     [[ -n "$QMAKE" ]] || die "qmake is required by linuxdeploy-plugin-qt"
+    local qt_plugins_dir
+    qt_plugins_dir="$($QMAKE -query QT_INSTALL_PLUGINS)"
+    [[ -d "$qt_plugins_dir" ]] || die "Qt plugin directory not found: $qt_plugins_dir"
+    [[ -f "$qt_plugins_dir/tls/libqopensslbackend.so" ]] || \
+        die "Qt OpenSSL TLS backend not found: $qt_plugins_dir/tls/libqopensslbackend.so"
+    # Qt discovers TLS backends below the AppImage's plugin directory rather
+    # than beside ordinary shared libraries; keep this plugin in that exact
+    # location and let linuxdeploy deploy its OpenSSL dependencies separately.
+    install -Dm755 "$qt_plugins_dir/tls/libqopensslbackend.so" \
+        "$pkg_dir/usr/plugins/tls/libqopensslbackend.so"
     # QML is compiled into the executable's resources, so the Qt deploy plugin
     # scans the sources to discover runtime imports such as QtQuick.Controls.
     export QML_SOURCES_PATHS="$ROOT_DIR/MirageQt/Sources/Qml"
@@ -310,15 +327,53 @@ package_linuxdeploy() {
             --executable "$pkg_dir/usr/libexec/miragewallpaper/VideoWallpaper" \
             --executable "$pkg_dir/usr/libexec/miragewallpaper/WebWallpaper" \
             --executable "$pkg_dir/usr/libexec/miragewallpaper/SteamService/linux-x64/runtime/dotnet" \
+            --library "$ffmpeg_lib_dir/libavformat.so.61" \
+            --library "$ffmpeg_lib_dir/libavcodec.so.61" \
+            --library "$ffmpeg_lib_dir/libavutil.so.59" \
+            --library "$ffmpeg_lib_dir/libavfilter.so.10" \
+            --library "$ffmpeg_lib_dir/libavdevice.so.61" \
+            --library "$ffmpeg_lib_dir/libswscale.so.8" \
+            --library "$ffmpeg_lib_dir/libswresample.so.5" \
+            --library "$openssl_lib_dir/libssl.so.3" \
+            --library "$openssl_lib_dir/libcrypto.so.3" \
+            --deploy-deps-only "$pkg_dir/usr/plugins/tls/libqopensslbackend.so" \
             --desktop-file "$pkg_dir/mirageqt.desktop" \
             --icon-file "$pkg_dir/mirageqt.png" \
-            --plugin qt \
-            --output appimage
+            --plugin qt
     )
-    local generated_appimage
-    generated_appimage="$(find "$PACKAGE_DIR" -maxdepth 1 -type f -name 'MirageQt-*.AppImage' -print -quit)"
-    [[ -n "$generated_appimage" ]] || die "linuxdeploy did not create a MirageQt AppImage in $PACKAGE_DIR"
-    mv -f "$generated_appimage" "$PACKAGE_DIR/$name.AppImage"
+    # linuxdeploy derives this path from the entry-point location. The
+    # renderer ELF files live two levels below usr, so their library directory
+    # is $ORIGIN/../../lib rather than the default $ORIGIN/../lib.
+    for renderer in \
+        "$pkg_dir/usr/libexec/miragewallpaper/SceneWallpaper" \
+        "$pkg_dir/usr/libexec/miragewallpaper/VideoWallpaper" \
+        "$pkg_dir/usr/libexec/miragewallpaper/WebWallpaper"; do
+        patchelf --set-rpath '$ORIGIN/../../lib' "$renderer"
+    done
+    # Build the AppImage only after the RPATH and Qt plugin layout have been
+    # corrected; generating it earlier would preserve linuxdeploy's broken
+    # libexec-relative path in the final immutable artifact.
+    APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool_bin" \
+        "$pkg_dir" "$PACKAGE_DIR/$name.AppImage"
+    # Validate the dynamic files that are not reliably discovered through the
+    # renderer/application ELF dependency graph: FFmpeg is loaded by renderer
+    # code and Qt loads the OpenSSL backend by plugin name at runtime.
+    [[ -f "$pkg_dir/usr/plugins/tls/libqopensslbackend.so" ]] || \
+        die "Qt OpenSSL TLS backend was not deployed"
+    [[ -f "$pkg_dir/usr/lib/libavformat.so.61" ]] || \
+        die "FFmpeg libavformat.so.61 was not deployed"
+    [[ -f "$pkg_dir/usr/lib/libavcodec.so.61" ]] || \
+        die "FFmpeg libavcodec.so.61 was not deployed"
+    [[ -f "$pkg_dir/usr/lib/libssl.so.3" && -f "$pkg_dir/usr/lib/libcrypto.so.3" ]] || \
+        die "OpenSSL runtime libraries were not deployed"
+    for renderer in \
+        "$pkg_dir/usr/libexec/miragewallpaper/SceneWallpaper" \
+        "$pkg_dir/usr/libexec/miragewallpaper/VideoWallpaper" \
+        "$pkg_dir/usr/libexec/miragewallpaper/WebWallpaper"; do
+        if ldd "$renderer" | grep -q 'not found'; then
+            die "unresolved runtime dependency in $renderer"
+        fi
+    done
     [[ -x "$PACKAGE_DIR/$name.AppImage" ]] || die "AppImage was not created: $PACKAGE_DIR/$name.AppImage"
     rm -rf "$pkg_dir"
     good "artifact: $PACKAGE_DIR/$name.AppImage"

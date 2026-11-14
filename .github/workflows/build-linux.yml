@@ -45,11 +45,11 @@ jobs:
             mesa-libEGL-devel mesa-libGLES-devel pipewire-devel \
             vulkan-headers vulkan-loader-devel libX11-devel libxkbcommon-devel \
             libxcb-devel libxkbcommon-x11-devel wayland-devel libinput-devel \
-            unzip pkgconf-pkg-config \
+            patchelf unzip pkgconf-pkg-config \
             qt6-qt5compat-devel qt6-qtbase-devel qt6-qtdeclarative-devel \
             qt6-qtquickcontrols2 qt6-qtshadertools-devel qt6-qtsvg-devel \
             qt6-qtwayland qt6-qtwayland-devel qt6-qtwebchannel-devel qt6-qtwebengine-devel \
-            ffmpeg-free ffmpeg-free-devel
+            ffmpeg-free ffmpeg-free-devel openssl-libs
           curl --fail --location --silent --show-error \
             https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm \
             -o /tmp/packages-microsoft-prod.rpm
