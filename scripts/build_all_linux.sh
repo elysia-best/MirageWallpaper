@@ -290,9 +290,10 @@ package_linuxdeploy() {
     # QML is compiled into the executable's resources, so the Qt deploy plugin
     # scans the sources to discover runtime imports such as QtQuick.Controls.
     export QML_SOURCES_PATHS="$ROOT_DIR/MirageQt/Sources/Qml"
-    # QPA plugins are loaded dynamically; explicitly deploy Wayland so the
-    # AppImage can use compositor screen metadata rather than falling back to X11.
-    export EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so"
+    # AlmaLinux Qt6 names its Wayland client QPA plugin libqwayland.so;
+    # explicitly deploy it so the AppImage can start on Wayland instead of
+    # relying on the host's Qt installation. XCB remains the default fallback.
+    export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
     # These Qt modules are also dynamically loaded and are not found through
     # MirageQt's ELF dependencies; SVG is used by the UI and Wayland support
     # is required for the compositor-backed application session.

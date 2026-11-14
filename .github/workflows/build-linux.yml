@@ -21,7 +21,7 @@ jobs:
     name: Linux x86_64 dist
     runs-on: ubuntu-24.04
     container:
-      image: debian:13
+      image: almalinux:9
     timeout-minutes: 240
 
     steps:
@@ -30,38 +30,54 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Debian 13 build dependencies
+      - name: Install AlmaLinux 9 build dependencies
         shell: bash
         run: |
           set -euo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl debian-archive-keyring
+          dnf -y install dnf-plugins-core epel-release ca-certificates file git
+          dnf config-manager --set-enabled crb
+          dnf -y install \
+            https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
+          dnf -y install \
+            gcc-c++ make clang lld dbus-devel fontconfig-devel freetype-devel \
+            glslang libass-devel alsa-lib-devel libdrm-devel libglvnd-devel \
+            lz4-devel mpv-libs-devel libplacebo6-devel pulseaudio-libs-devel \
+            mesa-libEGL-devel mesa-libGLES-devel pipewire-devel \
+            vulkan-headers vulkan-loader-devel libX11-devel libxkbcommon-devel \
+            libxcb-devel libxkbcommon-x11-devel wayland-devel libinput-devel \
+            unzip pkgconf-pkg-config \
+            qt6-qt5compat-devel qt6-qtbase-devel qt6-qtdeclarative-devel \
+            qt6-qtquickcontrols2 qt6-qtshadertools-devel qt6-qtsvg-devel \
+            qt6-qtwayland qt6-qtwayland-devel qt6-qtwebchannel-devel qt6-qtwebengine-devel \
+            ffmpeg-free ffmpeg-free-devel
           curl --fail --location --silent --show-error \
-            https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb \
-            -o /tmp/packages-microsoft-prod.deb
-          dpkg -i /tmp/packages-microsoft-prod.deb
-          printf '%s\n' 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/trixie-backports.list
-          apt-get update
-          apt-get install -y --no-install-recommends -t trixie-backports cmake clang-21
-          cmake --version | grep -q '^cmake version 4\.3\.4$'
-          clang-21 --version | grep -q 'clang version 21\.'
-          apt-get install -y --no-install-recommends \
-            build-essential dbus dotnet-sdk-10.0 ffmpeg file fontconfig git glslang-tools \
-            libasound2-dev libass-dev libavcodec-dev libavformat-dev libavutil-dev \
-            libdbus-1-dev libdrm-dev libegl-dev libfontconfig1-dev libfreetype-dev \
-            libgles2-mesa-dev libglvnd-dev liblz4-dev libmpv-dev libpipewire-0.3-dev \
-            libplacebo-dev libpulse-dev libswresample-dev libswscale-dev libvulkan-dev \
-            libx11-dev libxkbcommon-dev ninja-build pkg-config qt6-5compat-dev qt6-base-dev \
-            qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools qt6-qpa-plugins \
-            qt6-image-formats-plugins qt6-shadertools-dev qt6-svg-plugins qt6-webchannel-dev \
-            qt6-webengine-dev qt6-webengine-dev-tools qt6-wayland qt6-wayland-dev \
-            qml6-module-qt5compat-graphicaleffects qml6-module-qtquick-controls \
-            qml6-module-qtquick-dialogs qml6-module-qtquick-layouts qml6-module-qtquick-shapes \
-            qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtwebengine
+            https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm \
+            -o /tmp/packages-microsoft-prod.rpm
+          dnf -y install /tmp/packages-microsoft-prod.rpm
+          dnf -y install dotnet-sdk-10.0
+
+          ninja_version='1.13.1'
+          mkdir -p /opt/ninja
+          curl --fail --location --silent --show-error \
+            "https://github.com/ninja-build/ninja/releases/download/v${ninja_version}/ninja-linux.zip" \
+            -o /tmp/ninja.zip
+          unzip -p /tmp/ninja.zip ninja > /opt/ninja/ninja
+          chmod 755 /opt/ninja/ninja
+          export PATH="/opt/ninja:$PATH"
+          printf '%s\n' /opt/ninja >> "$GITHUB_PATH"
+          test "$(ninja --version)" = "$ninja_version"
+
+          cmake_version='4.3.1'
+          curl --fail --location --silent --show-error \
+            "https://github.com/Kitware/CMake/releases/download/v${cmake_version}/cmake-${cmake_version}-linux-x86_64.tar.gz" \
+            -o /tmp/cmake.tar.gz
+          tar -xzf /tmp/cmake.tar.gz -C /opt
+          ln -s "/opt/cmake-${cmake_version}-linux-x86_64" /opt/cmake
+          printf '%s/bin\n' /opt/cmake >> "$GITHUB_PATH"
+          /opt/cmake/bin/cmake --version | grep -q "^cmake version ${cmake_version}$"
           {
-            printf 'CC=%s\n' "$(command -v clang-21)"
-            printf 'CXX=%s\n' "$(command -v clang++-21)"
+            printf 'CC=%s\n' "$(command -v clang)"
+            printf 'CXX=%s\n' "$(command -v clang++)"
             printf 'FFMPEG_BIN=%s\n' "$(command -v ffmpeg)"
           } >> "$GITHUB_ENV"
 
