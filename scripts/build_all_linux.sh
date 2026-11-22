@@ -295,6 +295,7 @@ package_linuxdeploy() {
     export QMAKE="$(command -v qmake6 || command -v qmake || true)"
     [[ -n "$QMAKE" ]] || die "qmake is required by linuxdeploy-plugin-qt"
     local qt_plugins_dir
+    local qt_tls_plugin="$pkg_dir/usr/plugins/tls/libqopensslbackend.so"
     qt_plugins_dir="$($QMAKE -query QT_INSTALL_PLUGINS)"
     [[ -d "$qt_plugins_dir" ]] || die "Qt plugin directory not found: $qt_plugins_dir"
     [[ -f "$qt_plugins_dir/tls/libqopensslbackend.so" ]] || \
@@ -302,21 +303,65 @@ package_linuxdeploy() {
     # Qt discovers TLS backends below the AppImage's plugin directory rather
     # than beside ordinary shared libraries; keep this plugin in that exact
     # location and let linuxdeploy deploy its OpenSSL dependencies separately.
-    install -Dm755 "$qt_plugins_dir/tls/libqopensslbackend.so" \
-        "$pkg_dir/usr/plugins/tls/libqopensslbackend.so"
+    install -Dm755 "$qt_plugins_dir/tls/libqopensslbackend.so" "$qt_tls_plugin"
+    local qt_data_dir
+    local qt_webengine_resources_dir
+    local qt_webengine_locales_dir
+    qt_data_dir="$($QMAKE -query QT_INSTALL_DATA)"
+    qt_webengine_resources_dir="$qt_data_dir/resources"
+    qt_webengine_locales_dir="$qt_data_dir/translations/qtwebengine_locales"
+    # QtWebEngine loads Chromium's .pak files by resolving Qt's Data path from
+    # qt.conf. linuxdeploy's Qt plugin does not reliably discover these files
+    # when only a child executable is scanned, so copy the known QtWebEngine
+    # data contract explicitly into the package's Data and Translations paths.
+    [[ -d "$qt_webengine_resources_dir" ]] || \
+        die "QtWebEngine resources directory not found: $qt_webengine_resources_dir"
+    compgen -G "$qt_webengine_resources_dir/qtwebengine_resources*.pak" >/dev/null || \
+        die "QtWebEngine resource packs not found: $qt_webengine_resources_dir"
+    install -d "$pkg_dir/usr/share/qt/resources"
+    cp -a "$qt_webengine_resources_dir"/qtwebengine_resources*.pak \
+        "$pkg_dir/usr/share/qt/resources/"
+    # AlmaLinux's QtWebEngine RPM can list locale files while omitting them
+    # from the installed filesystem. The Chromium resource packs above are
+    # required for page loading; copy locales when the RPM actually provides
+    # them, without making a valid headless WebEngine package fail to stage.
+    if [[ -d "$qt_webengine_locales_dir" ]] &&
+        compgen -G "$qt_webengine_locales_dir/*.pak" >/dev/null; then
+        install -d "$pkg_dir/usr/share/qt/translations/qtwebengine_locales"
+        cp -a "$qt_webengine_locales_dir"/*.pak \
+            "$pkg_dir/usr/share/qt/translations/qtwebengine_locales/"
+    fi
     # QML is compiled into the executable's resources, so the Qt deploy plugin
     # scans the sources to discover runtime imports such as QtQuick.Controls.
     export QML_SOURCES_PATHS="$ROOT_DIR/MirageQt/Sources/Qml"
-    # AlmaLinux Qt6 names its Wayland client QPA plugin libqwayland.so;
-    # explicitly deploy it so the AppImage can start on Wayland instead of
-    # relying on the host's Qt installation. XCB remains the default fallback.
-    export EXTRA_PLATFORM_PLUGINS="libqwayland.so"
+    # AlmaLinux Qt6 names its QPA clients libqwayland.so and libqxcb.so;
+    # explicitly deploy both so child renderers can use the same platform
+    # plugin set as MirageQt without relying on the host's Qt installation.
+    export EXTRA_PLATFORM_PLUGINS="libqwayland.so;libqxcb.so"
     # These Qt modules are also dynamically loaded and are not found through
     # MirageQt's ELF dependencies; SVG is used by the UI and Wayland support
     # is required for the compositor-backed application session.
     export EXTRA_QT_MODULES="waylandcompositor;svg"
     export PATH="$(dirname "$linuxdeploy_qt"):$(dirname "$appimagetool_bin"):$PATH"
     info "linuxdeploy is bundling Qt, WebEngine, and dependencies of all wallpaper hosts"
+    # Keep the host graphics stack out of the AppImage. EGL/GBM/Vulkan are
+    # loader and driver-facing ABIs; putting AlmaLinux's Mesa or Vulkan loader
+    # ahead of the target machine's NVIDIA/AMD/Intel stack makes a valid
+    # DMA-BUF import fail inside the renderer. Qt and mpv still resolve these
+    # names through the system loader after the ordinary application libraries
+    # have been bundled.
+    local gpu_loader_excludes=(
+        # The unversioned GLVND loaders are only the entry point. Their vendor
+        # modules (for example libEGL_mesa or libGLX_nvidia) are also tied to
+        # the host kernel driver and must remain outside the AppImage.
+        'libEGL*.so*' 'libGLES*.so*' 'libGL*.so*' 'libOpenGL*.so*'
+        'libGLdispatch*.so*' 'libgbm*.so*' 'libdrm*.so*' 'libvulkan*.so*'
+        'libva*.so*' 'libvdpau*.so*'
+    )
+    local gpu_loader_exclude_args=()
+    for gpu_loader_pattern in "${gpu_loader_excludes[@]}"; do
+        gpu_loader_exclude_args+=(--exclude-library "$gpu_loader_pattern")
+    done
     (
         cd "$PACKAGE_DIR"
         APPIMAGE_EXTRACT_AND_RUN=1 "$linuxdeploy_bin" \
@@ -336,11 +381,70 @@ package_linuxdeploy() {
             --library "$ffmpeg_lib_dir/libswresample.so.5" \
             --library "$openssl_lib_dir/libssl.so.3" \
             --library "$openssl_lib_dir/libcrypto.so.3" \
-            --deploy-deps-only "$pkg_dir/usr/plugins/tls/libqopensslbackend.so" \
+            --deploy-deps-only "$qt_tls_plugin" \
             --desktop-file "$pkg_dir/mirageqt.desktop" \
             --icon-file "$pkg_dir/mirageqt.png" \
+            "${gpu_loader_exclude_args[@]}" \
             --plugin qt
     )
+    # linuxdeploy can copy a transitive VA-API loader after processing an
+    # excluded dependency, as happened with libva-x11.so.2 on AlmaLinux 9.
+    # Remove only the explicitly host-owned loader names here; keeping these
+    # ABI entry points out of the AppDir lets FFmpeg/mpv bind the target
+    # machine's VA-API implementation while the validation below still fails
+    # if a new loader name is introduced into the package.
+    for gpu_loader_pattern in "${gpu_loader_excludes[@]}"; do
+        if ! find "$pkg_dir/usr/lib" \( -type f -o -type l \) \
+            -name "$gpu_loader_pattern" -delete; then
+            die "failed to remove host GPU loader files matching $gpu_loader_pattern"
+        fi
+    done
+    # Keep the main Qt executable and QtWebEngineProcess on the same explicit
+    # FHS layout. linuxdeploy normally writes usr/bin/qt.conf, but making both
+    # helper locations deterministic prevents a plugin-generated config from
+    # depending on which executable linuxdeploy scanned first.
+    install -Dm644 /dev/stdin "$pkg_dir/usr/bin/qt.conf" <<'EOF'
+[Paths]
+Prefix=..
+Libraries=lib
+Plugins=plugins
+QmlImports=qml
+Qml2Imports=qml
+Data=share/qt
+Translations=share/qt/translations
+LibraryExecutables=libexec
+EOF
+    install -Dm644 /dev/stdin "$pkg_dir/usr/libexec/qt.conf" <<'EOF'
+[Paths]
+Prefix=..
+Libraries=lib
+Plugins=plugins
+QmlImports=qml
+Qml2Imports=qml
+Data=share/qt
+Translations=share/qt/translations
+LibraryExecutables=libexec
+EOF
+    # The wallpaper hosts are installed below usr/libexec and do not share the
+    # main executable's usr/bin/qt.conf lookup location. Put the same package
+    # layout beside all three hosts so each Qt process resolves its bundled
+    # plugins, libraries, WebEngine data, and helper executables independently.
+    install -Dm644 /dev/stdin "$pkg_dir/usr/libexec/miragewallpaper/qt.conf" <<'EOF'
+[Paths]
+Prefix=../..
+Libraries=lib
+Plugins=plugins
+QmlImports=qml
+Qml2Imports=qml
+Data=share/qt
+Translations=share/qt/translations
+LibraryExecutables=libexec
+EOF
+    for platform_plugin in \
+        "$pkg_dir/usr/plugins/platforms/libqwayland.so" \
+        "$pkg_dir/usr/plugins/platforms/libqxcb.so"; do
+        [[ -f "$platform_plugin" ]] || die "Qt platform plugin was not deployed: $platform_plugin"
+    done
     # linuxdeploy derives this path from the entry-point location. The
     # renderer ELF files live two levels below usr, so their library directory
     # is $ORIGIN/../../lib rather than the default $ORIGIN/../lib.
@@ -350,22 +454,44 @@ package_linuxdeploy() {
         "$pkg_dir/usr/libexec/miragewallpaper/WebWallpaper"; do
         patchelf --set-rpath '$ORIGIN/../../lib' "$renderer"
     done
-    # Build the AppImage only after the RPATH and Qt plugin layout have been
-    # corrected; generating it earlier would preserve linuxdeploy's broken
-    # libexec-relative path in the final immutable artifact.
-    APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool_bin" \
-        "$pkg_dir" "$PACKAGE_DIR/$name.AppImage"
+    # The TLS backend is loaded by Qt by plugin name, so it is outside the
+    # normal executable dependency walk. Its OpenSSL dependencies live in
+    # usr/lib while the plugin lives in usr/plugins/tls; keep that relation in
+    # the plugin's own ELF RPATH so the loader does not fall back to the
+    # certificate-only backend when the host has a different library layout.
+    [[ -f "$qt_tls_plugin" ]] || die "Qt OpenSSL TLS backend was not deployed"
+    patchelf --set-rpath '$ORIGIN/../../lib' "$qt_tls_plugin"
+    if ldd "$qt_tls_plugin" | grep -q 'not found'; then
+        die "unresolved runtime dependency in $qt_tls_plugin"
+    fi
     # Validate the dynamic files that are not reliably discovered through the
     # renderer/application ELF dependency graph: FFmpeg is loaded by renderer
     # code and Qt loads the OpenSSL backend by plugin name at runtime.
-    [[ -f "$pkg_dir/usr/plugins/tls/libqopensslbackend.so" ]] || \
-        die "Qt OpenSSL TLS backend was not deployed"
     [[ -f "$pkg_dir/usr/lib/libavformat.so.61" ]] || \
         die "FFmpeg libavformat.so.61 was not deployed"
     [[ -f "$pkg_dir/usr/lib/libavcodec.so.61" ]] || \
         die "FFmpeg libavcodec.so.61 was not deployed"
     [[ -f "$pkg_dir/usr/lib/libssl.so.3" && -f "$pkg_dir/usr/lib/libcrypto.so.3" ]] || \
         die "OpenSSL runtime libraries were not deployed"
+    [[ -f "$pkg_dir/usr/libexec/QtWebEngineProcess" ]] || \
+        die "QtWebEngineProcess was not deployed"
+    compgen -G "$pkg_dir/usr/share/qt/resources/qtwebengine_resources*.pak" >/dev/null || \
+        die "QtWebEngine resource packs were not deployed"
+    if [[ -d "$pkg_dir/usr/share/qt/translations/qtwebengine_locales" ]] &&
+        ! compgen -G "$pkg_dir/usr/share/qt/translations/qtwebengine_locales/*.pak" >/dev/null; then
+        die "QtWebEngine locale directory was deployed without locale packs"
+    fi
+    # The exclusion list above is part of the runtime contract: a renderer
+    # must load the compositor's GPU stack from the host, because those
+    # libraries select kernel-specific vendor implementations at runtime.
+    for gpu_loader_pattern in "${gpu_loader_excludes[@]}"; do
+        local bundled_gpu_loader
+        bundled_gpu_loader="$(find "$pkg_dir/usr/lib" \( -type f -o -type l \) \
+            -name "$gpu_loader_pattern" -print -quit)"
+        if [[ -n "$bundled_gpu_loader" ]]; then
+            die "host GPU loader was bundled unexpectedly: $bundled_gpu_loader"
+        fi
+    done
     for renderer in \
         "$pkg_dir/usr/libexec/miragewallpaper/SceneWallpaper" \
         "$pkg_dir/usr/libexec/miragewallpaper/VideoWallpaper" \
@@ -374,6 +500,11 @@ package_linuxdeploy() {
             die "unresolved runtime dependency in $renderer"
         fi
     done
+    # Build the AppImage only after the RPATH and Qt plugin layout have been
+    # corrected and all dynamic dependencies have been checked; this keeps a
+    # failed validation from leaving an artifact that cannot start.
+    APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool_bin" \
+        "$pkg_dir" "$PACKAGE_DIR/$name.AppImage"
     [[ -x "$PACKAGE_DIR/$name.AppImage" ]] || die "AppImage was not created: $PACKAGE_DIR/$name.AppImage"
     rm -rf "$pkg_dir"
     good "artifact: $PACKAGE_DIR/$name.AppImage"

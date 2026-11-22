@@ -1017,9 +1017,9 @@ private:
             {"load-scripts", "no"},
             {"vo", "libmpv"},
             {"hwdec", hardware_decoder},
-            // Wallpaper rendering requires GPU decode. A decoder failure must be
-            // reported by mpv instead of silently shifting sustained work to the CPU.
-            {"hwdec-software-fallback", "no"},
+            // Do not set hwdec-software-fallback here: the libmpv shipped by
+            // AlmaLinux 9 does not expose this newer option.
+            // {"hwdec-software-fallback", "no"},
             {"vaapi-device", vaapi_device.c_str()},
             // The presentation FBO already has the negotiated pool size. Bilinear scaling
             // needs one GPU pass, while mpv's higher-quality defaults add passes without

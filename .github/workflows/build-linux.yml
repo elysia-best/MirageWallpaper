@@ -36,6 +36,8 @@ jobs:
           set -euo pipefail
           dnf -y install dnf-plugins-core epel-release ca-certificates file git
           dnf config-manager --set-enabled crb
+          # The runtime package supplies QtWebEngineProcess and Chromium data
+          # files used by WebWallpaper; -devel alone only supplies headers.
           dnf -y install \
             https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
           dnf -y install \
@@ -48,7 +50,7 @@ jobs:
             patchelf unzip pkgconf-pkg-config \
             qt6-qt5compat-devel qt6-qtbase-devel qt6-qtdeclarative-devel \
             qt6-qtquickcontrols2 qt6-qtshadertools-devel qt6-qtsvg-devel \
-            qt6-qtwayland qt6-qtwayland-devel qt6-qtwebchannel-devel qt6-qtwebengine-devel \
+            qt6-qtwayland qt6-qtwayland-devel qt6-qtwebchannel-devel qt6-qtwebengine qt6-qtwebengine-devel \
             ffmpeg-free ffmpeg-free-devel openssl-libs
           curl --fail --location --silent --show-error \
             https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm \
