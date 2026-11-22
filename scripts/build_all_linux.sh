@@ -28,6 +28,10 @@
 #   PACKAGE_DIR=PATH             output/staging root for the AppImage (default: $ROOT_DIR/dist)
 #   VERSION=STRING               package version override (default: git describe)
 #   FFMPEG_BIN=PATH              ffmpeg executable to bundle (default: PATH lookup)
+#   FFMPEG_LIB_DIR=PATH          FFmpeg shared-library directory (default: /usr/lib64)
+#   OPENSSL_LIB_DIR=PATH         OpenSSL shared-library directory (default: /usr/lib64)
+#   MPV_LIB_DIR=PATH             libmpv shared-library directory (default: pkg-config)
+#   QTWEBENGINE_LOCALES_DIR=PATH QtWebEngine locale source directory (default: Qt translations or AlmaLinux chromium-common path)
 #   LINUXDEPLOY=PATH             linuxdeploy executable (default: PATH lookup)
 #   LINUXDEPLOY_PLUGIN_QT=PATH   linuxdeploy Qt plugin executable (default: PATH lookup)
 #   APPIMAGETOOL=PATH            appimagetool executable (default: download latest)
@@ -74,6 +78,10 @@ Environment variables:
   PACKAGE_DIR=PATH            output/staging root for the AppImage (default: <repo>/dist)
   VERSION=STRING              package version override (default: git describe)
   FFMPEG_BIN=PATH             ffmpeg executable to bundle (default: PATH lookup)
+  FFMPEG_LIB_DIR=PATH         FFmpeg shared-library directory (default: /usr/lib64)
+  OPENSSL_LIB_DIR=PATH        OpenSSL shared-library directory (default: /usr/lib64)
+  MPV_LIB_DIR=PATH            libmpv shared-library directory (default: pkg-config)
+  QTWEBENGINE_LOCALES_DIR=PATH QtWebEngine locale source directory (default: Qt translations or /usr/lib64/chromium-browser/locales)
   LINUXDEPLOY=PATH            linuxdeploy executable (default: PATH lookup)
   LINUXDEPLOY_PLUGIN_QT=PATH  linuxdeploy Qt plugin executable (default: PATH lookup)
   APPIMAGETOOL=PATH           appimagetool executable (default: download latest)
@@ -253,6 +261,15 @@ package_linuxdeploy() {
     [[ -d "$ffmpeg_lib_dir" ]] || die "FFmpeg library directory not found: $ffmpeg_lib_dir"
     local openssl_lib_dir="${OPENSSL_LIB_DIR:-/usr/lib64}"
     [[ -d "$openssl_lib_dir" ]] || die "OpenSSL library directory not found: $openssl_lib_dir"
+    # libmpv is loaded by the VideoWallpaper process through its pkg-config
+    # ABI and is not guaranteed to be discovered by linuxdeploy's executable
+    # walk. Resolve the build-time libdir explicitly so the AppImage contains
+    # the same libmpv ABI that was used to compile VideoRenderer.
+    local mpv_lib_dir="${MPV_LIB_DIR:-$(pkg-config --variable=libdir mpv 2>/dev/null || true)}"
+    [[ -d "$mpv_lib_dir" ]] || die "libmpv library directory not found; set MPV_LIB_DIR"
+    local mpv_library="$mpv_lib_dir/libmpv.so.2"
+    [[ -f "$mpv_library" || -L "$mpv_library" ]] || \
+        die "libmpv.so.2 not found at $mpv_library"
     local linuxdeploy_bin="${LINUXDEPLOY:-$(command -v linuxdeploy || true)}"
     local linuxdeploy_qt="${LINUXDEPLOY_PLUGIN_QT:-$(command -v linuxdeploy-plugin-qt || true)}"
     local appimagetool_bin="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
@@ -305,32 +322,62 @@ package_linuxdeploy() {
     # location and let linuxdeploy deploy its OpenSSL dependencies separately.
     install -Dm755 "$qt_plugins_dir/tls/libqopensslbackend.so" "$qt_tls_plugin"
     local qt_data_dir
+    local qt_translations_dir
     local qt_webengine_resources_dir
     local qt_webengine_locales_dir
+    local qt_libexec_dir
     qt_data_dir="$($QMAKE -query QT_INSTALL_DATA)"
+    qt_translations_dir="$($QMAKE -query QT_INSTALL_TRANSLATIONS)"
     qt_webengine_resources_dir="$qt_data_dir/resources"
-    qt_webengine_locales_dir="$qt_data_dir/translations/qtwebengine_locales"
+    # AlmaLinux 9's qt6-qtwebengine RPM declares the Qt translation directory
+    # as ghost entries; chromium-common owns the real .pak files under this
+    # directory. Prefer a complete Qt directory on distributions that ship it;
+    # otherwise copy chromium-common's real package path, then install into
+    # Qt's documented AppDir location so QLibraryInfo resolves the bundle
+    # consistently.
+    if [[ -n "${QTWEBENGINE_LOCALES_DIR:-}" ]]; then
+        qt_webengine_locales_dir="$QTWEBENGINE_LOCALES_DIR"
+    elif [[ -f "$qt_translations_dir/qtwebengine_locales/en-US.pak" ]]; then
+        qt_webengine_locales_dir="$qt_translations_dir/qtwebengine_locales"
+    else
+        qt_webengine_locales_dir="/usr/lib64/chromium-browser/locales"
+    fi
+    qt_libexec_dir="$($QMAKE -query QT_INSTALL_LIBEXECS)"
     # QtWebEngine loads Chromium's .pak files by resolving Qt's Data path from
     # qt.conf. linuxdeploy's Qt plugin does not reliably discover these files
     # when only a child executable is scanned, so copy the known QtWebEngine
     # data contract explicitly into the package's Data and Translations paths.
     [[ -d "$qt_webengine_resources_dir" ]] || \
         die "QtWebEngine resources directory not found: $qt_webengine_resources_dir"
-    compgen -G "$qt_webengine_resources_dir/qtwebengine_resources*.pak" >/dev/null || \
-        die "QtWebEngine resource packs not found: $qt_webengine_resources_dir"
+    [[ -d "$qt_webengine_locales_dir" ]] || \
+        die "QtWebEngine locale source directory not found: $qt_webengine_locales_dir (qmake translations: $qt_translations_dir)"
+    [[ -x "$qt_libexec_dir/QtWebEngineProcess" ]] || \
+        die "QtWebEngineProcess not found: $qt_libexec_dir/QtWebEngineProcess"
     install -d "$pkg_dir/usr/share/qt/resources"
-    cp -a "$qt_webengine_resources_dir"/qtwebengine_resources*.pak \
-        "$pkg_dir/usr/share/qt/resources/"
-    # AlmaLinux's QtWebEngine RPM can list locale files while omitting them
-    # from the installed filesystem. The Chromium resource packs above are
-    # required for page loading; copy locales when the RPM actually provides
-    # them, without making a valid headless WebEngine package fail to stage.
-    if [[ -d "$qt_webengine_locales_dir" ]] &&
-        compgen -G "$qt_webengine_locales_dir/*.pak" >/dev/null; then
-        install -d "$pkg_dir/usr/share/qt/translations/qtwebengine_locales"
-        cp -a "$qt_webengine_locales_dir"/*.pak \
-            "$pkg_dir/usr/share/qt/translations/qtwebengine_locales/"
-    fi
+    # Qt documents these six Chromium files as the complete Linux WebEngine
+    # data contract. Copy each named file and fail early when the Qt runtime
+    # package is incomplete, rather than producing an AppImage that starts
+    # Chromium with an invalid ICU descriptor or blank locale.
+    local qt_webengine_resource
+    for qt_webengine_resource in \
+        qtwebengine_resources.pak \
+        qtwebengine_devtools_resources.pak \
+        qtwebengine_resources_100p.pak \
+        qtwebengine_resources_200p.pak \
+        icudtl.dat \
+        v8_context_snapshot.bin; do
+        [[ -f "$qt_webengine_resources_dir/$qt_webengine_resource" ]] || \
+            die "QtWebEngine resource not found: $qt_webengine_resources_dir/$qt_webengine_resource"
+        install -Dm644 "$qt_webengine_resources_dir/$qt_webengine_resource" \
+            "$pkg_dir/usr/share/qt/resources/$qt_webengine_resource"
+    done
+    [[ -f "$qt_webengine_locales_dir/en-US.pak" ]] || \
+        die "QtWebEngine en-US locale not found: $qt_webengine_locales_dir/en-US.pak"
+    install -d "$pkg_dir/usr/share/qt/translations/qtwebengine_locales"
+    cp -a "$qt_webengine_locales_dir"/. \
+        "$pkg_dir/usr/share/qt/translations/qtwebengine_locales/"
+    install -Dm755 "$qt_libexec_dir/QtWebEngineProcess" \
+        "$pkg_dir/usr/libexec/QtWebEngineProcess"
     # QML is compiled into the executable's resources, so the Qt deploy plugin
     # scans the sources to discover runtime imports such as QtQuick.Controls.
     export QML_SOURCES_PATHS="$ROOT_DIR/MirageQt/Sources/Qml"
@@ -381,6 +428,7 @@ package_linuxdeploy() {
             --library "$ffmpeg_lib_dir/libswresample.so.5" \
             --library "$openssl_lib_dir/libssl.so.3" \
             --library "$openssl_lib_dir/libcrypto.so.3" \
+            --library "$mpv_library" \
             --deploy-deps-only "$qt_tls_plugin" \
             --desktop-file "$pkg_dir/mirageqt.desktop" \
             --icon-file "$pkg_dir/mirageqt.png" \
@@ -454,6 +502,10 @@ EOF
         "$pkg_dir/usr/libexec/miragewallpaper/WebWallpaper"; do
         patchelf --set-rpath '$ORIGIN/../../lib' "$renderer"
     done
+    # Qt launches this helper as a separate process. Its loader path is one
+    # level below usr/lib, so make the AppDir lib directory authoritative
+    # instead of allowing a host Qt installation to satisfy its dependencies.
+    patchelf --set-rpath '$ORIGIN/../lib' "$pkg_dir/usr/libexec/QtWebEngineProcess"
     # The TLS backend is loaded by Qt by plugin name, so it is outside the
     # normal executable dependency walk. Its OpenSSL dependencies live in
     # usr/lib while the plugin lives in usr/plugins/tls; keep that relation in
@@ -473,14 +525,22 @@ EOF
         die "FFmpeg libavcodec.so.61 was not deployed"
     [[ -f "$pkg_dir/usr/lib/libssl.so.3" && -f "$pkg_dir/usr/lib/libcrypto.so.3" ]] || \
         die "OpenSSL runtime libraries were not deployed"
-    [[ -f "$pkg_dir/usr/libexec/QtWebEngineProcess" ]] || \
+    [[ -x "$pkg_dir/usr/libexec/QtWebEngineProcess" ]] || \
         die "QtWebEngineProcess was not deployed"
-    compgen -G "$pkg_dir/usr/share/qt/resources/qtwebengine_resources*.pak" >/dev/null || \
-        die "QtWebEngine resource packs were not deployed"
-    if [[ -d "$pkg_dir/usr/share/qt/translations/qtwebengine_locales" ]] &&
-        ! compgen -G "$pkg_dir/usr/share/qt/translations/qtwebengine_locales/*.pak" >/dev/null; then
-        die "QtWebEngine locale directory was deployed without locale packs"
-    fi
+    for qt_webengine_resource in \
+        qtwebengine_resources.pak \
+        qtwebengine_devtools_resources.pak \
+        qtwebengine_resources_100p.pak \
+        qtwebengine_resources_200p.pak \
+        icudtl.dat \
+        v8_context_snapshot.bin; do
+        [[ -f "$pkg_dir/usr/share/qt/resources/$qt_webengine_resource" ]] || \
+            die "QtWebEngine resource was not deployed: $qt_webengine_resource"
+    done
+    [[ -f "$pkg_dir/usr/share/qt/translations/qtwebengine_locales/en-US.pak" ]] || \
+        die "QtWebEngine en-US locale was not deployed"
+    [[ -f "$pkg_dir/usr/lib/libmpv.so.2" || -L "$pkg_dir/usr/lib/libmpv.so.2" ]] || \
+        die "libmpv.so.2 was not deployed"
     # The exclusion list above is part of the runtime contract: a renderer
     # must load the compositor's GPU stack from the host, because those
     # libraries select kernel-specific vendor implementations at runtime.
@@ -498,6 +558,15 @@ EOF
         "$pkg_dir/usr/libexec/miragewallpaper/WebWallpaper"; do
         if ldd "$renderer" | grep -q 'not found'; then
             die "unresolved runtime dependency in $renderer"
+        fi
+    done
+    for qt_executable in \
+        "$pkg_dir/usr/bin/MirageQt" \
+        "$pkg_dir/usr/libexec/QtWebEngineProcess" \
+        "$qt_tls_plugin" \
+        "$pkg_dir/usr/lib/libmpv.so.2"; do
+        if ldd "$qt_executable" | grep -q 'not found'; then
+            die "unresolved runtime dependency in $qt_executable"
         fi
     done
     # Build the AppImage only after the RPATH and Qt plugin layout have been

@@ -40,6 +40,7 @@ jobs:
           # files used by WebWallpaper; -devel alone only supplies headers.
           dnf -y install \
             https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm
+          # qt6-qtwebengine ships ghost locale entries; chromium-common owns the .pak files.
           dnf -y install \
             gcc-c++ make clang lld dbus-devel fontconfig-devel freetype-devel \
             glslang libass-devel alsa-lib-devel libdrm-devel libglvnd-devel \
@@ -51,6 +52,7 @@ jobs:
             qt6-qt5compat-devel qt6-qtbase-devel qt6-qtdeclarative-devel \
             qt6-qtquickcontrols2 qt6-qtshadertools-devel qt6-qtsvg-devel \
             qt6-qtwayland qt6-qtwayland-devel qt6-qtwebchannel-devel qt6-qtwebengine qt6-qtwebengine-devel \
+            chromium-common \
             ffmpeg-free ffmpeg-free-devel openssl-libs
           curl --fail --location --silent --show-error \
             https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm \

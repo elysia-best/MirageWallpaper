@@ -966,7 +966,7 @@ private:
                          std::setlocale(LC_NUMERIC, nullptr) != nullptr
                              ? std::setlocale(LC_NUMERIC, nullptr)
                              : "?");
-            m_last_error = "cannot create libmpv handle";
+            m_last_error = "cannot create libmpv handle; inspect the libmpv runtime and mpv diagnostics";
             return false;
         }
         if (m_diagnostics) {
@@ -1040,7 +1040,14 @@ private:
         };
         for (const auto& option : options) {
             if (mpv_set_option_string(m_mpv, option.name, option.value) < 0) {
+                // Keep the hardware-decoder failure actionable: nvdec is a
+                // target-driver contract, while other option failures identify
+                // an incompatible libmpv build or packaging mismatch.
                 m_last_error = std::string("cannot set libmpv option ") + option.name;
+                if (std::strcmp(option.name, "hwdec") == 0 &&
+                    std::strcmp(hardware_decoder, "nvdec") == 0) {
+                    m_last_error += "; nvdec requires the target NVIDIA CUDA/NVDEC runtime";
+                }
                 return false;
             }
         }
@@ -1068,6 +1075,9 @@ private:
         }
         if (mpv_initialize(m_mpv) < 0) {
             m_last_error = "libmpv initialization failed";
+            if (std::strcmp(hardware_decoder, "nvdec") == 0) {
+                m_last_error += "; nvdec requires the target NVIDIA CUDA/NVDEC runtime";
+            }
             return false;
         }
         // 先建 headless EGL/GLES3 上下文（mpv GL render API 的宿主，需 GL
@@ -1612,9 +1622,17 @@ private:
                 const QString actual = current_hwdec != nullptr
                     ? QString::fromUtf8(current_hwdec)
                     : QStringLiteral("unavailable");
+                const bool decoder_unavailable = current_hwdec == nullptr;
                 mpv_free(current_hwdec);
-                fail(QStringLiteral("hardware decoder %1 was required, but libmpv selected %2")
-                         .arg(QString::fromUtf8(m_expected_hwdec), actual));
+                QString message = QStringLiteral("hardware decoder %1 was required, but libmpv selected %2")
+                                      .arg(QString::fromUtf8(m_expected_hwdec), actual);
+                if (std::strcmp(m_expected_hwdec, "nvdec") == 0 &&
+                    (decoder_unavailable || actual == QStringLiteral("no"))) {
+                    message += QStringLiteral("; nvdec initialization failed or the target NVIDIA CUDA/NVDEC runtime is unavailable; software decoding is not permitted");
+                } else if (actual == QStringLiteral("no")) {
+                    message += QStringLiteral("; software decoding is not permitted");
+                }
+                fail(message);
                 return;
             }
             std::fprintf(stderr,
